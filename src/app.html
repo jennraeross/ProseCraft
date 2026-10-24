@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%sveltekit.assets%/favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tauri + SvelteKit + Typescript App</title>
+    <script>
+      (() => {
+        const root = document.documentElement;
+        let theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        let scheme = "prosecraft";
+        try {
+          const savedTheme = localStorage.getItem("prosecraft-theme");
+          if (savedTheme === "light" || savedTheme === "dark") {
+            theme = savedTheme;
+          }
+          const savedScheme = localStorage.getItem("prosecraft-color-scheme");
+          const schemes = [
+            "prosecraft",
+            "nord",
+            "gruvbox",
+            "solarized",
+            "catppuccin",
+            "everforest",
+            "rose-pine",
+            "dracula"
+          ];
+          if (schemes.includes(savedScheme)) scheme = savedScheme;
+        } catch {
+          // Local storage may be unavailable; the defaults above still apply.
+        }
+        root.dataset.theme = theme;
+        root.dataset.colorScheme = scheme;
+      })();
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

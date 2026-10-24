@@ -1,0 +1,415 @@
+/*
+ * Color schemes.
+ *
+ * ProseCraft keeps its original palette in the main page stylesheet. Every
+ * other scheme provides a small set of primitives for light and dark mode;
+ * the shared mapping below turns those into the app's semantic tokens.
+ */
+
+/* Nord — light */
+html[data-color-scheme="nord"][data-theme="light"] {
+  --p-base0: #eceff4;
+  --p-base1: #e5e9f0;
+  --p-base2: #f8f9fb;
+  --p-base3: #ffffff;
+  --p-fg-strong: #2e3440;
+  --p-fg: #3b4252;
+  --p-fg-muted: #5f6b7a;
+  --p-fg-faint: #8a94a3;
+  --p-accent: #5e81ac;
+  --p-accent-soft: #81a1c1;
+  --p-accent-strong: #5e81ac;
+  --p-accent-strong-hover: #4c6f99;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #dfe5ec;
+  --p-selected-text: #3b5f8a;
+  --p-danger: #bf616a;
+  --p-warning: #9a7400;
+  --p-success: #4f7a4a;
+  --p-scrollbar: #c8d0dc;
+  --p-shadow-rgb: 46, 52, 64;
+  --p-preview-shadow-alpha: 0.12;
+}
+
+/* Nord — dark */
+html[data-color-scheme="nord"][data-theme="dark"] {
+  --p-base0: #2e3440;
+  --p-base1: #262b34;
+  --p-base2: #343b48;
+  --p-base3: #3b4252;
+  --p-fg-strong: #eceff4;
+  --p-fg: #d8dee9;
+  --p-fg-muted: #a3adbd;
+  --p-fg-faint: #7f8b9e;
+  --p-accent: #88c0d0;
+  --p-accent-soft: #81a1c1;
+  --p-accent-strong: #5e81ac;
+  --p-accent-strong-hover: #4c6f99;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #3b4a5e;
+  --p-selected-text: #d8e5f0;
+  --p-danger: #bf616a;
+  --p-warning: #ebcb8b;
+  --p-success: #a3be8c;
+  --p-scrollbar: #4c566a;
+  --p-shadow-rgb: 0, 0, 0;
+  --p-preview-shadow-alpha: 0.45;
+}
+
+/* Gruvbox — light */
+html[data-color-scheme="gruvbox"][data-theme="light"] {
+  --p-base0: #fbf1c7;
+  --p-base1: #f2e5bc;
+  --p-base2: #f9f0d0;
+  --p-base3: #fffaf0;
+  --p-fg-strong: #3c3836;
+  --p-fg: #504945;
+  --p-fg-muted: #7c6f64;
+  --p-fg-faint: #a89984;
+  --p-accent: #79740e;
+  --p-accent-soft: #b8bb26;
+  --p-accent-strong: #79740e;
+  --p-accent-strong-hover: #5f5a08;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #e8d9a8;
+  --p-selected-text: #5f5a08;
+  --p-danger: #9d0006;
+  --p-warning: #b57614;
+  --p-success: #6f7d00;
+  --p-scrollbar: #d5c4a1;
+  --p-shadow-rgb: 60, 56, 54;
+  --p-preview-shadow-alpha: 0.12;
+}
+
+/* Gruvbox — dark */
+html[data-color-scheme="gruvbox"][data-theme="dark"] {
+  --p-base0: #282828;
+  --p-base1: #1d2021;
+  --p-base2: #32302f;
+  --p-base3: #3c3836;
+  --p-fg-strong: #fbf1c7;
+  --p-fg: #ebdbb2;
+  --p-fg-muted: #bdae93;
+  --p-fg-faint: #a89984;
+  --p-accent: #b8bb26;
+  --p-accent-soft: #d79921;
+  --p-accent-strong: #b8bb26;
+  --p-accent-strong-hover: #a9ac1f;
+  --p-accent-contrast: #282828;
+  --p-selected-bg: #4a4632;
+  --p-selected-text: #f0e6c8;
+  --p-danger: #fb4934;
+  --p-warning: #fabd2f;
+  --p-success: #b8bb26;
+  --p-scrollbar: #665c54;
+  --p-shadow-rgb: 0, 0, 0;
+  --p-preview-shadow-alpha: 0.45;
+}
+
+/* Solarized — light */
+html[data-color-scheme="solarized"][data-theme="light"] {
+  --p-base0: #fdf6e3;
+  --p-base1: #eee8d5;
+  --p-base2: #f7f0dd;
+  --p-base3: #fffaf0;
+  --p-fg-strong: #073642;
+  --p-fg: #586e75;
+  --p-fg-muted: #657b83;
+  --p-fg-faint: #93a1a1;
+  --p-accent: #268bd2;
+  --p-accent-soft: #7aa6c2;
+  --p-accent-strong: #268bd2;
+  --p-accent-strong-hover: #1a6fa8;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #e8e2ca;
+  --p-selected-text: #1a6fa8;
+  --p-danger: #dc322f;
+  --p-warning: #b58900;
+  --p-success: #859900;
+  --p-scrollbar: #d3cbb4;
+  --p-shadow-rgb: 0, 43, 54;
+  --p-preview-shadow-alpha: 0.12;
+}
+
+/* Solarized — dark */
+html[data-color-scheme="solarized"][data-theme="dark"] {
+  --p-base0: #002b36;
+  --p-base1: #00252f;
+  --p-base2: #073642;
+  --p-base3: #0b3f4d;
+  --p-fg-strong: #fdf6e3;
+  --p-fg: #93a1a1;
+  --p-fg-muted: #839496;
+  --p-fg-faint: #657b83;
+  --p-accent: #268bd2;
+  --p-accent-soft: #2aa198;
+  --p-accent-strong: #268bd2;
+  --p-accent-strong-hover: #1a6fa8;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #0d4a5c;
+  --p-selected-text: #b8e0e8;
+  --p-danger: #dc322f;
+  --p-warning: #b58900;
+  --p-success: #859900;
+  --p-scrollbar: #0d4a5c;
+  --p-shadow-rgb: 0, 0, 0;
+  --p-preview-shadow-alpha: 0.5;
+}
+
+/* Catppuccin Latte — light */
+html[data-color-scheme="catppuccin"][data-theme="light"] {
+  --p-base0: #eff1f5;
+  --p-base1: #e6e9ef;
+  --p-base2: #f7f8fa;
+  --p-base3: #ffffff;
+  --p-fg-strong: #4c4f69;
+  --p-fg: #5c5f77;
+  --p-fg-muted: #6c6f85;
+  --p-fg-faint: #9ca0b0;
+  --p-accent: #8839ef;
+  --p-accent-soft: #b79bea;
+  --p-accent-strong: #8839ef;
+  --p-accent-strong-hover: #7429d4;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #e4dcf7;
+  --p-selected-text: #6c2bd9;
+  --p-danger: #d20f39;
+  --p-warning: #df8e1d;
+  --p-success: #40a02b;
+  --p-scrollbar: #ccd0da;
+  --p-shadow-rgb: 76, 79, 105;
+  --p-preview-shadow-alpha: 0.12;
+}
+
+/* Catppuccin Mocha — dark */
+html[data-color-scheme="catppuccin"][data-theme="dark"] {
+  --p-base0: #1e1e2e;
+  --p-base1: #181825;
+  --p-base2: #313244;
+  --p-base3: #45475a;
+  --p-fg-strong: #f5f5ff;
+  --p-fg: #cdd6f4;
+  --p-fg-muted: #a6adc8;
+  --p-fg-faint: #7f849c;
+  --p-accent: #cba6f7;
+  --p-accent-soft: #b4befe;
+  --p-accent-strong: #cba6f7;
+  --p-accent-strong-hover: #b4befe;
+  --p-accent-contrast: #1e1e2e;
+  --p-selected-bg: #3d3552;
+  --p-selected-text: #e6dcff;
+  --p-danger: #f38ba8;
+  --p-warning: #f9e2af;
+  --p-success: #a6e3a1;
+  --p-scrollbar: #585b70;
+  --p-shadow-rgb: 0, 0, 0;
+  --p-preview-shadow-alpha: 0.5;
+}
+
+/* Everforest — light */
+html[data-color-scheme="everforest"][data-theme="light"] {
+  --p-base0: #fdf6e3;
+  --p-base1: #f6f0d9;
+  --p-base2: #efebd4;
+  --p-base3: #fffdf5;
+  --p-fg-strong: #3d484d;
+  --p-fg: #5c6a72;
+  --p-fg-muted: #829181;
+  --p-fg-faint: #a6b0a0;
+  --p-accent: #8da101;
+  --p-accent-soft: #a7c080;
+  --p-accent-strong: #6f7d00;
+  --p-accent-strong-hover: #5d6a00;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #e6e5c8;
+  --p-selected-text: #6f7d00;
+  --p-danger: #f85552;
+  --p-warning: #dfa000;
+  --p-success: #8da101;
+  --p-scrollbar: #d8d3b9;
+  --p-shadow-rgb: 92, 106, 114;
+  --p-preview-shadow-alpha: 0.12;
+}
+
+/* Everforest — dark */
+html[data-color-scheme="everforest"][data-theme="dark"] {
+  --p-base0: #2d353b;
+  --p-base1: #232a2e;
+  --p-base2: #343f44;
+  --p-base3: #3d484d;
+  --p-fg-strong: #f0ead2;
+  --p-fg: #d3c6aa;
+  --p-fg-muted: #a7b39a;
+  --p-fg-faint: #859289;
+  --p-accent: #a7c080;
+  --p-accent-soft: #83c092;
+  --p-accent-strong: #a7c080;
+  --p-accent-strong-hover: #8fae63;
+  --p-accent-contrast: #2d353b;
+  --p-selected-bg: #425047;
+  --p-selected-text: #d3e6b8;
+  --p-danger: #e67e80;
+  --p-warning: #dbbc7f;
+  --p-success: #83c092;
+  --p-scrollbar: #475258;
+  --p-shadow-rgb: 0, 0, 0;
+  --p-preview-shadow-alpha: 0.45;
+}
+
+/* Rosé Pine Dawn — light */
+html[data-color-scheme="rose-pine"][data-theme="light"] {
+  --p-base0: #faf4ed;
+  --p-base1: #f2e9e1;
+  --p-base2: #fffaf3;
+  --p-base3: #fffdf9;
+  --p-fg-strong: #575279;
+  --p-fg: #625d7e;
+  --p-fg-muted: #797593;
+  --p-fg-faint: #9893a5;
+  --p-accent: #907aa9;
+  --p-accent-soft: #b8a3cd;
+  --p-accent-strong: #907aa9;
+  --p-accent-strong-hover: #7a6593;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #ece2ec;
+  --p-selected-text: #6f5a89;
+  --p-danger: #b4637a;
+  --p-warning: #ea9d34;
+  --p-success: #286983;
+  --p-scrollbar: #dfdad9;
+  --p-shadow-rgb: 87, 82, 121;
+  --p-preview-shadow-alpha: 0.12;
+}
+
+/* Rosé Pine — dark */
+html[data-color-scheme="rose-pine"][data-theme="dark"] {
+  --p-base0: #191724;
+  --p-base1: #1f1d2e;
+  --p-base2: #26233a;
+  --p-base3: #2a273f;
+  --p-fg-strong: #e0def4;
+  --p-fg: #e0def4;
+  --p-fg-muted: #908caa;
+  --p-fg-faint: #6e6a86;
+  --p-accent: #c4a7e7;
+  --p-accent-soft: #ebbcba;
+  --p-accent-strong: #c4a7e7;
+  --p-accent-strong-hover: #b18bd8;
+  --p-accent-contrast: #191724;
+  --p-selected-bg: #34314a;
+  --p-selected-text: #e6dcff;
+  --p-danger: #eb6f92;
+  --p-warning: #f6c177;
+  --p-success: #9ccfd8;
+  --p-scrollbar: #403d52;
+  --p-shadow-rgb: 0, 0, 0;
+  --p-preview-shadow-alpha: 0.5;
+}
+
+/* Dracula Alucard — light */
+html[data-color-scheme="dracula"][data-theme="light"] {
+  --p-base0: #f5f5f5;
+  --p-base1: #ebebeb;
+  --p-base2: #ffffff;
+  --p-base3: #ffffff;
+  --p-fg-strong: #1f1f1f;
+  --p-fg: #3b3b3b;
+  --p-fg-muted: #6c664b;
+  --p-fg-faint: #9a9a9a;
+  --p-accent: #644ac9;
+  --p-accent-soft: #a89de0;
+  --p-accent-strong: #644ac9;
+  --p-accent-strong-hover: #533bb0;
+  --p-accent-contrast: #ffffff;
+  --p-selected-bg: #e2def5;
+  --p-selected-text: #533bb0;
+  --p-danger: #cb3a2a;
+  --p-warning: #846e15;
+  --p-success: #14710a;
+  --p-scrollbar: #d4d4d4;
+  --p-shadow-rgb: 31, 31, 31;
+  --p-preview-shadow-alpha: 0.12;
+}
+
+/* Dracula — dark */
+html[data-color-scheme="dracula"][data-theme="dark"] {
+  --p-base0: #282a36;
+  --p-base1: #21222c;
+  --p-base2: #343746;
+  --p-base3: #44475a;
+  --p-fg-strong: #f8f8f2;
+  --p-fg: #f8f8f2;
+  --p-fg-muted: #b8b9c8;
+  --p-fg-faint: #8a8fa8;
+  --p-accent: #bd93f9;
+  --p-accent-soft: #ff79c6;
+  --p-accent-strong: #bd93f9;
+  --p-accent-strong-hover: #a97ef0;
+  --p-accent-contrast: #282a36;
+  --p-selected-bg: #44475a;
+  --p-selected-text: #f8f8f2;
+  --p-danger: #ff5555;
+  --p-warning: #f1fa8c;
+  --p-success: #50fa7b;
+  --p-scrollbar: #44475a;
+  --p-shadow-rgb: 0, 0, 0;
+  --p-preview-shadow-alpha: 0.5;
+}
+
+/*
+ * Shared mapping. ProseCraft keeps its explicit values from the main
+ * stylesheet, so it is excluded here.
+ */
+html[data-color-scheme]:not([data-color-scheme="prosecraft"])[data-theme] {
+  --page-bg: var(--p-base0);
+  --sidebar-bg: var(--p-base1);
+  --surface: var(--p-base2);
+  --surface-raised: var(--p-base3);
+  --border: color-mix(in srgb, var(--p-fg) 14%, var(--p-base1));
+  --border-soft: color-mix(in srgb, var(--p-fg) 9%, var(--p-base1));
+  --border-control: color-mix(in srgb, var(--p-fg) 22%, var(--p-base1));
+  --text-primary: var(--p-fg);
+  --text-heading: var(--p-fg-strong);
+  --text-body: color-mix(in srgb, var(--p-fg) 88%, var(--p-base0));
+  --text-secondary: var(--p-fg-muted);
+  --text-nav: color-mix(in srgb, var(--p-fg) 82%, var(--p-base0));
+  --text-muted: var(--p-fg-muted);
+  --text-faint: var(--p-fg-faint);
+  --hover-bg: color-mix(in srgb, var(--p-accent) 7%, var(--p-base1));
+  --selected-bg: var(--p-selected-bg);
+  --selected-text: var(--p-selected-text);
+  --control-bg: var(--p-base2);
+  --control-hover: color-mix(in srgb, var(--p-accent) 8%, var(--p-base2));
+  --toolbar-hover: color-mix(in srgb, var(--p-accent) 12%, var(--p-base2));
+  --tree-divider: color-mix(in srgb, var(--p-fg) 12%, var(--p-base1));
+  --eyebrow: var(--p-accent);
+  --quote: var(--p-fg-muted);
+  --link: color-mix(in srgb, var(--p-accent) 80%, var(--p-fg-strong));
+  --link-underline: color-mix(in srgb, var(--p-accent) 45%, var(--p-base1));
+  --accent: var(--p-accent);
+  --accent-soft: var(--p-accent-soft);
+  --accent-ring: color-mix(in srgb, var(--p-accent) 25%, transparent);
+  --accent-strong: var(--p-accent-strong);
+  --accent-strong-hover: var(--p-accent-strong-hover);
+  --accent-contrast: var(--p-accent-contrast);
+  --danger: var(--p-danger);
+  --warning: var(--p-warning);
+  --success: var(--p-success);
+  --scrollbar: var(--p-scrollbar);
+  --shadow-soft: 0 2px 5px rgba(var(--p-shadow-rgb), 0.03);
+  --shadow-card: 0 3px 9px rgba(var(--p-shadow-rgb), 0.03);
+  --shadow-panel: 12px 0 28px rgba(var(--p-shadow-rgb), 0.07);
+  --shadow-panel-left: -12px 0 28px rgba(var(--p-shadow-rgb), 0.07);
+  --shadow-dialog: 0 22px 70px rgba(var(--p-shadow-rgb), 0.32);
+  --shadow-preview-frame: 0 14px 34px rgba(var(--p-shadow-rgb), 0.07);
+  --shadow-preview-page: 0 14px 38px rgba(var(--p-shadow-rgb), var(--p-preview-shadow-alpha));
+  --backdrop: rgba(var(--p-shadow-rgb), 0.5);
+  --heat-1: color-mix(in srgb, var(--p-accent-strong) 18%, var(--p-base1));
+  --heat-2: color-mix(in srgb, var(--p-accent-strong) 42%, var(--p-base1));
+  --heat-3: color-mix(in srgb, var(--p-accent-strong) 70%, var(--p-base1));
+  --heat-4: var(--p-accent-strong);
+  --heat-text-1: var(--p-fg-strong);
+  --heat-text-2: var(--p-fg-strong);
+  --heat-text-3: var(--p-accent-contrast);
+  --heat-text-4: var(--p-accent-contrast);
+}
