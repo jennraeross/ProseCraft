@@ -1,12 +1,18 @@
 # ProseCraft
 ## Outline. Write. Publish.
 
+![Writing Screen](<Screenshots/1.26.57 PM.png>)
+
 ### Overview
 Prosecraft is a novel-writing app, with tools for outlining, storyboarding, and organizing your writing. When you feel your project is ready, export it into a variety of formats with granular control.
 
 This application is built with AI, on a base of Tauri, Typescript, and Svelte.
 
 To build it yourself, clone the repo, enter it's directory and run `npm install && npm run tauri build`
+
+![Outlining](<Screenshots/1.27.03 PM.png>)
+![Storyboarding](<Screenshots/1.27.36 PM.png>)
+![Publishing](<Screenshots/1.27.58 PM.png>)
 
 ### Roadmap
 
