@@ -22,7 +22,7 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Chapter and Scene based organization
 - [x] Trash with restoration
 - [x] Optional Markdown source editor
-- [ ] Image support
+- [x] Image support
 - [x] Character templates
 - [x] Place templates
 - [x] Folders for notes
