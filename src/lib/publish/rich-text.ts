@@ -11,11 +11,12 @@ export type InlineRun = InlineStyle & {
   lineBreak?: boolean;
 };
 
-export type BlockKind = "paragraph" | "heading" | "quote" | "list";
+export type BlockKind = "paragraph" | "heading" | "quote" | "list" | "image";
 
 export type Block = {
   kind: BlockKind;
   runs: InlineRun[];
+  image?: { src: string; alt: string; width?: number; height?: number };
   level?: number;
   marker?: string;
   eyebrow?: boolean;
@@ -72,6 +73,27 @@ function blockRuns(node: Node): InlineRun[] {
   return trimRuns(runs);
 }
 
+function splitAroundImages(node: Node): Node[] {
+  if (!(node instanceof HTMLElement)) return [node.cloneNode()];
+  if (node.tagName === "IMG") return [node.cloneNode(true)];
+
+  const parts: Node[] = [];
+  let current = node.cloneNode(false) as HTMLElement;
+  for (const child of Array.from(node.childNodes)) {
+    for (const part of splitAroundImages(child)) {
+      if (part instanceof HTMLElement && part.tagName === "IMG") {
+        if (current.hasChildNodes()) parts.push(current);
+        parts.push(part);
+        current = node.cloneNode(false) as HTMLElement;
+      } else {
+        current.append(part);
+      }
+    }
+  }
+  if (current.hasChildNodes()) parts.push(current);
+  return parts;
+}
+
 export function blocksFromHtml(html: string): Block[] {
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const blocks: Block[] = [];
@@ -86,6 +108,36 @@ export function blocksFromHtml(html: string): Block[] {
       return;
     }
     if (!(node instanceof HTMLElement)) return;
+    if (node.querySelector("img")) {
+      for (const part of splitAroundImages(node)) {
+        if (part instanceof HTMLElement && part.tagName === "IMG") {
+          const src = part.getAttribute("src") ?? "";
+          if (!/^data:image\/(?:png|jpeg|webp);base64,/.test(src)) continue;
+          const width = Number(part.getAttribute("width"));
+          const height = Number(part.getAttribute("height"));
+          blocks.push({
+            kind: "image",
+            runs: [],
+            image: {
+              src,
+              alt: part.getAttribute("alt") ?? "",
+              ...(Number.isFinite(width) && width > 0 ? { width } : {}),
+              ...(Number.isFinite(height) && height > 0 ? { height } : {})
+            }
+          });
+        } else {
+          addNode(part);
+        }
+      }
+      return;
+    }
+    if (node.tagName === "IMG") {
+      const src = node.getAttribute("src") ?? "";
+      if (/^data:image\/(?:png|jpeg|webp);base64,/.test(src)) {
+        blocks.push({ kind: "image", runs: [], image: { src, alt: node.getAttribute("alt") ?? "" } });
+      }
+      return;
+    }
 
     switch (node.tagName) {
       case "H1":

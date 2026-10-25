@@ -1,7 +1,9 @@
 const safeTags = new Set([
-  "A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "H1", "H2", "H3", "I", "LI",
-  "OL", "P", "S", "STRIKE", "STRONG", "U", "UL"
+  "A", "B", "BLOCKQUOTE", "BR", "CODE", "DEL", "DIV", "EM", "H1", "H2", "H3", "HR", "I",
+  "IMG", "LI", "OL", "P", "PRE", "S", "STRIKE", "STRONG", "TABLE", "TBODY", "TD", "TH",
+  "THEAD", "TR", "U", "UL"
 ]);
+const MAX_EMBEDDED_IMAGE_BYTES = 1_500_000;
 
 function cleanNode(node: Node): Node | null {
   if (node.nodeType === Node.TEXT_NODE) return node.cloneNode();
@@ -16,7 +18,9 @@ function cleanNode(node: Node): Node | null {
     return fragment;
   }
 
-  const clean = document.createElement(node.tagName === "STRIKE" ? "s" : node.tagName.toLowerCase());
+  const clean = document.createElement(
+    node.tagName === "STRIKE" || node.tagName === "DEL" ? "s" : node.tagName.toLowerCase()
+  );
   if (node.tagName === "P" && node.classList.contains("eyebrow")) {
     clean.classList.add("eyebrow");
   }
@@ -30,6 +34,19 @@ function cleanNode(node: Node): Node | null {
         }
       } catch {
         // Invalid links are kept as plain text.
+      }
+    }
+  }
+  if (node.tagName === "IMG") {
+    const src = node.getAttribute("src") ?? "";
+    const encodedImage = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(src);
+    if (!encodedImage || encodedImage[1].length > Math.ceil(MAX_EMBEDDED_IMAGE_BYTES / 3) * 4) return null;
+    clean.setAttribute("src", src);
+    clean.setAttribute("alt", (node.getAttribute("alt") ?? "").slice(0, 500));
+    for (const dimension of ["width", "height"]) {
+      const value = Number(node.getAttribute(dimension));
+      if (Number.isInteger(value) && value > 0 && value <= 2400) {
+        clean.setAttribute(dimension, String(value));
       }
     }
   }

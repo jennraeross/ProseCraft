@@ -8,6 +8,7 @@ export function autoResize(node: HTMLTextAreaElement, value?: string) {
   let lastWidth = node.clientWidth;
 
   function resize() {
+    if (!node.isConnected || node.getClientRects().length === 0) return;
     node.style.height = "auto";
     node.style.height = `${node.scrollHeight}px`;
   }
@@ -34,6 +35,12 @@ export function autoResize(node: HTMLTextAreaElement, value?: string) {
       schedule();
     });
   if (parent) observer?.observe(parent);
+  const visibilityObserver = typeof IntersectionObserver === "undefined"
+    ? null
+    : new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) schedule();
+    });
+  visibilityObserver?.observe(node);
 
   return {
     update() {
@@ -42,6 +49,7 @@ export function autoResize(node: HTMLTextAreaElement, value?: string) {
     destroy() {
       node.removeEventListener("input", schedule);
       observer?.disconnect();
+      visibilityObserver?.disconnect();
       if (frame) cancelAnimationFrame(frame);
       node.style.height = "";
     }

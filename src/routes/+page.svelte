@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { markdown } from "@codemirror/lang-markdown";
+  import { EditorState, type Range as DecorationRange } from "@codemirror/state";
+  import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+  import { tags } from "@lezer/highlight";
+  import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from "@codemirror/view";
   import "@fontsource-variable/bitter/wght.css";
   import "@fontsource-variable/literata/wght.css";
   import "@fontsource/ibm-plex-serif/latin-400.css";
@@ -17,6 +22,7 @@
     chapterLabel as formatChapterLabel,
     isAutomaticallyNumberedChapter as isAutoNumberedChapter
   } from "$lib/publish/chapters";
+  import { htmlToMarkdown, markdownToHtml } from "$lib/publish/markdown";
   import {
     defaultPublishOptions,
     emptyCharacterSheet,
@@ -64,7 +70,9 @@
   const themeStorageKey = "prosecraft-theme";
   const colorSchemeStorageKey = "prosecraft-color-scheme";
   const fontStorageKey = "prosecraft-editor-font";
+  const markdownFontStorageKey = "prosecraft-markdown-editor-font";
   const scaleStorageKey = "prosecraft-editor-scale";
+  const markdownEditorStorageKey = "prosecraft-markdown-editor-enabled";
   const goalsStorageKey = "prosecraft-writing-goals";
   const activityStorageKey = "prosecraft-writing-activity";
   const projectSettingsStorageKey = "prosecraft-project-settings";
@@ -78,6 +86,7 @@
   const spaces = SPACE_NAMES;
   type ThemePreference = "system" | "light" | "dark";
   type FontPreference = "serif" | "sans" | "mono" | "bitter" | "literata" | "ibm-plex-serif" | "ibm-plex-sans";
+  type MarkdownFontPreference = "sf-mono" | "menlo" | "monaco" | "courier";
   const spaceNouns: Record<SpaceName, string> = {
     Characters: "character",
     Places: "place",
@@ -203,8 +212,20 @@
   let themePreference = $state<ThemePreference>("system");
   let resolvedTheme = $state<"light" | "dark">("light");
   let colorScheme = $state<ColorScheme>("prosecraft");
-  let fontPreference = $state<FontPreference>("serif");
+  let richTextFontPreference = $state<FontPreference>("serif");
+  let markdownFontPreference = $state<MarkdownFontPreference>("sf-mono");
   let editorScale = $state(100);
+  let markdownEditorEnabled = $state(false);
+  let markdownEditorMode = $state(false);
+  let markdownSource = $state("");
+  let markdownEditorHost = $state<HTMLDivElement>();
+  let markdownCodeEditor: EditorView | undefined;
+  let selectedEditorImage = $state<HTMLImageElement | null>(null);
+  let imageFileInput = $state<HTMLInputElement>();
+  let imageDropActive = $state(false);
+  let imageInsertError = $state("");
+  let pendingImageRange: Range | null = null;
+  let pendingMarkdownImagePosition: number | null = null;
   let preferencesSaved = $state(true);
   let projectSettingsSaved = $state(true);
   let projectName = $state("Untitled Project");
@@ -258,6 +279,95 @@
   });
   let activeDocumentId = $state("welcome");
   let activeDocument = $derived(documents.find((doc) => doc.id === activeDocumentId));
+  class EmbeddedImageWidget extends WidgetType {
+    toDOM() {
+      const element = document.createElement("span");
+      element.className = "markdown-image-placeholder";
+      element.textContent = "embedded image";
+      element.setAttribute("aria-label", "Embedded image data");
+      return element;
+    }
+  }
+  const embeddedImageAbbreviation = ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+
+      constructor(view: EditorView) {
+        this.decorations = this.buildDecorations(view);
+      }
+
+      update(update: ViewUpdate) {
+        if (update.docChanged) this.decorations = this.buildDecorations(update.view);
+      }
+
+      buildDecorations(view: EditorView): DecorationSet {
+        const text = view.state.doc.toString();
+        const ranges: DecorationRange<Decoration>[] = [];
+        const pattern = /data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}/g;
+        for (const match of text.matchAll(pattern)) {
+          const from = match.index;
+          if (from === undefined) continue;
+          ranges.push(Decoration.replace({ widget: new EmbeddedImageWidget() }).range(from, from + match[0].length));
+        }
+        return Decoration.set(ranges, true);
+      }
+    },
+    { decorations: (plugin) => plugin.decorations }
+  );
+  $effect(() => {
+    if (!markdownEditorMode || !markdownEditorHost) return;
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: untrack(() => markdownSource),
+        extensions: [
+          markdown(),
+          embeddedImageAbbreviation,
+          syntaxHighlighting(HighlightStyle.define([
+            { tag: tags.heading, color: "var(--text-heading)", fontWeight: "600" },
+            { tag: tags.heading1, color: "var(--accent)", fontWeight: "700" },
+            { tag: tags.strong, fontWeight: "700" },
+            { tag: tags.emphasis, fontStyle: "italic" },
+            { tag: tags.strikethrough, textDecoration: "line-through" },
+            { tag: tags.link, color: "var(--link)", textDecoration: "underline" },
+            { tag: tags.url, color: "var(--text-muted)" },
+            { tag: tags.quote, color: "var(--quote)", fontStyle: "italic" },
+            { tag: tags.list, color: "var(--accent)" },
+            {
+              tag: tags.monospace,
+              color: "var(--selected-text)",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              backgroundColor: "var(--surface-raised)"
+            }
+          ])),
+          EditorView.lineWrapping,
+          EditorView.theme({
+            "&": {
+              minHeight: "430px",
+              backgroundColor: "transparent",
+              color: "var(--text-body)"
+            },
+            "&.cm-focused": { outline: "none" },
+            ".cm-scroller": { overflow: "visible", lineHeight: "1.85" },
+            ".cm-content": { minHeight: "430px", padding: "37px 1px 35px" },
+            ".cm-line": { padding: "0" },
+            ".cm-gutters": { display: "none" },
+            ".cm-cursor": { borderLeftColor: "var(--text-primary)" }
+          }),
+          EditorView.updateListener.of(({ docChanged, state }) => {
+            if (!docChanged) return;
+            markdownSource = state.doc.toString();
+            handleMarkdownInput();
+          })
+        ]
+      }),
+      parent: markdownEditorHost
+    });
+    markdownCodeEditor = view;
+    return () => {
+      view.destroy();
+      if (markdownCodeEditor === view) markdownCodeEditor = undefined;
+    };
+  });
   let noteTreeItems = $derived.by(() => {
     const items: NoteTreeItem[] = [];
     const notes = documents.filter((doc) => doc.space === "Notes" && !doc.trashed);
@@ -457,10 +567,12 @@
       activeDocumentId = active.id;
       title = active.title;
       editor.innerHTML = active.content;
+      setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
     } else {
       activeDocumentId = "";
       title = "";
       editor.innerHTML = "<p><br></p>";
+      setMarkdownSource("");
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
@@ -553,8 +665,10 @@
     try {
       localStorage.setItem(themeStorageKey, themePreference);
       localStorage.setItem(colorSchemeStorageKey, colorScheme);
-      localStorage.setItem(fontStorageKey, fontPreference);
+      localStorage.setItem(fontStorageKey, richTextFontPreference);
+      localStorage.setItem(markdownFontStorageKey, markdownFontPreference);
       localStorage.setItem(scaleStorageKey, String(editorScale));
+      localStorage.setItem(markdownEditorStorageKey, String(markdownEditorEnabled));
       preferencesSaved = true;
     } catch {
       preferencesSaved = false;
@@ -574,9 +688,15 @@
     savePreferences();
   }
 
-  function setFontPreference(value: FontPreference) {
-    fontPreference = value;
+  function setRichTextFontPreference(value: FontPreference) {
+    richTextFontPreference = value;
     document.documentElement.dataset.editorFont = value;
+    savePreferences();
+  }
+
+  function setMarkdownFontPreference(value: MarkdownFontPreference) {
+    markdownFontPreference = value;
+    document.documentElement.dataset.markdownFont = value;
     savePreferences();
   }
 
@@ -590,9 +710,22 @@
       || value === "ibm-plex-sans";
   }
 
+  function isMarkdownFontPreference(value: string | null): value is MarkdownFontPreference {
+    return value === "sf-mono"
+      || value === "menlo"
+      || value === "monaco"
+      || value === "courier";
+  }
+
   function setEditorScale(value: number) {
     editorScale = value;
     document.documentElement.style.setProperty("--editor-scale", String(value / 100));
+    savePreferences();
+  }
+
+  function setMarkdownEditorEnabled(enabled: boolean) {
+    if (!enabled && markdownEditorMode) switchToRichTextEditor();
+    markdownEditorEnabled = enabled;
     savePreferences();
   }
 
@@ -998,6 +1131,309 @@
     await tick();
   }
 
+  function switchToMarkdownEditor() {
+    if (!markdownEditorEnabled || markdownEditorMode) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const active = documents.find((doc) => doc.id === activeDocumentId);
+    setMarkdownSource(active?.markdownSource ?? htmlToMarkdown(editor.innerHTML));
+    selectEditorImage(null);
+    markdownEditorMode = true;
+  }
+
+  function switchToRichTextEditor() {
+    if (!markdownEditorMode) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    const html = cleanHtml(markdownToHtml(markdownSource));
+    editor.innerHTML = html;
+    documents = documents.map((doc) => doc.id === activeDocumentId
+      ? { ...doc, content: html, markdownSource }
+      : doc);
+    markdownEditorMode = false;
+    refreshCounts();
+    lastEditorWordCount = wordCount;
+    persistNow();
+  }
+
+  function toggleEditorMode() {
+    if (markdownEditorMode) switchToRichTextEditor();
+    else switchToMarkdownEditor();
+  }
+
+  function handleMarkdownInput() {
+    const previousWordCount = lastEditorWordCount;
+    const html = cleanHtml(markdownToHtml(markdownSource));
+    documents = documents.map((doc) => doc.id === activeDocumentId
+      ? { ...doc, content: html, markdownSource }
+      : doc);
+    const text = new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
+    wordCount = text.trim().match(/\S+/g)?.length ?? 0;
+    characterCount = text.replace(/\n/g, "").length;
+    trackActivity(wordCount - previousWordCount);
+    lastEditorWordCount = wordCount;
+    persist();
+  }
+
+  const MAX_IMAGE_FILE_BYTES = 15_000_000;
+  const MAX_IMAGE_PIXELS = 50_000_000;
+  const MAX_EMBEDDED_IMAGE_BYTES = 1_500_000;
+  const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp"
+  };
+
+  function imageFiles(files: FileList | null | undefined): File[] {
+    return Array.from(files ?? []).filter((file) =>
+      file.type.startsWith("image/") || /\.(?:png|jpe?g|webp|gif|bmp|tiff?|avif|heic)$/i.test(file.name)
+    );
+  }
+
+  function isSupportedImage(file: File): boolean {
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    return ["image/png", "image/jpeg", "image/webp"].includes(file.type)
+      || (!file.type || file.type === "application/octet-stream" || file.type === "image/jpg")
+        && extension in IMAGE_MIME_BY_EXTENSION;
+  }
+
+  function markdownImagePosition(event?: DragEvent | ClipboardEvent): number | null {
+    const view = markdownCodeEditor;
+    if (!view) return null;
+    if (event instanceof DragEvent) {
+      return view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head;
+    }
+    return view.state.selection.main.head;
+  }
+
+  function editorRangeAtPoint(event?: DragEvent | ClipboardEvent): Range | null {
+    const selection = window.getSelection();
+    if (event instanceof DragEvent) {
+      const range = document.caretRangeFromPoint(event.clientX, event.clientY);
+      if (range && editor.contains(range.startContainer)) return range;
+    }
+    if (selection?.rangeCount && editor.contains(selection.anchorNode)) {
+      return selection.getRangeAt(0).cloneRange();
+    }
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    return range;
+  }
+
+  async function imageFileToDataUrl(file: File): Promise<string> {
+    if (!isSupportedImage(file)) throw new Error("Use a PNG, JPG, or WebP image.");
+    if (file.size > MAX_IMAGE_FILE_BYTES) throw new Error("Images must be 15 MB or smaller.");
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const source = !file.type || file.type === "application/octet-stream"
+      ? new Blob([file], { type: IMAGE_MIME_BY_EXTENSION[extension] })
+      : file;
+    const imageUrl = URL.createObjectURL(source);
+    const image = new Image();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("Could not decode that image."));
+        image.src = imageUrl;
+      });
+    } catch (error) {
+      URL.revokeObjectURL(imageUrl);
+      throw new Error("Could not read that image.", { cause: error });
+    }
+    try {
+      if (image.naturalWidth * image.naturalHeight > MAX_IMAGE_PIXELS) {
+        throw new Error("That image has too many pixels to insert.");
+      }
+      const scale = Math.min(1, 2400 / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Could not prepare that image.");
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      for (const quality of [0.82, 0.7, 0.58]) {
+        const dataUrl = canvas.toDataURL("image/webp", quality);
+        const base64 = dataUrl.split(",", 2)[1] ?? "";
+        if (dataUrl.startsWith("data:image/webp;base64,")
+          && base64.length <= Math.ceil(MAX_EMBEDDED_IMAGE_BYTES / 3) * 4) return dataUrl;
+      }
+      if (file.type === "image/jpeg" || /\.jpe?g$/i.test(file.name)) {
+        for (const quality of [0.82, 0.7, 0.58]) {
+          const dataUrl = canvas.toDataURL("image/jpeg", quality);
+          const base64 = dataUrl.split(",", 2)[1] ?? "";
+          if (dataUrl.startsWith("data:image/jpeg;base64,")
+            && base64.length <= Math.ceil(MAX_EMBEDDED_IMAGE_BYTES / 3) * 4) return dataUrl;
+        }
+      }
+      const pngDataUrl = canvas.toDataURL("image/png");
+      const pngBase64 = pngDataUrl.split(",", 2)[1] ?? "";
+      if (pngBase64.length <= Math.ceil(MAX_EMBEDDED_IMAGE_BYTES / 3) * 4) return pngDataUrl;
+      throw new Error("That image is too large after compression. Try a smaller image.");
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+    }
+  }
+
+  function insertRichTextImage(dataUrl: string, alt: string, range: Range | null) {
+    const target = range && editor.contains(range.startContainer)
+      ? range
+      : editorRangeAtPoint();
+    if (!target) return;
+    target.deleteContents();
+    const image = document.createElement("img");
+    image.src = dataUrl;
+    image.alt = alt;
+    target.insertNode(image);
+    selectEditorImage(image);
+    const lineBreak = document.createElement("br");
+    image.after(lineBreak);
+    target.setStartAfter(lineBreak);
+    target.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(target);
+    editor.focus();
+    image.scrollIntoView({ block: "nearest", inline: "nearest" });
+    handleInput();
+  }
+
+  function selectEditorImage(image: HTMLImageElement | null) {
+    selectedEditorImage?.classList.remove("selected-writing-image");
+    selectedEditorImage = image && editor.contains(image) ? image : null;
+    selectedEditorImage?.classList.add("selected-writing-image");
+  }
+
+  function handleEditorClick(event: MouseEvent) {
+    const target = event.target;
+    const image = target instanceof Element ? target.closest("img") : null;
+    selectEditorImage(image instanceof HTMLImageElement ? image : null);
+  }
+
+  function setSelectedImageWidth(percent: number | null) {
+    const image = selectedEditorImage;
+    if (!image || !editor.contains(image)) {
+      selectEditorImage(null);
+      return;
+    }
+    if (percent === null) {
+      image.removeAttribute("width");
+      image.removeAttribute("height");
+    } else {
+      const width = Math.round(editor.clientWidth * percent / 100);
+      const ratio = image.naturalHeight / image.naturalWidth;
+      image.setAttribute("width", String(width));
+      image.setAttribute("height", String(Math.round(width * ratio)));
+    }
+    handleInput();
+  }
+
+  function removeSelectedImage() {
+    const image = selectedEditorImage;
+    if (!image || !editor.contains(image)) {
+      selectEditorImage(null);
+      return;
+    }
+    image.remove();
+    selectEditorImage(null);
+    editor.focus();
+    handleInput();
+  }
+
+  function insertMarkdownImage(dataUrl: string, alt: string, position: number | null) {
+    const view = markdownCodeEditor;
+    if (!view) return;
+    const at = position ?? view.state.selection.main.head;
+    const safeAlt = alt.replace(/[\[\]\\\n\r]/g, " ").trim();
+    const insertion = `![${safeAlt}](${dataUrl})\n`;
+    view.dispatch({
+      changes: { from: at, insert: insertion },
+      selection: { anchor: at + insertion.length }
+    });
+    view.focus();
+  }
+
+  async function insertImageFiles(files: File[], range: Range | null, markdownPosition: number | null) {
+    const documentId = activeDocumentId;
+    if (files.some((file) => !isSupportedImage(file))) {
+      imageInsertError = "Use a PNG, JPG, or WebP image.";
+      return;
+    }
+    imageInsertError = "";
+    try {
+      for (const file of files) {
+        const dataUrl = await imageFileToDataUrl(file);
+        if (activeDocumentId !== documentId) return;
+        const alt = file.name.replace(/\.[^.]+$/, "").slice(0, 500);
+        if (markdownEditorMode) {
+          insertMarkdownImage(dataUrl, alt, markdownPosition);
+          if (markdownPosition !== null) markdownPosition += `![${alt}](${dataUrl})\n`.length;
+        } else {
+          insertRichTextImage(dataUrl, alt, range);
+          range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0).cloneRange() : null;
+        }
+      }
+    } catch (error) {
+      console.error("Could not insert image.", error);
+      imageInsertError = error instanceof Error ? error.message : "Could not insert that image.";
+    }
+  }
+
+  function handleImageDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    imageDropActive = true;
+  }
+
+  function handleImageDragLeave(event: DragEvent) {
+    const next = event.relatedTarget;
+    const currentTarget = event.currentTarget;
+    if (!(currentTarget instanceof HTMLElement) || !(next instanceof Node) || !currentTarget.contains(next)) imageDropActive = false;
+  }
+
+  function handleImageDrop(event: DragEvent) {
+    const files = imageFiles(event.dataTransfer?.files);
+    if (!files.length) return;
+    event.preventDefault();
+    imageDropActive = false;
+    const range = markdownEditorMode ? null : editorRangeAtPoint(event);
+    const position = markdownEditorMode ? markdownImagePosition(event) : null;
+    void insertImageFiles(files, range, position);
+  }
+
+  function handleImagePaste(event: ClipboardEvent) {
+    const files = imageFiles(event.clipboardData?.files);
+    if (!files.length) return;
+    event.preventDefault();
+    const range = markdownEditorMode ? null : editorRangeAtPoint(event);
+    const position = markdownEditorMode ? markdownImagePosition(event) : null;
+    void insertImageFiles(files, range, position);
+  }
+
+  function openImagePicker() {
+    imageInsertError = "";
+    pendingImageRange = markdownEditorMode ? null : editorRangeAtPoint();
+    pendingMarkdownImagePosition = markdownEditorMode ? markdownImagePosition() : null;
+    imageFileInput?.click();
+  }
+
+  function handleImagePickerChange(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = imageFiles(input.files);
+    input.value = "";
+    void insertImageFiles(files, pendingImageRange, pendingMarkdownImagePosition);
+    pendingImageRange = null;
+    pendingMarkdownImagePosition = null;
+  }
+
+  function setMarkdownSource(source: string) {
+    markdownSource = source;
+    const view = markdownCodeEditor;
+    if (view && view.state.doc.toString() !== source) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+    }
+  }
+
   function refreshCounts() {
     const text = editor?.innerText ?? "";
     const words = text.trim().match(/\S+/g) ?? [];
@@ -1069,8 +1505,11 @@
 
   function persistNow() {
     if (!editor) return;
+    const content = markdownEditorMode
+      ? cleanHtml(markdownToHtml(markdownSource))
+      : cleanHtml(editor.innerHTML);
     documents = documents.map((doc) => doc.id === activeDocumentId
-      ? { ...doc, title, content: cleanHtml(editor.innerHTML) }
+      ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
       : doc);
     try {
       persistProjectCollection();
@@ -1092,9 +1531,11 @@
     persistNow();
     const next = documents.find((doc) => doc.id === id && !doc.trashed);
     if (!next) return;
+    selectEditorImage(null);
     activeDocumentId = next.id;
     title = next.title;
     editor.innerHTML = cleanHtml(next.content);
+    setMarkdownSource(next.markdownSource ?? htmlToMarkdown(next.content));
     refreshCounts();
     lastEditorWordCount = wordCount;
   }
@@ -1121,6 +1562,7 @@
     activeDocumentId = next.id;
     title = next.title;
     editor.innerHTML = next.content;
+    setMarkdownSource("");
     refreshCounts();
     lastEditorWordCount = wordCount;
     persist();
@@ -1446,6 +1888,7 @@
     activeDocumentId = next.id;
     title = next.title;
     editor.innerHTML = next.content;
+    setMarkdownSource("");
     refreshCounts();
     lastEditorWordCount = wordCount;
     persist();
@@ -1537,6 +1980,7 @@
         activeDocumentId = "";
         title = "";
         editor.innerHTML = "<p><br></p>";
+        setMarkdownSource("");
         refreshCounts();
       }
     }
@@ -1559,6 +2003,7 @@
         activeDocumentId = "";
         title = "";
         editor.innerHTML = "<p><br></p>";
+        setMarkdownSource("");
         refreshCounts();
       }
     }
@@ -1580,6 +2025,11 @@
 
   function handleInput() {
     const previousWordCount = lastEditorWordCount;
+    documents = documents.map((doc) => {
+      if (doc.id !== activeDocumentId || doc.markdownSource === undefined) return doc;
+      const { markdownSource: _markdownSource, ...withoutMarkdownSource } = doc;
+      return withoutMarkdownSource;
+    });
     refreshCounts();
     trackActivity(wordCount - previousWordCount);
     lastEditorWordCount = wordCount;
@@ -1629,10 +2079,13 @@
       }
       const savedFont = localStorage.getItem(fontStorageKey);
       if (isFontPreference(savedFont)) {
-        fontPreference = savedFont;
+        richTextFontPreference = savedFont;
       }
+      const savedMarkdownFont = localStorage.getItem(markdownFontStorageKey);
+      if (isMarkdownFontPreference(savedMarkdownFont)) markdownFontPreference = savedMarkdownFont;
       const savedScale = Number(localStorage.getItem(scaleStorageKey));
       if ([80, 90, 100, 110, 120, 130, 140].includes(savedScale)) editorScale = savedScale;
+      markdownEditorEnabled = localStorage.getItem(markdownEditorStorageKey) === "true";
       const savedProjectSettings = localStorage.getItem(projectSettingsStorageKey);
       if (savedProjectSettings) {
         const parsed: unknown = JSON.parse(savedProjectSettings);
@@ -1683,7 +2136,8 @@
       ? (themeMediaQuery.matches ? "dark" : "light")
       : themePreference);
     applyColorScheme(colorScheme);
-    document.documentElement.dataset.editorFont = fontPreference;
+    document.documentElement.dataset.editorFont = richTextFontPreference;
+    document.documentElement.dataset.markdownFont = markdownFontPreference;
     document.documentElement.style.setProperty("--editor-scale", String(editorScale / 100));
 
     try {
@@ -1766,10 +2220,12 @@
         activeDocumentId = active.id;
         title = active.title;
         editor.innerHTML = active.content;
+        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
       } else {
         activeDocumentId = "";
         title = "";
         editor.innerHTML = "<p><br></p>";
+        setMarkdownSource("");
       }
       activeProjectId = crypto.randomUUID();
       projects = [currentProjectData()];
@@ -1780,6 +2236,7 @@
       chapters = [{ id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" }];
       documents = [{ id: "welcome", title, content: starterContent, chapterId: chapters[0].id }];
       editor.innerHTML = starterContent;
+      setMarkdownSource(htmlToMarkdown(starterContent));
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
@@ -2125,14 +2582,43 @@
         </div>
       </div>
       <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"}>
-      <div class="editor-column">
+      <div
+        class="editor-column"
+        class:image-drop-active={imageDropActive}
+        role="region"
+        aria-label="Writing editor. Drop images here to insert them."
+        ondragover={handleImageDragOver}
+        ondragleave={handleImageDragLeave}
+        ondrop={handleImageDrop}
+        onpaste={handleImagePaste}
+      >
+        <input
+          bind:this={imageFileInput}
+          class="data-file-input"
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          onchange={handleImagePickerChange}
+        />
         <div class="document-meta">
           <span>{locationLabel}</span>
           <span class="meta-divider"></span>
           <span class="document-type"><span class="type-mark">¶</span> {activeDocument?.space ? activeDocument.space.toUpperCase() : "SCENE"}</span>
           <span class="meta-divider"></span>
           <span>Edited today</span>
+          {#if markdownEditorEnabled}
+            <button
+              type="button"
+              class="markdown-mode-toggle"
+              aria-pressed={markdownEditorMode}
+              onclick={toggleEditorMode}
+            >{markdownEditorMode ? "Rich text editor" : "Markdown editor"}</button>
+          {/if}
+          <button type="button" class="markdown-mode-toggle image-insert-button" onclick={openImagePicker}>Insert image</button>
         </div>
+        {#if imageInsertError}
+          <p class="image-insert-error" role="status">{imageInsertError}</p>
+        {/if}
 
         <input
           class="title-input"
@@ -2159,7 +2645,7 @@
           />
         {/if}
 
-        {#if !isCharacterDocument && !isPlaceDocument}
+        {#if !isCharacterDocument && !isPlaceDocument && !markdownEditorMode}
         <div class="toolbar" role="toolbar" aria-label="Text formatting">
           <label class="sr-only" for="block-style">Text style</label>
           <select id="block-style" class="style-select" aria-label="Text style" onchange={changeBlock}>
@@ -2181,23 +2667,49 @@
           <button class="tool-button" aria-label="Add link" title="Add link" onpointerdown={(event) => event.preventDefault()} onclick={addLink}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m8.2 11.8 3.6-3.6m-5 5-1.2 1.2a2.55 2.55 0 0 1-3.6-3.6l3-3a2.55 2.55 0 0 1 3.6 0m2.2-2.6 1.2-1.2a2.55 2.55 0 0 1 3.6 3.6l-3 3a2.55 2.55 0 0 1-3.6 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
           <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("undo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M7.5 6 4 9.5 7.5 13M4.5 9.5h6a5 5 0 0 1 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <span class="toolbar-divider"></span>
+          <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.3" width="14.4" height="13.4" rx="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.4" r="1.4" stroke="currentColor" stroke-width="1.2"/><path d="m4.2 14.8 4-4 2.5 2.5 2-2 3.1 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
+        {/if}
+
+        {#if selectedEditorImage && !markdownEditorMode}
+          <div class="image-edit-toolbar" role="toolbar" aria-label="Selected image tools">
+            <span class="image-edit-label">Image size</span>
+            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(50)}>50%</button>
+            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(75)}>75%</button>
+            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(100)}>Fit width</button>
+            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(null)}>Original size</button>
+            <button type="button" class="remove-image-button" onpointerdown={(event) => event.preventDefault()} onclick={removeSelectedImage}>Remove image</button>
+          </div>
         {/if}
 
         {#if isCharacterDocument || isPlaceDocument}
           <h2 class="sheet-notes-title">Additional notes</h2>
         {/if}
 
+        {#if markdownEditorMode}
+          <div
+            bind:this={markdownEditorHost}
+            class="markdown-source-editor"
+            role="textbox"
+            aria-label="Markdown source"
+            aria-multiline="true"
+          ></div>
+        {/if}
         <div
           class="editor-content"
           class:sheet-notes={isCharacterDocument || isPlaceDocument}
+          class:editor-content-hidden={markdownEditorMode}
           bind:this={editor}
           contenteditable="true"
           role="textbox"
+          tabindex="0"
           aria-label="Document text"
           aria-multiline="true"
           spellcheck="true"
           oninput={handleInput}
+          onclick={handleEditorClick}
+          onkeydown={(event) => { if (event.key === "Escape") selectEditorImage(null); }}
         >{@html starterContent}</div>
 
         <footer class="editor-footer">
@@ -2500,9 +3012,17 @@
       </select>
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Editor font</strong><span>Choose a typeface for your writing</span></div>
-      <label class="preference-label" for="font-preference">Typeface</label>
-      <select id="font-preference" class="preference-select" value={fontPreference} onchange={(event) => setFontPreference((event.currentTarget as HTMLSelectElement).value as FontPreference)}>
+      <div class="preference-heading"><strong>Editor fonts</strong><span>Choose separate typefaces for each editor</span></div>
+      <label class="preference-label" for="rich-text-font-preference">Rich text editor</label>
+      <select
+        id="rich-text-font-preference"
+        class="preference-select"
+        value={richTextFontPreference}
+        onchange={(event) => {
+          const value = (event.currentTarget as HTMLSelectElement).value;
+          if (isFontPreference(value)) setRichTextFontPreference(value);
+        }}
+      >
         <option value="serif">Georgia</option>
         <option value="bitter">Bitter</option>
         <option value="literata">Literata</option>
@@ -2510,6 +3030,21 @@
         <option value="ibm-plex-sans">IBM Plex Sans</option>
         <option value="sans">System Sans Serif</option>
         <option value="mono">SF Mono</option>
+      </select>
+      <label class="preference-label markdown-font-label" for="markdown-font-preference">Markdown editor (monospace)</label>
+      <select
+        id="markdown-font-preference"
+        class="preference-select"
+        value={markdownFontPreference}
+        onchange={(event) => {
+          const value = (event.currentTarget as HTMLSelectElement).value;
+          if (isMarkdownFontPreference(value)) setMarkdownFontPreference(value);
+        }}
+      >
+        <option value="sf-mono">SF Mono</option>
+        <option value="menlo">Menlo</option>
+        <option value="monaco">Monaco</option>
+        <option value="courier">Courier New</option>
       </select>
     </section>
     <section class="preference-section">
@@ -2522,6 +3057,18 @@
           {/each}
         </select>
       </div>
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Markdown editor</strong><span>Enable an optional plain-text Markdown editor alongside rich text</span></div>
+      <label class="markdown-editor-toggle">
+        <input
+          type="checkbox"
+          checked={markdownEditorEnabled}
+          onchange={(event) => setMarkdownEditorEnabled((event.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>Enable Markdown editor</span>
+      </label>
+      <p class="markdown-editor-help">When enabled, use the Markdown editor button above a document to switch between Markdown source and rich text.</p>
     </section>
     <section class="preference-section">
       <div class="preference-heading"><strong>Data</strong><span>Back up or move your projects between devices</span></div>
@@ -2856,6 +3403,10 @@
   :global(html[data-editor-font="literata"]) { --editor-font: "Literata Variable", Georgia, serif; }
   :global(html[data-editor-font="ibm-plex-serif"]) { --editor-font: "IBM Plex Serif", Georgia, serif; }
   :global(html[data-editor-font="ibm-plex-sans"]) { --editor-font: "IBM Plex Sans", Inter, sans-serif; }
+  :global(html[data-markdown-font="sf-mono"]) { --markdown-editor-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+  :global(html[data-markdown-font="menlo"]) { --markdown-editor-font: Menlo, "SFMono-Regular", monospace; }
+  :global(html[data-markdown-font="monaco"]) { --markdown-editor-font: Monaco, "SFMono-Regular", monospace; }
+  :global(html[data-markdown-font="courier"]) { --markdown-editor-font: "Courier New", Courier, monospace; }
   :global(body) {
     margin: 0;
     min-width: 320px;
@@ -3040,7 +3591,8 @@
   .panel-toggle svg { width: 15px; height: 15px; }
   .editor-panel { display: flex; width: 100%; justify-content: center; }
   .editor-panel-hidden { display: none; }
-  .editor-column { width: min(100%, 690px); }
+  .editor-column { position: relative; width: min(100%, 690px); }
+  .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
   .document-meta { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 10px; }
   .document-type { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 650; letter-spacing: .8px; }
   .type-mark { color: var(--accent); font-family: Georgia, serif; font-size: 15px; font-weight: 400; }
@@ -3056,6 +3608,26 @@
   .italic { font-family: Georgia, serif; font-style: italic; }
   .underline { text-decoration: underline; text-underline-offset: 2px; }
   .strike { text-decoration: line-through; }
+  .markdown-mode-toggle { margin-left: auto; padding: 5px 8px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-secondary); cursor: pointer; font-size: 9px; }
+  .markdown-mode-toggle:hover { border-color: var(--accent); color: var(--text-heading); }
+  .image-insert-button { margin-left: auto; }
+  .document-meta .markdown-mode-toggle + .image-insert-button { margin-left: 0; }
+  .image-tool-button { font-size: 17px; }
+  .image-insert-error { margin: 8px 0 0; color: var(--danger, #b42318); font-size: 11px; }
+  .image-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 12px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
+  .image-edit-label { margin: 0 4px; color: var(--text-muted); font-size: 10px; }
+  .image-edit-toolbar button { min-height: 25px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
+  .image-edit-toolbar button:hover { border-color: var(--accent); color: var(--text-heading); }
+  .image-edit-toolbar .remove-image-button { margin-left: auto; color: var(--danger, #b42318); }
+  .markdown-source-editor { width: 100%; min-height: 430px; margin-top: 0; }
+  .markdown-source-editor :global(.cm-editor) { min-height: 430px; background: transparent; color: var(--text-body); font-size: calc(13px * var(--editor-scale)); }
+  .markdown-source-editor :global(.cm-scroller) { overflow: visible !important; font-family: var(--markdown-editor-font); line-height: 1.85; }
+  .markdown-source-editor :global(.cm-content) { min-height: 430px; padding: 37px 1px 35px; }
+  .markdown-source-editor :global(.cm-line) { padding: 0; }
+  .markdown-source-editor :global(.cm-gutters) { display: none; }
+  .markdown-source-editor :global(.cm-focused) { outline: none; }
+  :global(.markdown-image-placeholder) { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font: 10px/1.6 var(--markdown-editor-font); white-space: nowrap; }
+  .editor-content-hidden { display: none; }
   .editor-content { min-height: 430px; padding: 37px 1px 35px; outline: none; color: var(--text-body); font-family: var(--editor-font); font-size: calc(16px * var(--editor-scale)); line-height: 1.85; }
   .editor-content :global(.eyebrow) { margin: 0 0 11px; color: var(--eyebrow); font-family: ui-sans-serif, sans-serif; font-size: calc(9px * var(--editor-scale)); font-weight: 650; letter-spacing: 1.3px; line-height: 1.5; }
   .editor-content :global(h2) { margin: 0 0 19px; color: var(--text-heading); font-size: calc(24px * var(--editor-scale)); font-weight: 500; letter-spacing: -.5px; line-height: 1.4; }
@@ -3065,6 +3637,12 @@
   .editor-content :global(blockquote) { margin: 26px 0; padding: 2px 0 2px 17px; border-left: 2px solid var(--accent-soft); color: var(--quote); font-style: italic; }
   .editor-content :global(ul), .editor-content :global(ol) { padding-left: 24px; }
   .editor-content :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
+  .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
+  .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
+  .editor-content :global(pre) { overflow-x: auto; padding: 12px 14px; border-radius: 5px; background: var(--surface-raised); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; line-height: 1.55; }
+  .editor-content :global(code) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+  .editor-content :global(table) { width: 100%; border-collapse: collapse; font-size: .9em; }
+  .editor-content :global(th), .editor-content :global(td) { padding: 5px 8px; border: 1px solid var(--border); text-align: left; }
   .sheet-notes-title { margin: 26px 0 0; color: var(--eyebrow); font-size: 9px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase; }
   .editor-content.sheet-notes { min-height: 120px; padding-top: 11px; font-size: calc(15px * var(--editor-scale)); }
   .editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 15px; border-top: 1px solid var(--border-soft); color: var(--text-faint); font-size: 10px; }
@@ -3141,6 +3719,10 @@
   .preference-heading strong { color: var(--text-heading); font-size: 12px; font-weight: 600; }
   .preference-heading span { color: var(--text-muted); font-size: 10px; }
   .preference-label { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 10px; }
+  .markdown-font-label { margin-top: 14px; }
+  .markdown-editor-toggle { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); cursor: pointer; font-size: 11px; }
+  .markdown-editor-toggle input { accent-color: var(--accent-strong); }
+  .markdown-editor-help { margin: 9px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
   .color-scheme-label { margin-top: 14px; }
   .preference-select { width: 100%; height: 35px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
   .project-author-label { margin-top: 16px; }

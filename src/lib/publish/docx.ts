@@ -8,6 +8,7 @@ import {
   FrameWrap,
   Header,
   HorizontalPositionAlign,
+  ImageRun,
   LineRuleType,
   PageNumber,
   PageBreak,
@@ -21,6 +22,7 @@ import {
   type ParagraphChild
 } from "docx";
 import { PRESETS } from "./presets";
+import { decodeEmbeddedImage } from "./embedded-image";
 import { blocksFromHtml, trimRuns, type Block, type InlineRun } from "./rich-text";
 import {
   FORMAT_INFO,
@@ -61,6 +63,7 @@ function blockToParagraph(block: Block, options: {
   dropCap: boolean;
   bodyStyle: string;
 }): Paragraph[] {
+  if (block.kind === "image") return [];
   if (block.kind === "heading") {
     return [new Paragraph({
       style: block.level === 1 ? "SceneHeading1" : block.level === 2 ? "SceneHeading2" : "SceneHeading3",
@@ -130,6 +133,26 @@ function blockToParagraph(block: Block, options: {
     children: inlineToChildren(runs)
   }));
   return paragraphs;
+}
+
+async function imageToParagraph(block: Block, maxWidth: number, maxHeight: number): Promise<Paragraph> {
+  const src = block.image?.src;
+  if (!src) throw new Error("The document contains an image without source data.");
+  const image = await decodeEmbeddedImage(src);
+  const width = block.image?.width ?? image.width;
+  const height = block.image?.height ?? image.height;
+  const scale = Math.min(1, maxWidth / width, maxHeight / height);
+  const displayWidth = Math.max(1, Math.round(width * scale));
+  const displayHeight = Math.max(1, Math.round(height * scale));
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    children: [new ImageRun({
+      data: image.bytes,
+      type: image.extension,
+      transformation: { width: displayWidth, height: displayHeight },
+      altText: { name: block.image?.alt || "Embedded image", description: block.image?.alt ?? "" }
+    })]
+  });
 }
 
 function separatorParagraph(separator: SceneSeparator): Paragraph | null {
@@ -209,7 +232,12 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
   }
 
   const body: Paragraph[] = [];
-  book.chapters.forEach((chapter, chapterIndex) => {
+  const imageMaxWidth = (tokens.page.widthPt - tokens.page.marginLeftPt - tokens.page.marginRightPt) * 96 / 72;
+  const imageMaxHeight = Math.min(
+    384,
+    (tokens.page.heightPt - tokens.page.marginTopPt - tokens.page.marginBottomPt) * 96 / 72
+  );
+  for (const [chapterIndex, chapter] of book.chapters.entries()) {
     const pageBreakBefore = chapterIndex > 0 && options.pageBreakBeforeChapters;
     if (options.includeChapterTitles) {
       body.push(new Paragraph({
@@ -221,7 +249,7 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
       body.push(new Paragraph({ pageBreakBefore, spacing: { before: 0, after: 0 } }));
     }
 
-    chapter.scenes.forEach((scene, sceneIndex) => {
+    for (const [sceneIndex, scene] of chapter.scenes.entries()) {
       if (options.includeSceneTitles) {
         body.push(new Paragraph({
           style: "SceneTitle",
@@ -232,19 +260,23 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
       const dropCapIndex = options.dropCaps && tokens.dropCap && sceneIndex === 0
         ? blocks.findIndex((block) => block.kind === "paragraph" && !block.eyebrow)
         : -1;
-      blocks.forEach((block, blockIndex) => {
+      for (const [blockIndex, block] of blocks.entries()) {
+        if (block.kind === "image") {
+          body.push(await imageToParagraph(block, imageMaxWidth, imageMaxHeight));
+          continue;
+        }
         body.push(...blockToParagraph(block, {
           firstInScene: blockIndex === 0,
           dropCap: blockIndex === dropCapIndex,
           bodyStyle: "BodyText"
         }));
-      });
+      }
       if (sceneIndex < chapter.scenes.length - 1) {
         const separator = separatorParagraph(options.sceneSeparator);
         if (separator) body.push(separator);
       }
-    });
-  });
+    }
+  }
 
   const hasFrontMatter = frontMatter.length > 0;
   const sections: ISectionOptions[] = [];

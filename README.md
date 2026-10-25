@@ -6,7 +6,7 @@ Prosecraft is a novel-writing app, with tools for outlining, storyboarding, and 
 
 This application is built with AI, on a base of Tauri, Typescript, and Svelte.
 
-To run it's current development build yourself, clone the repo, enter it's directory and run `npm install && npm run tauri dev`
+To build it yourself, clone the repo, enter it's directory and run `npm install && npm run tauri build`
 
 ### Roadmap
 
@@ -21,12 +21,15 @@ To run it's current development build yourself, clone the repo, enter it's direc
 - [x] Rich text editor
 - [x] Chapter and Scene based organization
 - [x] Trash with restoration
-- [ ] Optional Markdown support
+- [x] Optional Markdown source editor
 - [ ] Image support
 - [x] Character templates
 - [x] Place templates
 - [x] Folders for notes
 - [ ] Universal file binder
+- [ ] Typewriter mode
+- [ ] Focus mode
+- [ ] Zen mode
 
 #### Publishing
 - [x] Basic export (PDF, DOCX, Epub, Markdown, HTML, Plain Text)

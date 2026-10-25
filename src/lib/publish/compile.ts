@@ -33,7 +33,7 @@ export function compileBook(input: CompileInput): CompiledBook {
       if (document.space || document.chapterId !== chapter.id || document.trashed) continue;
       const html = sanitizeHtml(document.content ?? "");
       const text = htmlToPlainText(html);
-      if (!hasVisibleText(text)) continue;
+      if (!hasVisibleText(text) && !/<img\b[^>]*\bsrc=["']data:image\/(?:png|jpeg|webp);base64,/i.test(html)) continue;
       // List markers are useful in the plain-text export, but they are not
       // words in the manuscript, so leave them out of the displayed count.
       const countableText = text.replace(/^(?:•|\d+\.)\s+/gm, "");

@@ -243,6 +243,11 @@ class PreviewPaginator {
   }
 
   private splitBlock(block: HTMLElement): void {
+    if (block.querySelector("img") || block.tagName === "IMG") {
+      this.ensureScene(true).append(block.cloneNode(true));
+      this.sceneStarted = true;
+      return;
+    }
     if (!isSplittableBlock(block)) {
       this.ensureScene(true).append(block.cloneNode(true));
       this.sceneStarted = true;

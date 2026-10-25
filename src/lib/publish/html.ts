@@ -212,6 +212,15 @@ function manuscriptCss(
     .scene ul, .scene ol { margin: 0 0 var(--paragraph-spacing); padding-left: 1.5em; }
     .scene li { text-indent: 0; }
     .scene a { color: inherit; text-decoration-color: var(--rule); text-underline-offset: 2px; }
+    .scene img {
+      display: block;
+      max-width: 100%;
+      max-height: min(4in, calc(var(--page-height) - var(--page-margin-top) - var(--page-margin-bottom) - 2em));
+      height: auto;
+      margin: 0.75em auto;
+      object-fit: contain;
+      text-indent: 0;
+    }
     .scene .eyebrow {
       margin: 0 0 0.6em;
       color: var(--muted);

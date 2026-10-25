@@ -56,6 +56,7 @@ export type DocumentData = {
   id: string;
   title: string;
   content: string;
+  markdownSource?: string;
   chapterId?: string;
   space?: SpaceName;
   folderId?: string;

@@ -14,10 +14,15 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
     "@fontsource-variable/bitter": "^5.3.0",
     "@fontsource-variable/literata": "^5.3.0",
     "@fontsource/ibm-plex-sans": "^5.3.0",
     "@fontsource/ibm-plex-serif": "^5.3.0",
+    "@lezer/highlight": "^1.2.5",
     "@noble/ciphers": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "@tauri-apps/api": "^2",
@@ -27,6 +32,7 @@
     "docx": "^9.14.0",
     "fflate": "^0.8.3",
     "jspdf": "^4.2.1",
+    "marked": "^18.1.1",
     "turndown": "^7.2.4"
   },
   "devDependencies": {

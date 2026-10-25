@@ -1,5 +1,6 @@
 import { strToU8, zipSync, type Zippable } from "fflate";
 import { markDropCapParagraph } from "./content";
+import { decodeEmbeddedImage } from "./embedded-image";
 import { PRESETS } from "./presets";
 import { escapeXml, htmlToXhtml } from "./xhtml";
 import {
@@ -67,7 +68,8 @@ function dedicationXhtml(book: CompiledBook): string {
 function chapterXhtml(
   book: CompiledBook,
   options: PublishOptions,
-  chapterIndex: number
+  chapterIndex: number,
+  imagePaths: Map<string, string>
 ): string {
   const chapter = book.chapters[chapterIndex];
   const first = chapterIndex === 0;
@@ -83,7 +85,7 @@ function chapterXhtml(
       ? separatorXhtml(options.sceneSeparator)
       : "";
     const sceneHtml = dropCaps && index === 0 ? markDropCapParagraph(scene.html) : scene.html;
-    return `<div class="scene">${sceneTitle}${htmlToXhtml(sceneHtml)}</div>${separator}`;
+    return `<div class="scene">${sceneTitle}${htmlToXhtml(sceneHtml, (src) => imagePaths.get(src) ?? src)}</div>${separator}`;
   }).join("\n");
 
   const breakClass = !first && options.pageBreakBeforeChapters ? " chapter-break" : "";
@@ -149,6 +151,7 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
 .scene ul, .scene ol { margin: 0 0 ${tokens.paragraphSpacingEm}em; padding-left: 1.5em; }
 .scene li { text-indent: 0; }
 .scene a { color: inherit; text-decoration-color: #b9bdb5; text-underline-offset: 2px; }
+.scene img { display: block; max-width: 100%; max-height: min(4in, 60vh); height: auto; margin: 0.75em auto; object-fit: contain; }
 .scene .eyebrow {
   margin: 0 0 0.6em;
   color: #777;
@@ -260,11 +263,30 @@ ${points}
 `;
 }
 
-export function exportEpub(book: CompiledBook, options: PublishOptions): ExportPayload {
+export async function exportEpub(book: CompiledBook, options: PublishOptions): Promise<ExportPayload> {
   const identifier = bookIdentifier();
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const files: Zippable = {};
   files["mimetype"] = [strToU8("application/epub+zip"), { level: 0 }];
+  const imagePaths = new Map<string, string>();
+  const imageManifest: string[] = [];
+  let imageIndex = 0;
+  for (const chapter of book.chapters) {
+    for (const scene of chapter.scenes) {
+      const parsed = new DOMParser().parseFromString(scene.html, "text/html");
+      for (const image of Array.from(parsed.body.querySelectorAll("img"))) {
+        const src = image.getAttribute("src") ?? "";
+        if (!src || imagePaths.has(src)) continue;
+        const asset = await decodeEmbeddedImage(src);
+        imageIndex += 1;
+        const filename = `image-${imageIndex}.${asset.extension}`;
+        const id = `image-${imageIndex}`;
+        imagePaths.set(src, `../images/${filename}`);
+        files[`OEBPS/images/${filename}`] = asset.bytes;
+        imageManifest.push(`    <item id="${id}" href="images/${filename}" media-type="${asset.mediaType}" />`);
+      }
+    }
+  }
 
   const chapterItems = book.chapters.map((chapter, index) => ({
     href: `text/chapter-${index + 1}.xhtml`,
@@ -274,7 +296,8 @@ export function exportEpub(book: CompiledBook, options: PublishOptions): ExportP
   const manifest: string[] = [
     '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav" />',
     '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml" />',
-    '    <item id="css" href="styles.css" media-type="text/css" />'
+    '    <item id="css" href="styles.css" media-type="text/css" />',
+    ...imageManifest
   ];
   const spine: string[] = [];
 
@@ -323,7 +346,7 @@ ${spine.join("\n")}
   if (options.includeTitlePage) files["OEBPS/text/titlepage.xhtml"] = strToU8(titlePageXhtml(book));
   if (book.dedication) files["OEBPS/text/dedication.xhtml"] = strToU8(dedicationXhtml(book));
   book.chapters.forEach((_, index) => {
-    files[`OEBPS/text/chapter-${index + 1}.xhtml`] = strToU8(chapterXhtml(book, options, index));
+    files[`OEBPS/text/chapter-${index + 1}.xhtml`] = strToU8(chapterXhtml(book, options, index, imagePaths));
   });
 
   const bytes = zipSync(files);

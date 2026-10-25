@@ -1,4 +1,5 @@
 import TurndownService from "turndown";
+import { marked } from "marked";
 import {
   FORMAT_INFO,
   slugifyFilename,
@@ -24,6 +25,14 @@ function markdownService(): TurndownService {
     replacement: (content) => `**${content.trim()}**\n\n`
   });
   return service;
+}
+
+export function htmlToMarkdown(html: string): string {
+  return markdownService().turndown(html).trim();
+}
+
+export function markdownToHtml(markdown: string): string {
+  return marked.parse(markdown, { async: false });
 }
 
 function separatorMarkdown(separator: SceneSeparator): string {
