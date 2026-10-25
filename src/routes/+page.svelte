@@ -8,6 +8,7 @@
   import "@fontsource/ibm-plex-sans/latin-700.css";
   import "$lib/color-schemes.css";
   import { autoResize } from "$lib/auto-resize";
+  import EntitySheet, { type SheetSection } from "$lib/EntitySheet.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
   import PublishView from "$lib/PublishView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -18,10 +19,18 @@
   } from "$lib/publish/chapters";
   import {
     defaultPublishOptions,
+    emptyCharacterSheet,
+    emptyPlaceSheet,
+    normalizeCharacterSheet,
+    normalizePlaceSheet,
     normalizePublishOptions,
+    SHEET_FIELD_LIMIT,
     SPACE_NAMES,
     type ChapterData,
+    type CharacterSheet,
     type DocumentData,
+    type NoteFolder,
+    type PlaceSheet,
     type PublishOptions,
     type SpaceName
   } from "$lib/publish/types";
@@ -75,11 +84,94 @@
     Research: "research note",
     Notes: "note"
   };
+
+  /**
+   * Structured forms are rendered from config so adding a field is a one-line
+   * change. Single-line inputs suit short facts; multiline fields use the
+   * auto-growing textarea action for longer prose.
+   */
+  const characterSections: SheetSection[] = [
+    {
+      title: "Basics",
+      fields: [
+        { key: "role", label: "Role", placeholder: "Protagonist, antagonist, supporting…" },
+        { key: "age", label: "Age", placeholder: "e.g. 34, or early 40s" },
+        { key: "gender", label: "Gender", placeholder: "e.g. woman, man, non-binary" },
+        { key: "pronouns", label: "Pronouns", placeholder: "she/her, they/them…" },
+        { key: "ethnicity", label: "Ethnicity / heritage", placeholder: "e.g. Irish-American" },
+        { key: "occupation", label: "Occupation", placeholder: "What do they do?" }
+      ]
+    },
+    {
+      title: "Appearance & voice",
+      fields: [
+        { key: "appearance", label: "Appearance", placeholder: "Build, features, clothing, distinguishing marks…", multiline: true },
+        { key: "voice", label: "Voice & mannerisms", placeholder: "How they speak and carry themselves…", multiline: true }
+      ]
+    },
+    {
+      title: "Personality & background",
+      fields: [
+        { key: "personality", label: "Personality", placeholder: "Temperament, habits, the way they treat people…", multiline: true },
+        { key: "background", label: "Background", placeholder: "Where they come from and what shaped them…", multiline: true },
+        { key: "motivations", label: "Motivations & goals", placeholder: "What do they want, and why now?", multiline: true },
+        { key: "flaws", label: "Flaws & fears", placeholder: "What holds them back or trips them up?", multiline: true }
+      ]
+    },
+    {
+      title: "Life & relationships",
+      fields: [
+        { key: "hobbies", label: "Hobbies & interests", placeholder: "What do they love doing off the page?", multiline: true },
+        { key: "relationships", label: "Relationships", placeholder: "Family, friends, rivals, and entanglements…", multiline: true }
+      ]
+    }
+  ];
+
+  const placeSections: SheetSection[] = [
+    {
+      title: "Overview",
+      fields: [
+        { key: "type", label: "Type", placeholder: "City, village, forest, ship, planet…" },
+        { key: "region", label: "Region", placeholder: "Where is it? Coast, mountains, borderlands…" },
+        { key: "climate", label: "Climate & weather", placeholder: "Seasons, light, what the air feels like…" },
+        { key: "population", label: "Population", placeholder: "How many people, or how busy is it?" },
+        { key: "government", label: "Government", placeholder: "Who rules, and how?" },
+        { key: "economy", label: "Economy", placeholder: "What keeps it running?" }
+      ]
+    },
+    {
+      title: "Look & atmosphere",
+      fields: [
+        { key: "appearance", label: "Appearance", placeholder: "Layout, architecture, sights, sounds, smells…", multiline: true },
+        { key: "atmosphere", label: "Atmosphere", placeholder: "What it feels like to arrive and stay…", multiline: true },
+        { key: "landmarks", label: "Landmarks", placeholder: "Places within the place that matter…", multiline: true }
+      ]
+    },
+    {
+      title: "History & culture",
+      fields: [
+        { key: "history", label: "History", placeholder: "Founding, turning points, old wounds…", multiline: true },
+        { key: "culture", label: "Culture & customs", placeholder: "Beliefs, food, language, festivals, taboos…", multiline: true },
+        { key: "inhabitants", label: "Notable inhabitants", placeholder: "Who lives here, and who is worth knowing?", multiline: true }
+      ]
+    },
+    {
+      title: "Story",
+      fields: [
+        { key: "significance", label: "Role in the story", placeholder: "Why this place matters to the plot or characters…", multiline: true },
+        { key: "dangers", label: "Dangers & secrets", placeholder: "Threats, hidden places, what can go wrong here…", multiline: true }
+      ]
+    }
+  ];
+
   type BoardDragSource = {
     pointerId: number;
     kind: StoryboardKind | "board-card";
     sourceId: string;
   };
+  type NoteTreeItem =
+    | { kind: "folder"; folder: NoteFolder; depth: number }
+    | { kind: "document"; document: DocumentData; depth: number };
   type WorkspaceView = "outline" | "writing" | "storyboard" | "publish";
 
   let editor: HTMLDivElement;
@@ -132,6 +224,9 @@
   let rightSidebarHovered = $state(false);
   let editingChapterId = $state<string | null>(null);
   let chapterNameDraft = $state("");
+  let noteFolderInput = $state<HTMLInputElement>();
+  let editingNoteFolderId = $state<string | null>(null);
+  let noteFolderNameDraft = $state("");
   let draggedChapterId = $state<string | null>(null);
   let chapterDragPointerId = $state<number | null>(null);
   let boardDragSource = $state<BoardDragSource | null>(null);
@@ -152,6 +247,8 @@
   let viewedMonth = $state(new Date());
   let documents = $state<DocumentData[]>([]);
   let chapters = $state<ChapterData[]>([]);
+  let noteFolders = $state<NoteFolder[]>([]);
+  let expandedNoteFolders = $state<Record<string, boolean>>({});
   let expandedSpaces = $state<Record<SpaceName | "Trash", boolean>>({
     Characters: true,
     Places: true,
@@ -161,6 +258,40 @@
   });
   let activeDocumentId = $state("welcome");
   let activeDocument = $derived(documents.find((doc) => doc.id === activeDocumentId));
+  let noteTreeItems = $derived.by(() => {
+    const items: NoteTreeItem[] = [];
+    const notes = documents.filter((doc) => doc.space === "Notes" && !doc.trashed);
+    items.push(...notes.filter((doc) => !doc.folderId).map((document) => ({
+      kind: "document" as const, document, depth: 0
+    })));
+    const visit = (parentId: string | null, depth: number) => {
+      for (const folder of noteFolders.filter((item) => item.parentId === parentId)) {
+        items.push({ kind: "folder", folder, depth });
+        if (expandedNoteFolders[folder.id] === false) continue;
+        items.push(...notes.filter((doc) => doc.folderId === folder.id).map((document) => ({
+          kind: "document" as const, document, depth: depth + 1
+        })));
+        visit(folder.id, depth + 1);
+      }
+    };
+    visit(null, 0);
+    return items;
+  });
+  let noteFolderChoices = $derived.by(() => {
+    const choices: Array<{ folder: NoteFolder; depth: number }> = [];
+    const visit = (parentId: string | null, depth: number) => {
+      for (const folder of noteFolders.filter((item) => item.parentId === parentId)) {
+        choices.push({ folder, depth });
+        visit(folder.id, depth + 1);
+      }
+    };
+    visit(null, 0);
+    return choices;
+  });
+  let isCharacterDocument = $derived(activeDocument?.space === "Characters");
+  let isPlaceDocument = $derived(activeDocument?.space === "Places");
+  let characterSheet = $derived(normalizeCharacterSheet(activeDocument?.character));
+  let placeSheet = $derived(normalizePlaceSheet(activeDocument?.place));
   let projectWordCount = $derived(documents
     .filter((doc) => doc.chapterId && !doc.trashed)
     .reduce((total, doc) => total + countHtmlWords(doc.content), 0));
@@ -214,6 +345,7 @@
       activity,
       storyboardCards,
       storyboardRows,
+      noteFolders,
       publishOptions
     };
   }
@@ -242,11 +374,36 @@
     }
   }
 
+  /**
+   * Normalizes structured sheets on load so partially written or legacy records
+   * always render a complete form without dropping their free-form notes.
+   */
+  function normalizeDocumentSheets(doc: DocumentData): DocumentData {
+    if (doc.space === "Characters") {
+      return { ...doc, character: normalizeCharacterSheet(doc.character) };
+    }
+    if (doc.space === "Places") {
+      return { ...doc, place: normalizePlaceSheet(doc.place) };
+    }
+    return doc;
+  }
+
   function loadProject(project: ProjectData) {
     activeProjectId = project.id;
     projectName = project.name;
     authorName = project.author;
-    documents = project.documents;
+    noteFolders = normalizeNoteFolders(project.noteFolders);
+    expandedNoteFolders = {};
+    const folderIds = new Set(noteFolders.map((folder) => folder.id));
+    documents = project.documents.map((doc) => {
+      const normalized = normalizeDocumentSheets(doc);
+      if (normalized.space === "Notes" && normalized.folderId && folderIds.has(normalized.folderId)) {
+        return normalized;
+      }
+      if (!normalized.folderId) return normalized;
+      const { folderId: _folderId, ...withoutFolder } = normalized;
+      return withoutFolder;
+    });
     chapters = project.chapters.map((chapter) => ({
       ...chapter,
       summary: (typeof chapter.summary === "string" ? chapter.summary : "").slice(0, 4000)
@@ -307,6 +464,43 @@
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
+  }
+
+  function normalizeNoteFolders(value: unknown): NoteFolder[] {
+    if (!Array.isArray(value)) return [];
+    const folders: NoteFolder[] = [];
+    const seen = new Set<string>();
+    for (const entry of value) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const folder = entry as Partial<NoteFolder>;
+      if (typeof folder.id !== "string" || !folder.id || seen.has(folder.id)
+        || typeof folder.title !== "string"
+        || !(folder.parentId === null || typeof folder.parentId === "string")) continue;
+      seen.add(folder.id);
+      folders.push({
+        id: folder.id,
+        title: folder.title.trim().slice(0, 60) || "Untitled folder",
+        parentId: folder.parentId
+      });
+    }
+    const byId = new Map(folders.map((folder) => [folder.id, folder]));
+    for (const folder of folders) {
+      if (!folder.parentId || !byId.has(folder.parentId) || folder.parentId === folder.id) {
+        folder.parentId = null;
+        continue;
+      }
+      const path = new Set<string>();
+      let current: NoteFolder | undefined = folder;
+      while (current?.parentId) {
+        if (path.has(current.id)) {
+          folder.parentId = null;
+          break;
+        }
+        path.add(current.id);
+        current = byId.get(current.parentId);
+      }
+    }
+    return folders;
   }
 
   function handleViewportResize() {
@@ -453,6 +647,7 @@
       activity: {},
       storyboardCards: [],
       storyboardRows: [{ id: crypto.randomUUID(), title: "Timeline" }],
+      noteFolders: [],
       publishOptions: defaultPublishOptions()
     };
     const chapter = next.chapters[0];
@@ -477,8 +672,39 @@
     projectSettingsDialog?.showModal();
   }
 
+  /**
+   * Renders a structured sheet as readable plain text for single-document
+   * export. Empty fields are omitted so a sparse sheet stays short.
+   */
+  function serializeSheet(
+    sections: SheetSection[],
+    values: Record<string, string>,
+    fallbackTitle: string
+  ): string {
+    const lines = [title || fallbackTitle];
+    for (const section of sections) {
+      const filled = section.fields
+        .map((field) => [field.label, (values[field.key] ?? "").trim()] as const)
+        .filter(([, value]) => value);
+      if (filled.length === 0) continue;
+      lines.push("", section.title.toUpperCase());
+      for (const [label, value] of filled) lines.push(`${label}: ${value}`);
+    }
+    return lines.join("\n");
+  }
+
   function exportDocument() {
-    const blob = new Blob([editor?.innerText ?? ""], { type: "text/plain" });
+    const notes = (editor?.innerText ?? "").trim();
+    let text = notes;
+    if (isCharacterDocument) {
+      text = serializeSheet(characterSections, characterSheet, "Untitled character");
+    } else if (isPlaceDocument) {
+      text = serializeSheet(placeSections, placeSheet, "Untitled place");
+    }
+    if ((isCharacterDocument || isPlaceDocument) && notes) {
+      text = `${text}\n\nADDITIONAL NOTES\n${notes}`;
+    }
+    const blob = new Blob([text], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -1178,17 +1404,45 @@
     }
   }
 
-  function createSpaceDocument(space: SpaceName) {
+  /**
+   * Updates one field of the active character's sheet. The name is stored in
+   * `title`, and the rich-text editor below the form stores free-form notes in
+   * `content`, so this only touches the structured profile.
+   */
+  function updateCharacterField(field: keyof CharacterSheet, value: string) {
+    const trimmed = value.slice(0, SHEET_FIELD_LIMIT);
+    documents = documents.map((doc) => doc.id === activeDocumentId
+      ? { ...doc, character: { ...normalizeCharacterSheet(doc.character), [field]: trimmed } }
+      : doc);
+    persist();
+  }
+
+  /** Updates one field of the active place's sheet. Mirrors the character path. */
+  function updatePlaceField(field: keyof PlaceSheet, value: string) {
+    const trimmed = value.slice(0, SHEET_FIELD_LIMIT);
+    documents = documents.map((doc) => doc.id === activeDocumentId
+      ? { ...doc, place: { ...normalizePlaceSheet(doc.place), [field]: trimmed } }
+      : doc);
+    persist();
+  }
+
+  function createSpaceDocument(space: SpaceName, folderId?: string) {
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const next: DocumentData = {
       id: crypto.randomUUID(),
       title: `Untitled ${spaceNouns[space]}`,
       content: "<p><br></p>",
-      space
+      space,
+      ...(space === "Notes" && folderId ? { folderId } : {}),
+      ...(space === "Characters" ? { character: emptyCharacterSheet() } : {}),
+      ...(space === "Places" ? { place: emptyPlaceSheet() } : {})
     };
     documents = [...documents, next];
     expandedSpaces[space] = true;
+    if (space === "Notes" && folderId) {
+      expandNoteFolderPath(folderId);
+    }
     activeDocumentId = next.id;
     title = next.title;
     editor.innerHTML = next.content;
@@ -1196,6 +1450,73 @@
     lastEditorWordCount = wordCount;
     persist();
     editor.focus();
+  }
+
+  async function createNoteFolder(parentId: string | null = null) {
+    const folder: NoteFolder = {
+      id: crypto.randomUUID(),
+      title: "Untitled folder",
+      parentId
+    };
+    noteFolders = [...noteFolders, folder];
+    expandedSpaces.Notes = true;
+    if (parentId) expandNoteFolderPath(parentId);
+    expandedNoteFolders = { ...expandedNoteFolders, [folder.id]: true };
+    persist();
+    await startNoteFolderRename(folder);
+  }
+
+  async function startNoteFolderRename(folder: NoteFolder) {
+    editingNoteFolderId = folder.id;
+    noteFolderNameDraft = folder.title;
+    await tick();
+    noteFolderInput?.focus();
+    noteFolderInput?.select();
+  }
+
+  function saveNoteFolderRename(id: string) {
+    if (editingNoteFolderId !== id) return;
+    const nextTitle = noteFolderNameDraft.trim().slice(0, 60);
+    if (nextTitle) {
+      noteFolders = noteFolders.map((folder) => folder.id === id ? { ...folder, title: nextTitle } : folder);
+      persist();
+    }
+    editingNoteFolderId = null;
+  }
+
+  function cancelNoteFolderRename() {
+    editingNoteFolderId = null;
+    noteFolderNameDraft = "";
+  }
+
+  function moveNoteToFolder(documentId: string, folderId: string) {
+    if (folderId && !noteFolders.some((folder) => folder.id === folderId)) return;
+    documents = documents.map((doc) => {
+      if (doc.id !== documentId || doc.space !== "Notes") return doc;
+      const { folderId: _previousFolderId, ...withoutFolder } = doc;
+      return folderId ? { ...withoutFolder, folderId } : withoutFolder;
+    });
+    if (folderId) {
+      expandNoteFolderPath(folderId);
+    }
+    persist();
+  }
+
+  function expandNoteFolderPath(id: string) {
+    const expanded = { ...expandedNoteFolders };
+    let currentId: string | null | undefined = id;
+    while (currentId) {
+      expanded[currentId] = true;
+      currentId = noteFolders.find((folder) => folder.id === currentId)?.parentId;
+    }
+    expandedNoteFolders = expanded;
+  }
+
+  function toggleNoteFolder(id: string) {
+    expandedNoteFolders = {
+      ...expandedNoteFolders,
+      [id]: expandedNoteFolders[id] === false
+    };
   }
 
   function toggleChapter(id: string) {
@@ -1391,7 +1712,10 @@
             typeof item.id === "string" &&
             typeof item.title === "string" &&
             typeof item.content === "string"
-          ).map((doc) => ({ ...doc, content: cleanHtml(doc.content) }));
+          ).map((doc) => normalizeDocumentSheets({
+            ...doc,
+            content: cleanHtml(doc.content)
+          }));
         }
       } else {
         const legacySaved = localStorage.getItem(legacyStorageKey);
@@ -1647,21 +1971,90 @@
               <span class="space-icon" aria-hidden="true">{space === "Characters" ? "◉" : space === "Places" ? "⌖" : space === "Research" ? "⌕" : "▤"}</span>
               <span class="tree-name">{space}</span>
             </button>
+            {#if space === "Notes"}
+              <button class="row-add" aria-label="Add folder to Notes" title="Add folder" onclick={() => createNoteFolder()}>▱</button>
+            {/if}
             <button class="row-add" aria-label="Add to {space}" title="Add to {space}" onclick={() => createSpaceDocument(space)}>+</button>
           </div>
           {#if expandedSpaces[space]}
             <div class="space-items">
-              {#each documents.filter((doc) => doc.space === space && !doc.trashed) as doc (doc.id)}
-                <div class:current={doc.id === activeDocumentId} class="document-row">
-                  <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(doc.id)}>
-                    <span class="scene-mark">¶</span>
-                    <span class="tree-name">{doc.title || "Untitled"}</span>
-                  </button>
-                  <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}>×</button>
-                </div>
-              {/each}
-              {#if !documents.some((doc) => doc.space === space && !doc.trashed)}
-                <span class="empty-tree">Nothing here yet</span>
+              {#if space === "Notes"}
+                {#each noteTreeItems as item (item.kind === "folder" ? `folder-${item.folder.id}` : `document-${item.document.id}`)}
+                  {#if item.kind === "folder"}
+                    <div class="note-folder-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                      {#if editingNoteFolderId === item.folder.id}
+                        <input
+                          bind:this={noteFolderInput}
+                          class="chapter-name-input note-folder-name-input"
+                          aria-label="Rename folder {item.folder.title}"
+                          bind:value={noteFolderNameDraft}
+                          maxlength="60"
+                          onblur={() => saveNoteFolderRename(item.folder.id)}
+                          onkeydown={(event) => {
+                            if (event.key === "Enter") (event.currentTarget as HTMLInputElement).blur();
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelNoteFolderRename();
+                            }
+                          }}
+                          onpointerdown={(event) => event.stopPropagation()}
+                        />
+                      {:else}
+                        <button
+                          class="note-folder-toggle"
+                          aria-expanded={expandedNoteFolders[item.folder.id] !== false}
+                          onclick={() => toggleNoteFolder(item.folder.id)}
+                        >
+                          <span class:rotated={expandedNoteFolders[item.folder.id] !== false} class="chevron">›</span>
+                          <span class="note-folder-icon" aria-hidden="true">▱</span>
+                          <span class="tree-name">{item.folder.title}</span>
+                        </button>
+                      {/if}
+                      <div class="note-folder-actions">
+                        <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createNoteFolder(item.folder.id)}>▱+</button>
+                        <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startNoteFolderRename(item.folder)}>✎</button>
+                        <button class="row-add" aria-label="Add note to {item.folder.title}" title="Add note" onclick={() => createSpaceDocument("Notes", item.folder.id)}>+</button>
+                      </div>
+                    </div>
+                  {:else}
+                    <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                      <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(item.document.id)}>
+                        <span class="scene-mark">¶</span>
+                        <span class="tree-name">{item.document.title || "Untitled"}</span>
+                      </button>
+                      {#if noteFolderChoices.length > 0}
+                        <select
+                          class="note-folder-select"
+                          aria-label="Move {item.document.title || 'note'} to folder"
+                          value={item.document.folderId ?? ""}
+                          onchange={(event) => moveNoteToFolder(item.document.id, (event.currentTarget as HTMLSelectElement).value)}
+                        >
+                          <option value="">Unfiled</option>
+                          {#each noteFolderChoices as choice (choice.folder.id)}
+                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
+                          {/each}
+                        </select>
+                      {/if}
+                      <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}>×</button>
+                    </div>
+                  {/if}
+                {/each}
+                {#if !documents.some((doc) => doc.space === "Notes" && !doc.trashed) && noteFolders.length === 0}
+                  <span class="empty-tree">Nothing here yet</span>
+                {/if}
+              {:else}
+                {#each documents.filter((doc) => doc.space === space && !doc.trashed) as doc (doc.id)}
+                  <div class:current={doc.id === activeDocumentId} class="document-row">
+                    <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(doc.id)}>
+                      <span class="scene-mark">¶</span>
+                      <span class="tree-name">{doc.title || "Untitled"}</span>
+                    </button>
+                    <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}>×</button>
+                  </div>
+                {/each}
+                {#if !documents.some((doc) => doc.space === space && !doc.trashed)}
+                  <span class="empty-tree">Nothing here yet</span>
+                {/if}
               {/if}
             </div>
           {/if}
@@ -1716,7 +2109,7 @@
       <div class="workspace-controls" aria-label="Workspace panels">
         <div class="workspace-modes" role="tablist" aria-label="Workspace view">
           <button class="workspace-mode" class:active={workspaceView === "outline"} role="tab" aria-selected={workspaceView === "outline"} onclick={openOutlineView}>Outline</button>
-          <button class="workspace-mode" class:active={workspaceView === "writing"} role="tab" aria-selected={workspaceView === "writing"} onclick={() => setWorkspaceView("writing")}>Writing</button>
+          <button class="workspace-mode" class:active={workspaceView === "writing"} role="tab" aria-selected={workspaceView === "writing"} onclick={() => setWorkspaceView("writing")}>Write</button>
           <button class="workspace-mode" class:active={workspaceView === "storyboard"} role="tab" aria-selected={workspaceView === "storyboard"} onclick={() => setWorkspaceView("storyboard")}>Storyboard</button>
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
@@ -1744,12 +2137,29 @@
         <input
           class="title-input"
           aria-label="Document title"
-          placeholder="Untitled"
+          placeholder={isCharacterDocument ? "Character name" : isPlaceDocument ? "Place name" : "Untitled"}
           bind:value={title}
           oninput={persist}
           maxlength="120"
         />
 
+        {#if isCharacterDocument}
+          <EntitySheet
+            sections={characterSections}
+            values={characterSheet}
+            onchange={(key, value) => updateCharacterField(key as keyof CharacterSheet, value)}
+            hint="Use the notes below for anything the fields above don’t cover."
+          />
+        {:else if isPlaceDocument}
+          <EntitySheet
+            sections={placeSections}
+            values={placeSheet}
+            onchange={(key, value) => updatePlaceField(key as keyof PlaceSheet, value)}
+            hint="Use the notes below for anything the fields above don’t cover."
+          />
+        {/if}
+
+        {#if !isCharacterDocument && !isPlaceDocument}
         <div class="toolbar" role="toolbar" aria-label="Text formatting">
           <label class="sr-only" for="block-style">Text style</label>
           <select id="block-style" class="style-select" aria-label="Text style" onchange={changeBlock}>
@@ -1772,9 +2182,15 @@
           <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("undo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M7.5 6 4 9.5 7.5 13M4.5 9.5h6a5 5 0 0 1 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
+        {/if}
+
+        {#if isCharacterDocument || isPlaceDocument}
+          <h2 class="sheet-notes-title">Additional notes</h2>
+        {/if}
 
         <div
           class="editor-content"
+          class:sheet-notes={isCharacterDocument || isPlaceDocument}
           bind:this={editor}
           contenteditable="true"
           role="textbox"
@@ -2510,6 +2926,17 @@
   .row-add { opacity: 0; }
   .chapter-row:hover .row-add, .space-heading:hover .row-add, .row-add:focus-visible { opacity: 1; }
   .scene-list, .space-items { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 5px 22px; padding-left: 7px; border-left: 1px solid var(--tree-divider); }
+  .note-folder-row { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 1px; padding-right: 2px; border-radius: 5px; }
+  .note-folder-row:hover { background: var(--hover-bg); }
+  .note-folder-toggle { display: flex; min-width: 0; height: 27px; flex: 1; align-items: center; gap: 5px; padding: 0 3px; border: 0; background: transparent; color: var(--text-nav); cursor: pointer; text-align: left; font-size: 10px; }
+  .note-folder-icon { width: 13px; flex: 0 0 auto; color: var(--text-muted); font-size: 13px; text-align: center; }
+  .note-folder-actions { display: flex; flex: 0 0 auto; align-items: center; }
+  .note-folder-actions .chapter-action { opacity: .45; }
+  .note-folder-row:hover .chapter-action, .note-folder-actions .chapter-action:focus-visible { opacity: 1; }
+  .note-folder-name-input { height: 23px; }
+  .note-document-row { padding-right: 2px; }
+  .note-folder-select { width: 19px; height: 20px; flex: 0 0 auto; padding: 0; border: 0; appearance: none; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; opacity: .45; }
+  .note-folder-select:focus-visible, .note-document-row:hover .note-folder-select { width: auto; max-width: 88px; appearance: auto; opacity: 1; }
   .document-row { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 1px; padding: 0 2px; border-radius: 5px; }
   .document-row:hover, .document-row.current { background: var(--selected-bg); }
   .document-select { display: flex; min-width: 0; height: 27px; flex: 1; align-items: center; gap: 7px; padding: 0 4px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; font-size: 10px; }
@@ -2638,6 +3065,8 @@
   .editor-content :global(blockquote) { margin: 26px 0; padding: 2px 0 2px 17px; border-left: 2px solid var(--accent-soft); color: var(--quote); font-style: italic; }
   .editor-content :global(ul), .editor-content :global(ol) { padding-left: 24px; }
   .editor-content :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
+  .sheet-notes-title { margin: 26px 0 0; color: var(--eyebrow); font-size: 9px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase; }
+  .editor-content.sheet-notes { min-height: 120px; padding-top: 11px; font-size: calc(15px * var(--editor-scale)); }
   .editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 15px; border-top: 1px solid var(--border-soft); color: var(--text-faint); font-size: 10px; }
   .footer-actions { display: flex; align-items: center; gap: 12px; }
   .footer-separator { margin: 0 4px; color: var(--border); }

@@ -118,6 +118,7 @@ export function projectContentKey(project: ProjectData): string {
     activity: project.activity,
     storyboardCards: project.storyboardCards ?? [],
     storyboardRows: project.storyboardRows ?? [],
+    noteFolders: project.noteFolders ?? [],
     publishOptions: project.publishOptions ?? null
   });
 }

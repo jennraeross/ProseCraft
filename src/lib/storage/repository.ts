@@ -1,4 +1,5 @@
 import { getDeviceId } from "./device";
+import { sanitizeHtml } from "../sanitize";
 import {
   createStoredProject,
   isLegacyProjectData,
@@ -277,6 +278,10 @@ export function importBundleText(text: string): ImportResult {
  * Merges incoming project records into the store by last-write-wins on
  * `updatedAt`, with `revision` as a tie-breaker. Shared by the plaintext and
  * encrypted import paths.
+ *
+ * Incoming document content is sanitized before storage so an imported backup
+ * cannot introduce HTML that the editor would later execute (self-XSS defense
+ * for backups obtained from outside this installation).
  */
 function mergeIncomingProjects(incoming: StoredProject[]): ImportResult {
   const existingById = new Map(readStoredProjects().map((project) => [project.id, project]));
@@ -287,7 +292,7 @@ function mergeIncomingProjects(incoming: StoredProject[]): ImportResult {
       || project.updatedAt > previous.updatedAt
       || (project.updatedAt === previous.updatedAt && project.revision > previous.revision);
     if (wins) {
-      existingById.set(project.id, project);
+      existingById.set(project.id, sanitizeStoredProject(project));
       imported += 1;
     }
   }
@@ -298,6 +303,21 @@ function mergeIncomingProjects(incoming: StoredProject[]): ImportResult {
     : merged[0].id;
   writeStored(merged, activeProjectId);
   return { imported, total: merged.length };
+}
+
+/**
+ * Returns a copy of a stored project whose document bodies have been run
+ * through the same sanitizer the editor uses at persist time. Skipped outside
+ * the browser so the storage layer stays importable in test runners.
+ */
+function sanitizeStoredProject(project: StoredProject): StoredProject {
+  if (typeof document === "undefined") return project;
+  const sanitized = { ...project.project };
+  sanitized.documents = project.project.documents.map((document) => ({
+    ...document,
+    content: sanitizeHtml(document.content)
+  }));
+  return { ...project, project: sanitized };
 }
 
 /**

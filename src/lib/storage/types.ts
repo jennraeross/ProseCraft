@@ -1,4 +1,4 @@
-import type { ChapterData, DocumentData, PublishOptions, SpaceName } from "../publish/types";
+import type { ChapterData, DocumentData, NoteFolder, PublishOptions, SpaceName } from "../publish/types";
 
 export type ActivityRecord = { edits: number; wordsAdded: number };
 export type StoryboardKind = "chapter" | "scene" | "blank" | SpaceName;
@@ -28,6 +28,7 @@ export type ProjectData = {
   activity: Record<string, ActivityRecord>;
   storyboardCards?: StoryboardCard[];
   storyboardRows?: StoryboardRow[];
+  noteFolders?: NoteFolder[];
   publishOptions?: PublishOptions;
 };
 

@@ -1,7 +1,58 @@
-# Tauri + SvelteKit + TypeScript
+# ProseCraft
+## Outline. Write. Publish.
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
+### Overview
+Prosecraft is a novel-writing app, with tools for outlining, storyboarding, and organizing your writing. When you feel your project is ready, export it into a variety of formats with granular control.
 
-## Recommended IDE Setup
+This application is built with AI, on a base of Tauri, Typescript, and Svelte.
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+To run it's current development build yourself, clone the repo, enter it's directory and run `npm install && npm run tauri dev`
+
+### Roadmap
+
+#### Outlining
+- [x] Chapter by chapter Outline mode
+- [x] Storyboarding mode
+- [ ] Full timeline support
+- [ ] Image support
+- [ ] Plot grid
+
+#### Writing
+- [x] Rich text editor
+- [x] Chapter and Scene based organization
+- [x] Trash with restoration
+- [ ] Optional Markdown support
+- [ ] Image support
+- [x] Character templates
+- [x] Place templates
+- [x] Folders for notes
+- [ ] Universal file binder
+
+#### Publishing
+- [x] Basic export (PDF, DOCX, Epub, Markdown, HTML, Plain Text)
+- [x] Paginated & Non-Paginated Preview
+- [x] Preset style support
+- [ ] Custom style support
+- [ ] Front matter
+- [ ] Back matter
+- [ ] TOC
+- [ ] Cover
+
+#### Backup & Sync
+- [x] Unencrypted backup
+- [x] Encrypted backup
+- [x] Sync via external folder
+- [x] Basic conflict resolution
+- [ ] More advanced syncing (such as for mobile)
+
+#### Application
+- [x] Font selection
+- [x] Light / Dark mode
+- [x] Colorscheme selection
+- [ ] Custom fonts
+- [ ] Custom colorschemes
+
+#### Mobile
+- [ ] Fully responsive interface (partial)
+- [ ] Mobile syncing
+- [ ] Touch dragging capability for chapters and cards
