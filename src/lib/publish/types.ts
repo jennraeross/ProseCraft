@@ -1,3 +1,11 @@
+import { normalizeMatterPages, type MatterPage } from "./matter";
+import {
+  BUILTIN_STYLE_IDS,
+  normalizeCustomStyles,
+  type BuiltinStyleId,
+  type CustomExportStyle
+} from "./presets";
+
 export const SPACE_NAMES = ["Characters", "Places", "Research", "Notes"] as const;
 export type SpaceName = (typeof SPACE_NAMES)[number];
 
@@ -68,13 +76,19 @@ export type DocumentData = {
 };
 
 export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text";
-export type StylePreset = "manuscript" | "classic" | "modern" | "ebook";
+/** Built-in style identifiers. Custom styles use string IDs from `customStyles`. */
+export type StylePreset = BuiltinStyleId;
 export type SceneSeparator = "blank" | "asterisks" | "hash" | "line" | "none";
 
 export type PublishOptions = {
   format: ExportFormat;
-  style: StylePreset;
+  /** A built-in style ID or the ID of an entry in `customStyles`. */
+  style: string;
+  /** Project-owned styles, stored with the rest of the publishing settings. */
+  customStyles: CustomExportStyle[];
   includeTitlePage: boolean;
+  includeCopyrightPage: boolean;
+  includeTableOfContents: boolean;
   includeChapterTitles: boolean;
   includeSceneTitles: boolean;
   pageBreakBeforeChapters: boolean;
@@ -83,6 +97,8 @@ export type PublishOptions = {
   subtitle: string;
   copyright: string;
   dedication: string;
+  frontMatter: MatterPage[];
+  backMatter: MatterPage[];
 };
 
 export type CompiledScene = {
@@ -102,12 +118,21 @@ export type CompiledChapter = {
   words: number;
 };
 
+export type CompiledMatterPage = {
+  id: string;
+  title: string;
+  body: string;
+  blank?: boolean;
+};
+
 export type CompiledBook = {
   title: string;
   subtitle: string;
   author: string;
   copyright: string;
   dedication: string;
+  frontMatter: CompiledMatterPage[];
+  backMatter: CompiledMatterPage[];
   chapters: CompiledChapter[];
   words: number;
   scenes: number;
@@ -170,7 +195,10 @@ export function defaultPublishOptions(): PublishOptions {
   return {
     format: "pdf",
     style: "manuscript",
+    customStyles: [],
     includeTitlePage: true,
+    includeCopyrightPage: false,
+    includeTableOfContents: false,
     includeChapterTitles: true,
     includeSceneTitles: false,
     pageBreakBeforeChapters: true,
@@ -178,7 +206,9 @@ export function defaultPublishOptions(): PublishOptions {
     dropCaps: true,
     subtitle: "",
     copyright: "",
-    dedication: ""
+    dedication: "",
+    frontMatter: [],
+    backMatter: []
   };
 }
 
@@ -190,12 +220,22 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
   const defaults = defaultPublishOptions();
   if (!isRecord(value)) return defaults;
   const formats = FORMAT_ORDER;
-  const styles: StylePreset[] = ["manuscript", "classic", "modern", "ebook"];
+  const customStyles = normalizeCustomStyles(value.customStyles);
+  const styleIds = new Set<string>([
+    ...BUILTIN_STYLE_IDS,
+    ...customStyles.map((style) => style.id)
+  ]);
+  const style = typeof value.style === "string" && styleIds.has(value.style)
+    ? value.style
+    : defaults.style;
   const separators: SceneSeparator[] = ["blank", "asterisks", "hash", "line", "none"];
   return {
     format: formats.includes(value.format as ExportFormat) ? value.format as ExportFormat : defaults.format,
-    style: styles.includes(value.style as StylePreset) ? value.style as StylePreset : defaults.style,
+    style,
+    customStyles,
     includeTitlePage: typeof value.includeTitlePage === "boolean" ? value.includeTitlePage : defaults.includeTitlePage,
+    includeCopyrightPage: typeof value.includeCopyrightPage === "boolean" ? value.includeCopyrightPage : defaults.includeCopyrightPage,
+    includeTableOfContents: typeof value.includeTableOfContents === "boolean" ? value.includeTableOfContents : defaults.includeTableOfContents,
     includeChapterTitles: typeof value.includeChapterTitles === "boolean" ? value.includeChapterTitles : defaults.includeChapterTitles,
     includeSceneTitles: typeof value.includeSceneTitles === "boolean" ? value.includeSceneTitles : defaults.includeSceneTitles,
     pageBreakBeforeChapters: typeof value.pageBreakBeforeChapters === "boolean" ? value.pageBreakBeforeChapters : defaults.pageBreakBeforeChapters,
@@ -203,7 +243,9 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     dropCaps: typeof value.dropCaps === "boolean" ? value.dropCaps : defaults.dropCaps,
     subtitle: typeof value.subtitle === "string" ? value.subtitle.slice(0, 200) : defaults.subtitle,
     copyright: typeof value.copyright === "string" ? value.copyright.slice(0, 500) : defaults.copyright,
-    dedication: typeof value.dedication === "string" ? value.dedication.slice(0, 1000) : defaults.dedication
+    dedication: typeof value.dedication === "string" ? value.dedication.slice(0, 1000) : defaults.dedication,
+    frontMatter: normalizeMatterPages(value.frontMatter),
+    backMatter: normalizeMatterPages(value.backMatter)
   };
 }
 

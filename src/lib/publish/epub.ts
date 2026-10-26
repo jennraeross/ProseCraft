@@ -1,12 +1,14 @@
 import { strToU8, zipSync, type Zippable } from "fflate";
 import { markDropCapParagraph } from "./content";
 import { decodeEmbeddedImage } from "./embedded-image";
-import { PRESETS } from "./presets";
+import { matterParagraphs } from "./matter";
+import { resolveStyleTokens } from "./presets";
 import { escapeXml, htmlToXhtml } from "./xhtml";
 import {
   FORMAT_INFO,
   slugifyFilename,
   type CompiledBook,
+  type CompiledMatterPage,
   type ExportPayload,
   type PublishOptions,
   type SceneSeparator
@@ -43,13 +45,13 @@ ${body}
 `;
 }
 
-function titlePageXhtml(book: CompiledBook): string {
+function titlePageXhtml(book: CompiledBook, includeCopyright: boolean): string {
   const lines = [
     '<div class="title-page">',
     `  <h1 class="book-title">${escapeXml(book.title)}</h1>`,
     book.subtitle ? `  <p class="book-subtitle">${escapeXml(book.subtitle)}</p>` : "",
     book.author ? `  <p class="book-author">by ${escapeXml(book.author)}</p>` : "",
-    book.copyright
+    includeCopyright && book.copyright
       ? `  <p class="book-copyright">${escapeXml(book.copyright).replace(/\n/g, "<br />")}</p>`
       : "",
     "</div>"
@@ -57,11 +59,48 @@ function titlePageXhtml(book: CompiledBook): string {
   return xhtmlPage(book.title, lines.filter(Boolean).join("\n"), "titlepage");
 }
 
+function copyrightXhtml(book: CompiledBook): string {
+  return xhtmlPage(
+    "Copyright",
+    `<div class="copyright-page"><p>${escapeXml(book.copyright).replace(/\n/g, "<br />")}</p></div>`,
+    "copyright-page-body"
+  );
+}
+
 function dedicationXhtml(book: CompiledBook): string {
   return xhtmlPage(
     "Dedication",
     `<div class="dedication"><p>${escapeXml(book.dedication).replace(/\n/g, "<br />")}</p></div>`,
     "dedication-page"
+  );
+}
+
+function contentsXhtml(chapterItems: Array<{ href: string; label: string }>): string {
+  const entries = chapterItems
+    .map((item) => `    <li><a href="${item.href.split("/").pop() ?? item.href}">${escapeXml(item.label)}</a></li>`)
+    .join("\n");
+  return xhtmlPage(
+    "Contents",
+    `<nav class="contents-page" aria-label="Table of contents">
+  <h1 class="matter-title">Contents</h1>
+  <ol class="toc-list">
+${entries}
+  </ol>
+</nav>`,
+    "contents-page-body"
+  );
+}
+
+function matterXhtml(page: CompiledMatterPage, placement: "front" | "back"): string {
+  const title = page.title ? `  <h1 class="matter-title">${escapeXml(page.title)}</h1>\n` : "";
+  const paragraphs = matterParagraphs(page.body)
+    .map((paragraph) => `  <p>${escapeXml(paragraph).replace(/\n/g, "<br />")}</p>`)
+    .join("\n");
+  const label = page.title || (page.blank ? "Blank page" : placement === "front" ? "Front matter" : "Back matter");
+  return xhtmlPage(
+    label,
+    `<section class="matter-page ${placement}-matter">\n${title}${paragraphs}${paragraphs ? "\n" : ""}</section>`,
+    `${placement}-matter-page`
   );
 }
 
@@ -76,7 +115,7 @@ function chapterXhtml(
   const heading = options.includeChapterTitles
     ? `<h2 class="chapter-title">${escapeXml(chapter.label)}</h2>`
     : "";
-  const dropCaps = options.dropCaps && PRESETS[options.style].dropCap;
+  const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
   const scenes = chapter.scenes.map((scene, index) => {
     const sceneTitle = options.includeSceneTitles
       ? `<h3 class="scene-title">${escapeXml(scene.title)}</h3>`
@@ -98,7 +137,7 @@ function chapterXhtml(
 }
 
 function stylesheet(options: PublishOptions): string {
-  const tokens = PRESETS[options.style];
+  const tokens = resolveStyleTokens(options.style, options.customStyles);
   const headingEm = (tokens.chapterHeadingSizePt / tokens.bodySizePt).toFixed(2);
   return `body {
   margin: 0;
@@ -115,6 +154,26 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
 .book-author { font-size: 1em; letter-spacing: 0.08em; text-transform: uppercase; color: #666; }
 .book-copyright { margin-top: 4em; font-size: 0.72em; line-height: 1.6; color: #666; }
 .dedication { margin-top: 28%; font-style: italic; }
+.copyright-page { margin-top: 28%; text-align: center; }
+.copyright-page p { margin: 0; color: #666; font-size: 0.82em; line-height: 1.65; }
+.matter-title {
+  margin: 0 0 1.2em;
+  font-size: 1.5em;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: center;
+  text-indent: 0;
+}
+.matter-page { margin-top: 10%; }
+.matter-page p {
+  margin: 0 0 ${tokens.paragraphSpacingEm}em;
+  text-align: ${tokens.justify ? "justify" : "left"};
+  text-indent: 0;
+}
+.contents-page { margin-top: 8%; }
+.contents-page .toc-list { margin: 0; padding: 0; list-style: none; }
+.contents-page .toc-list li { margin: 0 0 0.7em; }
+.contents-page a { color: inherit; text-decoration: none; }
 .chapter-break { break-before: page; page-break-before: always; }
 .chapter-title {
   margin: ${tokens.chapterHeadingSpaceBefore}em 0 ${tokens.chapterHeadingSpaceAfter}em;
@@ -305,13 +364,31 @@ export async function exportEpub(book: CompiledBook, options: PublishOptions): P
     manifest.push('    <item id="titlepage" href="text/titlepage.xhtml" media-type="application/xhtml+xml" />');
     spine.push('    <itemref idref="titlepage" />');
   }
+  if (options.includeCopyrightPage && book.copyright) {
+    manifest.push('    <item id="copyright" href="text/copyright.xhtml" media-type="application/xhtml+xml" />');
+    spine.push('    <itemref idref="copyright" />');
+  }
   if (book.dedication) {
     manifest.push('    <item id="dedication" href="text/dedication.xhtml" media-type="application/xhtml+xml" />');
     spine.push('    <itemref idref="dedication" />');
   }
+  if (options.includeTableOfContents && book.chapters.length > 0) {
+    manifest.push('    <item id="contents" href="text/contents.xhtml" media-type="application/xhtml+xml" />');
+    spine.push('    <itemref idref="contents" />');
+  }
+  book.frontMatter.forEach((_, index) => {
+    const id = `front-matter-${index + 1}`;
+    manifest.push(`    <item id="${id}" href="text/${id}.xhtml" media-type="application/xhtml+xml" />`);
+    spine.push(`    <itemref idref="${id}" />`);
+  });
   book.chapters.forEach((_, index) => {
     manifest.push(`    <item id="chapter-${index + 1}" href="text/chapter-${index + 1}.xhtml" media-type="application/xhtml+xml" />`);
     spine.push(`    <itemref idref="chapter-${index + 1}" />`);
+  });
+  book.backMatter.forEach((_, index) => {
+    const id = `back-matter-${index + 1}`;
+    manifest.push(`    <item id="${id}" href="text/${id}.xhtml" media-type="application/xhtml+xml" />`);
+    spine.push(`    <itemref idref="${id}" />`);
   });
 
   const opf = `<?xml version="1.0" encoding="utf-8"?>
@@ -343,10 +420,24 @@ ${spine.join("\n")}
   files["OEBPS/nav.xhtml"] = strToU8(navXhtml(book, chapterItems));
   files["OEBPS/toc.ncx"] = strToU8(ncx(book, identifier, chapterItems));
   files["OEBPS/styles.css"] = strToU8(stylesheet(options));
-  if (options.includeTitlePage) files["OEBPS/text/titlepage.xhtml"] = strToU8(titlePageXhtml(book));
+  if (options.includeTitlePage) {
+    files["OEBPS/text/titlepage.xhtml"] = strToU8(titlePageXhtml(book, !options.includeCopyrightPage));
+  }
+  if (options.includeCopyrightPage && book.copyright) {
+    files["OEBPS/text/copyright.xhtml"] = strToU8(copyrightXhtml(book));
+  }
   if (book.dedication) files["OEBPS/text/dedication.xhtml"] = strToU8(dedicationXhtml(book));
+  if (options.includeTableOfContents && book.chapters.length > 0) {
+    files["OEBPS/text/contents.xhtml"] = strToU8(contentsXhtml(chapterItems));
+  }
+  book.frontMatter.forEach((page, index) => {
+    files[`OEBPS/text/front-matter-${index + 1}.xhtml`] = strToU8(matterXhtml(page, "front"));
+  });
   book.chapters.forEach((_, index) => {
     files[`OEBPS/text/chapter-${index + 1}.xhtml`] = strToU8(chapterXhtml(book, options, index, imagePaths));
+  });
+  book.backMatter.forEach((page, index) => {
+    files[`OEBPS/text/back-matter-${index + 1}.xhtml`] = strToU8(matterXhtml(page, "back"));
   });
 
   const bytes = zipSync(files);

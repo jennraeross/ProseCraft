@@ -79,7 +79,7 @@
   .entity-field { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
   .entity-field.wide { grid-column: 1 / -1; }
   .entity-label { color: var(--text-muted); font-size: 9px; font-weight: 650; letter-spacing: .4px; text-transform: uppercase; }
-  .entity-input { width: 100%; padding: 7px 9px; border: 1px solid var(--border-control); border-radius: 6px; outline: none; background: var(--surface-raised); color: var(--text-body); font-family: var(--editor-font); font-size: calc(13px * var(--editor-scale)); line-height: 1.5; }
+  .entity-input { width: 100%; padding: 7px 9px; border: 1px solid var(--border-control); border-radius: 6px; outline: none; background: var(--surface-raised); color: var(--text-body); font-family: var(--interface-font); font-size: calc(13px * var(--editor-scale)); line-height: 1.5; }
   .entity-input::placeholder { color: var(--text-faint); }
   .entity-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
   .entity-textarea { min-height: 66px; resize: none; overflow-y: hidden; }

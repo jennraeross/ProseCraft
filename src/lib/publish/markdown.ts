@@ -74,9 +74,16 @@ export function exportMarkdown(book: CompiledBook, options: PublishOptions): Exp
     blocks.push(`# ${book.title}`);
     if (book.subtitle) blocks.push(`_${book.subtitle}_`);
     if (book.author) blocks.push(`by ${book.author}`);
-    if (book.copyright) blocks.push(book.copyright);
+    if (book.copyright && !options.includeCopyrightPage) blocks.push(book.copyright);
   }
+  if (options.includeCopyrightPage && book.copyright) blocks.push(book.copyright);
   if (book.dedication) blocks.push(`> ${book.dedication.replace(/\n/g, "\n> ")}`);
+  if (options.includeTableOfContents && book.chapters.length > 0) {
+    blocks.push(["## Contents", ...book.chapters.map((chapter) => `- ${chapter.label}`)].join("\n"));
+  }
+  for (const page of book.frontMatter) {
+    blocks.push([page.title ? `## ${page.title}` : "", page.body].filter(Boolean).join("\n\n"));
+  }
 
   for (const chapter of book.chapters) {
     if (options.includeChapterTitles) blocks.push(`## ${chapter.label}`);
@@ -89,6 +96,10 @@ export function exportMarkdown(book: CompiledBook, options: PublishOptions): Exp
     }
     const separator = separatorMarkdown(options.sceneSeparator);
     blocks.push(scenes.join(separator ? `\n\n${separator}\n\n` : "\n\n"));
+  }
+
+  for (const page of book.backMatter) {
+    blocks.push([page.title ? `## ${page.title}` : "", page.body].filter(Boolean).join("\n\n"));
   }
 
   const markdown = `${blocks.filter(Boolean).join("\n\n")}\n`;

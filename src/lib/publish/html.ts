@@ -4,13 +4,15 @@ import {
   type PreviewPalette
 } from "../color-schemes";
 import { markDropCapParagraph } from "./content";
-import { PRESETS, type PresetTokens } from "./presets";
+import { matterParagraphs } from "./matter";
+import { resolveStyleTokens, type PresetTokens } from "./presets";
 import { escapeXml, escapeXmlAttribute } from "./xhtml";
 import {
   FORMAT_INFO,
   slugifyFilename,
   type CompiledBook,
   type CompiledChapter,
+  type CompiledMatterPage,
   type ExportPayload,
   type PublishOptions,
   type SceneSeparator
@@ -31,7 +33,7 @@ function separatorMarkup(separator: SceneSeparator): string {
   }
 }
 
-function titlePageHtml(book: CompiledBook): string {
+function titlePageHtml(book: CompiledBook, includeCopyright: boolean): string {
   const parts = [
     '<section class="title-page">',
     '  <div class="title-page-main">',
@@ -39,15 +41,39 @@ function titlePageHtml(book: CompiledBook): string {
     book.subtitle ? `    <p class="book-subtitle">${escapeXml(book.subtitle)}</p>` : "",
     book.author ? `    <p class="book-author">by ${escapeXml(book.author)}</p>` : "",
     "  </div>",
-    book.copyright ? `  <p class="book-copyright">${escapeXml(book.copyright).replace(/\n/g, "<br />")}</p>` : "",
+    includeCopyright && book.copyright
+      ? `  <p class="book-copyright">${escapeXml(book.copyright).replace(/\n/g, "<br />")}</p>`
+      : "",
     "</section>"
   ];
   return parts.filter(Boolean).join("\n");
 }
 
+function copyrightPageHtml(book: CompiledBook): string {
+  if (!book.copyright) return "";
+  return `<section class="copyright-page"><p>${escapeXml(book.copyright).replace(/\n/g, "<br />")}</p></section>`;
+}
+
 function dedicationHtml(book: CompiledBook): string {
   if (!book.dedication) return "";
   return `<section class="dedication"><p>${escapeXml(book.dedication).replace(/\n/g, "<br />")}</p></section>`;
+}
+
+function tableOfContentsHtml(book: CompiledBook): string {
+  if (book.chapters.length === 0) return "";
+  const entries = book.chapters
+    .map((chapter) => `  <p class="toc-entry"><a href="#chapter-${escapeXmlAttribute(chapter.id)}">${escapeXml(chapter.label)}</a></p>`)
+    .join("\n");
+  return `<nav class="matter-page toc-page" aria-label="Table of contents">\n  <h2 class="matter-title">Contents</h2>\n${entries}\n</nav>`;
+}
+
+function matterPageHtml(page: CompiledMatterPage, placement: "front" | "back"): string {
+  if (!page.title && !page.body && !page.blank) return "";
+  const title = page.title ? `  <h2 class="matter-title">${escapeXml(page.title)}</h2>\n` : "";
+  const paragraphs = matterParagraphs(page.body)
+    .map((paragraph) => `  <p>${escapeXml(paragraph).replace(/\n/g, "<br />")}</p>`)
+    .join("\n");
+  return `<section class="matter-page ${placement}-matter${page.blank && !title && !paragraphs ? " blank-matter-page" : ""}">\n${title}${paragraphs}${paragraphs ? "\n" : ""}</section>`;
 }
 
 function chapterHtml(
@@ -72,20 +98,26 @@ function chapterHtml(
     ? `<h2 class="chapter-title">${escapeXml(chapter.label)}</h2>`
     : "";
 
-  return `<section class="chapter${breakClass}">${heading}\n${scenes}</section>`;
+  return `<section class="chapter${breakClass}" id="chapter-${escapeXmlAttribute(chapter.id)}">${heading}\n${scenes}</section>`;
 }
 
 export function buildManuscriptBody(book: CompiledBook, options: PublishOptions, preview = false): string {
   const chapters = preview ? book.chapters.slice(0, 1) : book.chapters;
-  const dropCaps = options.dropCaps && PRESETS[options.style].dropCap;
-  const frontMatter = [
-    options.includeTitlePage ? titlePageHtml(book) : "",
-    dedicationHtml(book)
-  ].filter(Boolean).join("\n");
+  const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
+  const openingPages = [
+    options.includeTitlePage ? titlePageHtml(book, !options.includeCopyrightPage) : "",
+    options.includeCopyrightPage ? copyrightPageHtml(book) : "",
+    dedicationHtml(book),
+    options.includeTableOfContents ? tableOfContentsHtml(book) : "",
+    ...book.frontMatter.map((page) => matterPageHtml(page, "front"))
+  ].filter(Boolean);
   const body = chapters
     .map((chapter, index) => chapterHtml(chapter, options, index === 0, dropCaps))
     .join("\n");
-  return `${frontMatter}\n${body}`;
+  const backMatter = preview
+    ? []
+    : book.backMatter.map((page) => matterPageHtml(page, "back")).filter(Boolean);
+  return [...openingPages, body, ...backMatter].filter(Boolean).join("\n");
 }
 
 function manuscriptCss(
@@ -171,6 +203,50 @@ function manuscriptCss(
       page-break-after: always;
     }
     .dedication p { margin: 0; max-width: 22em; }
+    .copyright-page {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 70vh;
+      padding: 1in;
+      text-align: center;
+      page-break-after: always;
+    }
+    .copyright-page p {
+      max-width: 26em;
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.82em;
+      line-height: 1.65;
+    }
+    .matter-page {
+      min-height: 70vh;
+      padding: 0.9in 0.6in;
+      page-break-after: always;
+    }
+    .matter-title {
+      margin: 0 0 1.2em;
+      color: var(--ink);
+      font-size: 1.5em;
+      font-weight: 600;
+      line-height: 1.25;
+      text-align: center;
+      text-indent: 0;
+    }
+    .matter-page p {
+      margin: 0 0 var(--paragraph-spacing);
+      text-align: ${tokens.justify ? "justify" : "left"};
+      text-indent: 0;
+      hyphens: auto;
+    }
+    .back-matter { break-before: page; page-break-before: always; }
+    .toc-entry { margin: 0 0 0.7em; text-indent: 0; }
+    .toc-entry a {
+      color: inherit;
+      text-decoration: none;
+      text-underline-offset: 2px;
+    }
+    .toc-entry a:hover { text-decoration: underline; }
     .chapter { padding: 0; }
     .chapter-break { break-before: page; page-break-before: always; }
     .chapter-title {
@@ -315,6 +391,7 @@ function manuscriptCss(
     .page-header { top: calc(var(--page-margin-top) / 2); }
     .page-footer { bottom: calc(var(--page-margin-bottom) / 2); }
     .page .title-page, .page .dedication { min-height: 100%; padding: 0; }
+    .page .copyright-page, .page .matter-page, .page .toc-page { min-height: 100%; padding: 0; }
     .page .chapter { padding: 0; }
     .page .preview-empty { margin: 2in 1in; }
     ` : ""}
@@ -327,7 +404,8 @@ function manuscriptCss(
       body { background: #ffffff; }
       .book { max-width: none; }
       .chapter-break { break-before: page; }
-      .title-page, .dedication { break-after: page; }
+      .title-page, .dedication, .copyright-page, .matter-page { break-after: page; }
+      .back-matter { break-before: page; }
     }
   `;
 }
@@ -364,7 +442,7 @@ export function buildPreviewHtml(
   options: PublishOptions,
   render: PreviewRenderOptions = {}
 ): string {
-  const tokens = PRESETS[options.style];
+  const tokens = resolveStyleTokens(options.style, options.customStyles);
   const page = tokens.page;
   const dark = render.dark ?? false;
   const paginated = render.paginated ?? false;
@@ -405,7 +483,7 @@ ${content}
 }
 
 export function exportHtml(book: CompiledBook, options: PublishOptions): ExportPayload {
-  const tokens = PRESETS[options.style];
+  const tokens = resolveStyleTokens(options.style, options.customStyles);
   const body = buildManuscriptBody(book, options, false);
   const html = documentShell(
     book.title,

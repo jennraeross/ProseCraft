@@ -390,8 +390,19 @@ export function paginatePreview(doc: Document): void {
   const paginator = new PreviewPaginator(doc, pages, metrics);
 
   for (const child of Array.from(source.children) as HTMLElement[]) {
-    if (child.classList.contains("title-page") || child.classList.contains("dedication")) {
+    if (
+      child.classList.contains("title-page")
+      || child.classList.contains("dedication")
+      || child.classList.contains("copyright-page")
+    ) {
       paginator.addFrontMatter(child);
+    } else if (child.classList.contains("matter-page") || child.classList.contains("toc-page")) {
+      if (child.classList.contains("matter-page") && child.children.length === 0) {
+        paginator.addFrontMatter(child);
+      } else {
+        child.classList.add("chapter");
+        paginator.addChapter(child);
+      }
     } else if (child.classList.contains("chapter")) {
       paginator.addChapter(child);
     }

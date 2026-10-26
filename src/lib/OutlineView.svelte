@@ -102,7 +102,7 @@
   .outline-view { width: min(100%, 860px); flex: 1; padding-bottom: 10px; }
   .outline-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 17px; padding-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
   .outline-eyebrow { color: var(--eyebrow); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; }
-  .outline-header h1 { margin: 6px 0 5px; color: var(--text-heading); font-family: var(--editor-font); font-size: 28px; font-weight: 500; letter-spacing: -.5px; }
+  .outline-header h1 { margin: 6px 0 5px; color: var(--text-heading); font-family: var(--interface-font); font-size: 28px; font-weight: 500; letter-spacing: -.5px; }
   .outline-header p { max-width: 560px; margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
   .outline-header-actions { display: flex; align-items: center; gap: 11px; flex: 0 0 auto; padding-bottom: 2px; }
   .outline-count { color: var(--text-muted); font-size: 8px; white-space: nowrap; }
@@ -117,10 +117,10 @@
   .outline-kind { color: var(--eyebrow); font-size: 7px; font-weight: 700; letter-spacing: .8px; }
   .outline-body { min-width: 0; padding: 15px 17px 13px; }
   .outline-card-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
-  .outline-card-header h2 { overflow: hidden; margin: 0; color: var(--text-heading); font-family: var(--editor-font); font-size: 19px; font-weight: 500; letter-spacing: -.2px; text-overflow: ellipsis; white-space: nowrap; }
+  .outline-card-header h2 { overflow: hidden; margin: 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 19px; font-weight: 500; letter-spacing: -.2px; text-overflow: ellipsis; white-space: nowrap; }
   .outline-meta { flex: 0 0 auto; color: var(--text-muted); font-size: 8px; white-space: nowrap; }
   .outline-meta-divider { margin: 0 4px; color: var(--border-control); }
-  .outline-summary { display: block; width: 100%; min-height: 82px; padding: 3px 0; resize: none; overflow-y: hidden; border: 0; outline: none; background: transparent; color: var(--text-body); font-family: var(--editor-font); font-size: 13px; line-height: 1.72; }
+  .outline-summary { display: block; width: 100%; min-height: 82px; padding: 3px 0; resize: none; overflow-y: hidden; border: 0; outline: none; background: transparent; color: var(--text-body); font-family: var(--interface-font); font-size: 13px; line-height: 1.72; }
   .outline-summary::placeholder { color: var(--text-muted); font-family: Inter, ui-sans-serif, sans-serif; font-size: 10px; }
   .outline-add-card { display: flex; align-items: center; gap: 11px; min-height: 68px; padding: 13px 16px; border: 1px dashed var(--border-control); border-radius: 9px; background: transparent; color: var(--text-muted); cursor: pointer; text-align: left; }
   .outline-add-card:hover { border-color: var(--accent-soft); background: var(--surface); color: var(--text-secondary); }
@@ -129,7 +129,7 @@
   .outline-add-card small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 8px; }
   .outline-empty { display: flex; min-height: 310px; align-items: center; flex-direction: column; justify-content: center; gap: 6px; padding: 30px; border: 1px dashed var(--border-control); border-radius: 10px; background: var(--surface); text-align: center; }
   .outline-empty-mark { color: var(--eyebrow); font-family: Georgia, serif; font-size: 34px; line-height: 1; }
-  .outline-empty h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--editor-font); font-size: 21px; font-weight: 500; }
+  .outline-empty h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 21px; font-weight: 500; }
   .outline-empty p { margin: 0 0 8px; color: var(--text-muted); font-size: 10px; }
   .outline-add:focus-visible, .outline-add-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 

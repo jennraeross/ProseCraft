@@ -13,10 +13,24 @@
   import "@fontsource/ibm-plex-sans/latin-700.css";
   import "$lib/color-schemes.css";
   import { autoResize } from "$lib/auto-resize";
+  import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import EntitySheet, { type SheetSection } from "$lib/EntitySheet.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
   import PublishView from "$lib/PublishView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
+  import {
+    isMarkdownFontPreference,
+    isRichTextFontPreference,
+    listSystemFontFamilies,
+    MARKDOWN_FONT_OPTIONS,
+    markdownFontStack,
+    RICH_TEXT_FONT_OPTIONS,
+    richTextFontStack,
+    type EditorFontSelection,
+    type MarkdownFontPreference,
+    type RichTextFontPreference,
+    type SystemFontFamily
+  } from "$lib/editor-fonts";
   import { sanitizeHtml as cleanHtml } from "$lib/sanitize";
   import {
     chapterLabel as formatChapterLabel,
@@ -71,6 +85,8 @@
   const colorSchemeStorageKey = "prosecraft-color-scheme";
   const fontStorageKey = "prosecraft-editor-font";
   const markdownFontStorageKey = "prosecraft-markdown-editor-font";
+  const richTextSystemFontStorageKey = "prosecraft-editor-system-font";
+  const markdownSystemFontStorageKey = "prosecraft-markdown-editor-system-font";
   const scaleStorageKey = "prosecraft-editor-scale";
   const markdownEditorStorageKey = "prosecraft-markdown-editor-enabled";
   const goalsStorageKey = "prosecraft-writing-goals";
@@ -85,8 +101,6 @@
 
   const spaces = SPACE_NAMES;
   type ThemePreference = "system" | "light" | "dark";
-  type FontPreference = "serif" | "sans" | "mono" | "bitter" | "literata" | "ibm-plex-serif" | "ibm-plex-sans";
-  type MarkdownFontPreference = "sf-mono" | "menlo" | "monaco" | "courier";
   const spaceNouns: Record<SpaceName, string> = {
     Characters: "character",
     Places: "place",
@@ -212,8 +226,15 @@
   let themePreference = $state<ThemePreference>("system");
   let resolvedTheme = $state<"light" | "dark">("light");
   let colorScheme = $state<ColorScheme>("prosecraft");
-  let richTextFontPreference = $state<FontPreference>("serif");
+  let richTextFontPreference = $state<RichTextFontPreference>("serif");
   let markdownFontPreference = $state<MarkdownFontPreference>("sf-mono");
+  let richTextSystemFont = $state("");
+  let markdownSystemFont = $state("");
+  let systemFonts = $state<SystemFontFamily[]>([]);
+  let systemFontsLoaded = $state(false);
+  let systemFontsLoading = $state(false);
+  let systemFontsError = $state("");
+  let systemFontsRequest: Promise<void> | undefined;
   let editorScale = $state(100);
   let markdownEditorEnabled = $state(false);
   let markdownEditorMode = $state(false);
@@ -667,6 +688,8 @@
       localStorage.setItem(colorSchemeStorageKey, colorScheme);
       localStorage.setItem(fontStorageKey, richTextFontPreference);
       localStorage.setItem(markdownFontStorageKey, markdownFontPreference);
+      localStorage.setItem(richTextSystemFontStorageKey, richTextSystemFont);
+      localStorage.setItem(markdownSystemFontStorageKey, markdownSystemFont);
       localStorage.setItem(scaleStorageKey, String(editorScale));
       localStorage.setItem(markdownEditorStorageKey, String(markdownEditorEnabled));
       preferencesSaved = true;
@@ -688,33 +711,86 @@
     savePreferences();
   }
 
-  function setRichTextFontPreference(value: FontPreference) {
+  function applyRichTextFont() {
+    document.documentElement.style.setProperty(
+      "--writing-font",
+      richTextFontStack(richTextFontPreference, richTextSystemFont)
+    );
+  }
+
+  function applyMarkdownFont() {
+    const root = document.documentElement;
+    root.dataset.markdownFont = markdownSystemFont.trim() ? "custom" : markdownFontPreference;
+    root.style.setProperty(
+      "--markdown-editor-font",
+      markdownFontStack(markdownFontPreference, markdownSystemFont)
+    );
+  }
+
+  function setRichTextFontPreference(value: RichTextFontPreference) {
     richTextFontPreference = value;
-    document.documentElement.dataset.editorFont = value;
+    richTextSystemFont = "";
+    applyRichTextFont();
+    savePreferences();
+  }
+
+  function setRichTextSystemFont(family: string) {
+    richTextSystemFont = family;
+    applyRichTextFont();
     savePreferences();
   }
 
   function setMarkdownFontPreference(value: MarkdownFontPreference) {
     markdownFontPreference = value;
-    document.documentElement.dataset.markdownFont = value;
+    markdownSystemFont = "";
+    applyMarkdownFont();
     savePreferences();
   }
 
-  function isFontPreference(value: string | null): value is FontPreference {
-    return value === "serif"
-      || value === "sans"
-      || value === "mono"
-      || value === "bitter"
-      || value === "literata"
-      || value === "ibm-plex-serif"
-      || value === "ibm-plex-sans";
+  function setMarkdownSystemFont(family: string) {
+    markdownSystemFont = family;
+    applyMarkdownFont();
+    savePreferences();
   }
 
-  function isMarkdownFontPreference(value: string | null): value is MarkdownFontPreference {
-    return value === "sf-mono"
-      || value === "menlo"
-      || value === "monaco"
-      || value === "courier";
+  function selectRichTextFont(selection: EditorFontSelection) {
+    if (selection.source === "system") {
+      setRichTextSystemFont(selection.family);
+    } else if (isRichTextFontPreference(selection.id)) {
+      setRichTextFontPreference(selection.id);
+    }
+  }
+
+  function selectMarkdownFont(selection: EditorFontSelection) {
+    if (selection.source === "system") {
+      setMarkdownSystemFont(selection.family);
+    } else if (isMarkdownFontPreference(selection.id)) {
+      setMarkdownFontPreference(selection.id);
+    }
+  }
+
+  function ensureSystemFonts() {
+    if (systemFontsLoaded || systemFontsRequest) return;
+    systemFontsLoading = true;
+    systemFontsError = "";
+    systemFontsRequest = listSystemFontFamilies()
+      .then((fonts) => {
+        systemFonts = fonts;
+        systemFontsLoaded = true;
+      })
+      .catch(() => {
+        systemFontsError = "Could not load installed fonts.";
+      })
+      .finally(() => {
+        systemFontsLoading = false;
+        systemFontsRequest = undefined;
+      });
+  }
+
+  function installedFontMissing(family: string): boolean {
+    if (!desktopRuntime || !family.trim() || !systemFontsLoaded) return false;
+    const normalized = family.trim().toLowerCase();
+    return !systemFonts.some((font) => font.family.toLowerCase() === normalized);
   }
 
   function setEditorScale(value: number) {
@@ -731,6 +807,7 @@
 
   function openSettings() {
     if (settingsDialog && !settingsDialog.open) settingsDialog.showModal();
+    void ensureSystemFonts();
   }
 
   function openProjectSettings() {
@@ -2078,11 +2155,13 @@
         colorScheme = savedColorScheme;
       }
       const savedFont = localStorage.getItem(fontStorageKey);
-      if (isFontPreference(savedFont)) {
+      if (isRichTextFontPreference(savedFont)) {
         richTextFontPreference = savedFont;
       }
       const savedMarkdownFont = localStorage.getItem(markdownFontStorageKey);
       if (isMarkdownFontPreference(savedMarkdownFont)) markdownFontPreference = savedMarkdownFont;
+      richTextSystemFont = localStorage.getItem(richTextSystemFontStorageKey)?.trim() ?? "";
+      markdownSystemFont = localStorage.getItem(markdownSystemFontStorageKey)?.trim() ?? "";
       const savedScale = Number(localStorage.getItem(scaleStorageKey));
       if ([80, 90, 100, 110, 120, 130, 140].includes(savedScale)) editorScale = savedScale;
       markdownEditorEnabled = localStorage.getItem(markdownEditorStorageKey) === "true";
@@ -2136,8 +2215,8 @@
       ? (themeMediaQuery.matches ? "dark" : "light")
       : themePreference);
     applyColorScheme(colorScheme);
-    document.documentElement.dataset.editorFont = richTextFontPreference;
-    document.documentElement.dataset.markdownFont = markdownFontPreference;
+    applyRichTextFont();
+    applyMarkdownFont();
     document.documentElement.style.setProperty("--editor-scale", String(editorScale / 100));
 
     try {
@@ -3012,40 +3091,38 @@
       </select>
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Editor fonts</strong><span>Choose separate typefaces for each editor</span></div>
-      <label class="preference-label" for="rich-text-font-preference">Rich text editor</label>
-      <select
+      <div class="preference-heading"><strong>Writing fonts</strong><span>Choose typefaces for the writing area and Markdown source</span></div>
+      <label class="preference-label" for="rich-text-font-preference">Writing font</label>
+      <EditorFontPicker
         id="rich-text-font-preference"
-        class="preference-select"
-        value={richTextFontPreference}
-        onchange={(event) => {
-          const value = (event.currentTarget as HTMLSelectElement).value;
-          if (isFontPreference(value)) setRichTextFontPreference(value);
-        }}
-      >
-        <option value="serif">Georgia</option>
-        <option value="bitter">Bitter</option>
-        <option value="literata">Literata</option>
-        <option value="ibm-plex-serif">IBM Plex Serif</option>
-        <option value="ibm-plex-sans">IBM Plex Sans</option>
-        <option value="sans">System Sans Serif</option>
-        <option value="mono">SF Mono</option>
-      </select>
-      <label class="preference-label markdown-font-label" for="markdown-font-preference">Markdown editor (monospace)</label>
-      <select
+        builtinOptions={RICH_TEXT_FONT_OPTIONS}
+        builtinValue={richTextFontPreference}
+        systemValue={richTextSystemFont}
+        families={systemFonts}
+        loading={systemFontsLoading}
+        error={systemFontsError}
+        supported={desktopRuntime}
+        onselect={selectRichTextFont}
+      />
+      {#if installedFontMissing(richTextSystemFont)}
+        <p class="font-picker-warning">“{richTextSystemFont}” is not installed on this device; the ProseCraft fallback will be used.</p>
+      {/if}
+      <label class="preference-label markdown-font-label" for="markdown-font-preference">Markdown source font</label>
+      <EditorFontPicker
         id="markdown-font-preference"
-        class="preference-select"
-        value={markdownFontPreference}
-        onchange={(event) => {
-          const value = (event.currentTarget as HTMLSelectElement).value;
-          if (isMarkdownFontPreference(value)) setMarkdownFontPreference(value);
-        }}
-      >
-        <option value="sf-mono">SF Mono</option>
-        <option value="menlo">Menlo</option>
-        <option value="monaco">Monaco</option>
-        <option value="courier">Courier New</option>
-      </select>
+        builtinOptions={MARKDOWN_FONT_OPTIONS}
+        builtinValue={markdownFontPreference}
+        systemValue={markdownSystemFont}
+        families={systemFonts}
+        loading={systemFontsLoading}
+        error={systemFontsError}
+        supported={desktopRuntime}
+        monospaceOnly
+        onselect={selectMarkdownFont}
+      />
+      {#if installedFontMissing(markdownSystemFont)}
+        <p class="font-picker-warning">“{markdownSystemFont}” is not installed on this device; the ProseCraft fallback will be used.</p>
+      {/if}
     </section>
     <section class="preference-section">
       <div class="preference-heading"><strong>Text size</strong><span>Adjust the editor scale</span></div>
@@ -3283,7 +3360,8 @@
     --heat-text-3: #fff;
     --heat-text-4: #fff;
     --editor-scale: 1;
-    --editor-font: Georgia, "Times New Roman", serif;
+    --interface-font: Georgia, "Times New Roman", serif;
+    --writing-font: var(--interface-font);
   }
   :global(html[data-theme="dark"]) {
     color-scheme: dark;
@@ -3397,12 +3475,6 @@
       --editor-scale: 1;
     }
   }
-  :global(html[data-editor-font="sans"]) { --editor-font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  :global(html[data-editor-font="mono"]) { --editor-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
-  :global(html[data-editor-font="bitter"]) { --editor-font: "Bitter Variable", Georgia, serif; }
-  :global(html[data-editor-font="literata"]) { --editor-font: "Literata Variable", Georgia, serif; }
-  :global(html[data-editor-font="ibm-plex-serif"]) { --editor-font: "IBM Plex Serif", Georgia, serif; }
-  :global(html[data-editor-font="ibm-plex-sans"]) { --editor-font: "IBM Plex Sans", Inter, sans-serif; }
   :global(html[data-markdown-font="sf-mono"]) { --markdown-editor-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
   :global(html[data-markdown-font="menlo"]) { --markdown-editor-font: Menlo, "SFMono-Regular", monospace; }
   :global(html[data-markdown-font="monaco"]) { --markdown-editor-font: Monaco, "SFMono-Regular", monospace; }
@@ -3597,7 +3669,7 @@
   .document-type { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 650; letter-spacing: .8px; }
   .type-mark { color: var(--accent); font-family: Georgia, serif; font-size: 15px; font-weight: 400; }
   .meta-divider { height: 12px; border-left: 1px solid var(--border); }
-  .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--editor-font); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
+  .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--writing-font, var(--interface-font)); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
   .title-input::placeholder { color: var(--text-faint); }
   .toolbar { display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
   .style-select { width: 112px; height: 28px; padding: 0 6px; border: 0; outline: 0; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
@@ -3628,7 +3700,7 @@
   .markdown-source-editor :global(.cm-focused) { outline: none; }
   :global(.markdown-image-placeholder) { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font: 10px/1.6 var(--markdown-editor-font); white-space: nowrap; }
   .editor-content-hidden { display: none; }
-  .editor-content { min-height: 430px; padding: 37px 1px 35px; outline: none; color: var(--text-body); font-family: var(--editor-font); font-size: calc(16px * var(--editor-scale)); line-height: 1.85; }
+  .editor-content { min-height: 430px; padding: 37px 1px 35px; outline: none; color: var(--text-body); font-family: var(--writing-font, var(--interface-font)); font-size: calc(16px * var(--editor-scale)); line-height: 1.85; }
   .editor-content :global(.eyebrow) { margin: 0 0 11px; color: var(--eyebrow); font-family: ui-sans-serif, sans-serif; font-size: calc(9px * var(--editor-scale)); font-weight: 650; letter-spacing: 1.3px; line-height: 1.5; }
   .editor-content :global(h2) { margin: 0 0 19px; color: var(--text-heading); font-size: calc(24px * var(--editor-scale)); font-weight: 500; letter-spacing: -.5px; line-height: 1.4; }
   .editor-content :global(h1) { color: var(--text-heading); font-size: calc(30px * var(--editor-scale)); font-weight: 500; line-height: 1.35; }
@@ -3654,7 +3726,7 @@
   .storyboard-sources { min-height: 0; overflow: auto; padding: 16px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); scrollbar-width: thin; }
   .board-sources-heading { padding: 0 3px 14px; border-bottom: 1px solid var(--border-soft); }
   .board-eyebrow { color: var(--eyebrow); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; }
-  .board-sources-heading h2 { margin: 6px 0 5px; color: var(--text-heading); font-family: var(--editor-font); font-size: 18px; font-weight: 500; }
+  .board-sources-heading h2 { margin: 6px 0 5px; color: var(--text-heading); font-family: var(--interface-font); font-size: 18px; font-weight: 500; }
   .board-sources-heading p { margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
   .board-source-group { padding: 13px 0 2px; }
   .board-source-group h3 { margin: 0 3px 6px; color: var(--text-muted); font-size: 8px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
@@ -3670,7 +3742,7 @@
   .board-source-empty { margin: 5px 3px; color: var(--text-muted); font-size: 9px; }
   .storyboard-canvas { min-width: 0; padding: 18px 20px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
   .storyboard-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid var(--border-soft); }
-  .storyboard-header h1 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--editor-font); font-size: 25px; font-weight: 500; }
+  .storyboard-header h1 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 25px; font-weight: 500; }
   .storyboard-header-actions { display: flex; align-items: center; gap: 10px; }
   .board-card-count { padding-bottom: 3px; color: var(--text-muted); font-size: 9px; }
   .add-timeline-row { height: 28px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
@@ -3697,9 +3769,9 @@
   .card-row-select { width: 55px; height: 21px; padding: 0 2px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-muted); font-size: 8px; }
   .card-kind { overflow: hidden; min-width: 0; flex: 1; color: var(--eyebrow); font-size: 8px; font-weight: 700; letter-spacing: .7px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
   .card-position { color: var(--text-muted); font-size: 8px; font-variant-numeric: tabular-nums; }
-  .board-card-title { width: 100%; padding: 2px 0 7px; border: 0; border-bottom: 1px solid var(--border-soft); outline: none; background: transparent; color: var(--text-heading); font-family: var(--editor-font); font-size: 15px; font-weight: 500; }
+  .board-card-title { width: 100%; padding: 2px 0 7px; border: 0; border-bottom: 1px solid var(--border-soft); outline: none; background: transparent; color: var(--text-heading); font-family: var(--interface-font); font-size: 15px; font-weight: 500; }
   .board-card-title:focus { border-color: var(--accent); }
-  .board-card-note { display: block; width: 100%; min-height: 106px; margin-top: 8px; padding: 4px 0; resize: none; overflow-y: hidden; border: 0; outline: none; background: transparent; color: var(--text-body); font-family: var(--editor-font); font-size: 12px; line-height: 1.6; }
+  .board-card-note { display: block; width: 100%; min-height: 106px; margin-top: 8px; padding: 4px 0; resize: none; overflow-y: hidden; border: 0; outline: none; background: transparent; color: var(--text-body); font-family: var(--interface-font); font-size: 12px; line-height: 1.6; }
   .board-card-note::placeholder { color: var(--text-muted); font-family: Inter, ui-sans-serif, sans-serif; font-size: 9px; }
   .storyboard-row-drop { display: grid; min-width: 82px; min-height: 80px; flex: 1 0 82px; place-items: center; padding: 8px; border: 1px dashed var(--border-control); border-radius: 7px; color: var(--text-muted); font-size: 8px; text-align: center; transition: background .12s, border-color .12s; }
   .storyboard-row-drop.drop-target { border-color: var(--accent); background: var(--selected-bg); color: var(--selected-text); }
@@ -3720,6 +3792,7 @@
   .preference-heading span { color: var(--text-muted); font-size: 10px; }
   .preference-label { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 10px; }
   .markdown-font-label { margin-top: 14px; }
+  .font-picker-warning { margin: 6px 0 0; color: var(--warning); font-size: 10px; line-height: 1.5; }
   .markdown-editor-toggle { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); cursor: pointer; font-size: 11px; }
   .markdown-editor-toggle input { accent-color: var(--accent-strong); }
   .markdown-editor-help { margin: 9px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }

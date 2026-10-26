@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
 use tauri::AppHandle;
 #[cfg(desktop)]
 use tauri::Emitter;
@@ -9,6 +11,45 @@ use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 struct ProjectMenuEntry {
     id: String,
     name: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemFontFamily {
+    family: String,
+    monospaced: bool,
+}
+
+#[tauri::command]
+fn list_system_font_families() -> Vec<SystemFontFamily> {
+    static CACHE: OnceLock<Vec<SystemFontFamily>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let mut database = fontdb::Database::new();
+            database.load_system_fonts();
+
+            let mut families: HashMap<String, (String, bool)> = HashMap::new();
+            for face in database.faces() {
+                for (family, _) in &face.families {
+                    let family = family.trim();
+                    if family.is_empty() {
+                        continue;
+                    }
+                    families
+                        .entry(family.to_lowercase())
+                        .and_modify(|(_, monospaced)| *monospaced |= face.monospaced)
+                        .or_insert_with(|| (family.to_string(), face.monospaced));
+                }
+            }
+
+            let mut result: Vec<SystemFontFamily> = families
+                .into_values()
+                .map(|(family, monospaced)| SystemFontFamily { family, monospaced })
+                .collect();
+            result.sort_by_key(|a| a.family.to_lowercase());
+            result
+        })
+        .clone()
 }
 
 #[tauri::command]
@@ -212,10 +253,10 @@ pub fn run() {
             if let Err(error) = app.emit(event_name, ()) {
                 eprintln!("Could not handle application menu event: {error}");
             }
-        } else if let Some(project_id) = event.id().as_ref().strip_prefix("switch-project-") {
-            if let Err(error) = app.emit("prosecraft:switch-project", project_id.to_string()) {
-                eprintln!("Could not handle project switching menu event: {error}");
-            }
+        } else if let Some(project_id) = event.id().as_ref().strip_prefix("switch-project-")
+            && let Err(error) = app.emit("prosecraft:switch-project", project_id.to_string())
+        {
+            eprintln!("Could not handle project switching menu event: {error}");
         }
     });
 
@@ -223,6 +264,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             update_project_menu,
+            list_system_font_families,
             sync_list_dir,
             sync_read_text,
             sync_write_text,
@@ -268,7 +310,11 @@ mod tests {
 
         sync_remove(project.clone()).unwrap();
         assert!(!sync_exists(project).unwrap());
-        assert!(sync_list_dir(format!("{root}/projects")).unwrap().is_empty());
+        assert!(
+            sync_list_dir(format!("{root}/projects"))
+                .unwrap()
+                .is_empty()
+        );
         sync_remove(dir.to_string_lossy().to_string()).unwrap();
     }
 

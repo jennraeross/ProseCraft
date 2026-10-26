@@ -1,10 +1,12 @@
 import { sanitizeHtml } from "../sanitize";
 import { chapterLabel } from "./chapters";
 import { countWords, hasVisibleText, htmlToPlainText } from "./content";
+import type { MatterPage } from "./matter";
 import type {
   ChapterData,
   CompiledBook,
   CompiledChapter,
+  CompiledMatterPage,
   CompiledScene,
   DocumentData
 } from "./types";
@@ -15,9 +17,22 @@ type CompileInput = {
   subtitle: string;
   copyright: string;
   dedication: string;
+  frontMatter: MatterPage[];
+  backMatter: MatterPage[];
   chapters: ChapterData[];
   documents: DocumentData[];
 };
+
+function compileMatterPages(pages: MatterPage[]): CompiledMatterPage[] {
+  return pages
+    .map((page) => ({
+      id: page.id,
+      title: page.title.trim(),
+      body: page.body.trim(),
+      ...(page.blank === true ? { blank: true } : {})
+    }))
+    .filter((page) => page.title.length > 0 || page.body.length > 0 || page.blank === true);
+}
 
 /**
  * Collects every non-trashed scene in chapter order and returns the manuscript
@@ -63,6 +78,8 @@ export function compileBook(input: CompileInput): CompiledBook {
     author: input.author.trim(),
     copyright: input.copyright.trim(),
     dedication: input.dedication.trim(),
+    frontMatter: compileMatterPages(input.frontMatter),
+    backMatter: compileMatterPages(input.backMatter),
     chapters: compiledChapters,
     words: compiledChapters.reduce((total, chapter) => total + chapter.words, 0),
     scenes: compiledChapters.reduce((total, chapter) => total + chapter.scenes.length, 0)

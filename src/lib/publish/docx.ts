@@ -14,14 +14,17 @@ import {
   PageBreak,
   Packer,
   Paragraph,
+  TableOfContents,
   TextRun,
   VerticalAlignSection,
   VerticalPositionAlign,
+  type FileChild,
   type IRunOptions,
   type ISectionOptions,
   type ParagraphChild
 } from "docx";
-import { PRESETS } from "./presets";
+import { matterParagraphs } from "./matter";
+import { resolveStyleTokens } from "./presets";
 import { decodeEmbeddedImage } from "./embedded-image";
 import { blocksFromHtml, trimRuns, type Block, type InlineRun } from "./rich-text";
 import {
@@ -43,6 +46,14 @@ function runOptions(run: InlineRun): Pick<IRunOptions, "bold" | "italics" | "und
     underline: run.underline ? {} : undefined,
     strike: run.strike || undefined
   };
+}
+
+function linesToTextRuns(text: string, textOptions: Omit<IRunOptions, "text" | "break"> = {}): TextRun[] {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  return lines.flatMap((line, index) => [
+    ...(index > 0 ? [new TextRun({ break: 1 })] : []),
+    new TextRun({ text: line, ...textOptions })
+  ]);
 }
 
 function inlineToChildren(runs: InlineRun[]): ParagraphChild[] {
@@ -171,7 +182,7 @@ function separatorParagraph(separator: SceneSeparator): Paragraph | null {
 }
 
 export async function exportDocx(book: CompiledBook, options: PublishOptions): Promise<ExportPayload> {
-  const tokens = PRESETS[options.style];
+  const tokens = resolveStyleTokens(options.style, options.customStyles);
   const bodySize = halfPoint(tokens.bodySizePt);
   const chapterSize = halfPoint(tokens.chapterHeadingSizePt);
   const lineSpacing = Math.round(tokens.lineHeight * 240);
@@ -190,45 +201,86 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
     }
   };
 
-  const frontMatter: Array<Paragraph> = [];
+  const titleMatter: Paragraph[] = [];
   if (options.includeTitlePage) {
-    frontMatter.push(new Paragraph({
+    titleMatter.push(new Paragraph({
       alignment: AlignmentType.CENTER,
       spacing: { before: 2400, after: 240 },
       children: [new TextRun({ text: book.title, bold: true, size: 56 })]
     }));
     if (book.subtitle) {
-      frontMatter.push(new Paragraph({
+      titleMatter.push(new Paragraph({
         alignment: AlignmentType.CENTER,
         spacing: { after: 480 },
         children: [new TextRun({ text: book.subtitle, italics: true, size: 26, color: "666666" })]
       }));
     }
     if (book.author) {
-      frontMatter.push(new Paragraph({
+      titleMatter.push(new Paragraph({
         alignment: AlignmentType.CENTER,
         spacing: { before: 720 },
         children: [new TextRun({ text: `by ${book.author}`, allCaps: true, size: 24, color: "666666" })]
       }));
     }
-    if (book.copyright) {
-      frontMatter.push(new Paragraph({
+    if (book.copyright && !options.includeCopyrightPage) {
+      titleMatter.push(new Paragraph({
         alignment: AlignmentType.CENTER,
         spacing: { before: 2400 },
-        children: [new TextRun({ text: book.copyright, size: 18, color: "666666" })]
+        children: linesToTextRuns(book.copyright, { size: 18, color: "666666" })
       }));
     }
   }
 
+  if (options.includeCopyrightPage && book.copyright) {
+    if (titleMatter.length > 0) {
+      titleMatter.push(new Paragraph({ children: [new PageBreak()] }));
+    }
+    titleMatter.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 3600 },
+      children: linesToTextRuns(book.copyright, { size: 18, color: "666666" })
+    }));
+  }
+
   if (book.dedication) {
+    if (titleMatter.length > 0) {
+      titleMatter.push(new Paragraph({ children: [new PageBreak()] }));
+    }
+    titleMatter.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 3600 },
+      children: linesToTextRuns(book.dedication, { italics: true, size: bodySize })
+    }));
+  }
+
+  const frontMatter: FileChild[] = [];
+  if (options.includeTableOfContents && book.chapters.length > 0) {
+    frontMatter.push(new TableOfContents("Contents", {
+      hyperlink: true,
+      headingStyleRange: "1-1",
+      cachedEntries: book.chapters.map((chapter) => ({ title: chapter.label, level: 1 }))
+    }));
+  }
+  for (const page of book.frontMatter) {
     if (frontMatter.length > 0) {
       frontMatter.push(new Paragraph({ children: [new PageBreak()] }));
     }
-    frontMatter.push(new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { before: 3600 },
-      children: [new TextRun({ text: book.dedication, italics: true, size: bodySize })]
-    }));
+    const paragraphs = matterParagraphs(page.body);
+    if (page.title) {
+      frontMatter.push(new Paragraph({
+        style: "MatterTitle",
+        children: linesToTextRuns(page.title)
+      }));
+    }
+    for (const paragraph of paragraphs) {
+      frontMatter.push(new Paragraph({
+        style: "MatterBody",
+        children: linesToTextRuns(paragraph)
+      }));
+    }
+    if (page.blank && !page.title && paragraphs.length === 0) {
+      frontMatter.push(new Paragraph({ children: [] }));
+    }
   }
 
   const body: Paragraph[] = [];
@@ -278,11 +330,36 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
     }
   }
 
-  const hasFrontMatter = frontMatter.length > 0;
+  for (const page of book.backMatter) {
+    body.push(new Paragraph({ children: [new PageBreak()] }));
+    const paragraphs = matterParagraphs(page.body);
+    if (page.title) {
+      body.push(new Paragraph({
+        style: "MatterTitle",
+        children: linesToTextRuns(page.title)
+      }));
+    }
+    for (const paragraph of paragraphs) {
+      body.push(new Paragraph({
+        style: "MatterBody",
+        children: linesToTextRuns(paragraph)
+      }));
+    }
+    if (page.blank && !page.title && paragraphs.length === 0) {
+      body.push(new Paragraph({ children: [] }));
+    }
+  }
+
   const sections: ISectionOptions[] = [];
-  if (hasFrontMatter) {
+  if (titleMatter.length > 0) {
     sections.push({
       properties: { page: pageProperties, verticalAlign: VerticalAlignSection.CENTER },
+      children: titleMatter
+    });
+  }
+  if (frontMatter.length > 0) {
+    sections.push({
+      properties: { page: pageProperties },
       children: frontMatter
     });
   }
@@ -350,11 +427,42 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
           },
           paragraph: {
             alignment: tokens.chapterHeadingAlign === "center" ? AlignmentType.CENTER : AlignmentType.LEFT,
+            outlineLevel: 0,
             spacing: {
               before: Math.round(tokens.chapterHeadingSpaceBefore * tokens.chapterHeadingSizePt * 20),
               after: Math.round(tokens.chapterHeadingSpaceAfter * tokens.chapterHeadingSizePt * 20)
             },
             keepNext: true
+          }
+        },
+        {
+          id: "MatterTitle",
+          name: "Matter Title",
+          basedOn: "Normal",
+          next: "MatterBody",
+          quickFormat: true,
+          run: {
+            font: tokens.docxFont,
+            size: halfPoint(tokens.bodySizePt * 1.5),
+            bold: true
+          },
+          paragraph: {
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 1200, after: 360 },
+            indent: { firstLine: 0 },
+            keepNext: true
+          }
+        },
+        {
+          id: "MatterBody",
+          name: "Matter Body",
+          basedOn: "BodyText",
+          next: "MatterBody",
+          quickFormat: true,
+          run: { font: tokens.docxFont, size: bodySize },
+          paragraph: {
+            spacing: { line: lineSpacing, lineRule: LineRuleType.AUTO, after: paragraphSpacing },
+            indent: { firstLine: 0 }
           }
         },
         {

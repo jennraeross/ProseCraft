@@ -1,4 +1,4 @@
-import { PRESETS } from "./presets";
+import { resolveStyleTokens } from "./presets";
 import {
   FORMAT_INFO,
   slugifyFilename,
@@ -24,16 +24,26 @@ function separatorText(separator: SceneSeparator): string {
 }
 
 export function exportText(book: CompiledBook, options: PublishOptions): ExportPayload {
-  const tokens = PRESETS[options.style];
+  const tokens = resolveStyleTokens(options.style, options.customStyles);
   const blocks: string[] = [];
 
   if (options.includeTitlePage) {
     blocks.push(book.title);
     if (book.subtitle) blocks.push(book.subtitle);
     if (book.author) blocks.push(`by ${book.author}`);
-    if (book.copyright) blocks.push(book.copyright);
+    if (book.copyright && !options.includeCopyrightPage) blocks.push(book.copyright);
   }
+  if (options.includeCopyrightPage && book.copyright) blocks.push(book.copyright);
   if (book.dedication) blocks.push(book.dedication);
+  if (options.includeTableOfContents && book.chapters.length > 0) {
+    blocks.push([
+      tokens.chapterHeadingUppercase ? "CONTENTS" : "Contents",
+      ...book.chapters.map((chapter, index) => `${index + 1}. ${chapter.label}`)
+    ].join("\n"));
+  }
+  for (const page of book.frontMatter) {
+    blocks.push([page.title, page.body].filter(Boolean).join("\n\n"));
+  }
 
   for (const chapter of book.chapters) {
     if (options.includeChapterTitles) {
@@ -48,6 +58,10 @@ export function exportText(book: CompiledBook, options: PublishOptions): ExportP
     }
     const separator = separatorText(options.sceneSeparator);
     blocks.push(scenes.join(separator ? `\n\n${separator}\n\n` : "\n\n"));
+  }
+
+  for (const page of book.backMatter) {
+    blocks.push([page.title, page.body].filter(Boolean).join("\n\n"));
   }
 
   const text = `${blocks.filter(Boolean).join("\n\n")}\n`;

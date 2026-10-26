@@ -1,10 +1,12 @@
 import { jsPDF } from "jspdf";
-import { PRESETS, type PresetTokens } from "./presets";
+import { matterParagraphs } from "./matter";
+import { resolveStyleTokens, type PresetTokens } from "./presets";
 import { blocksFromHtml, type Block, type InlineRun } from "./rich-text";
 import {
   FORMAT_INFO,
   slugifyFilename,
   type CompiledBook,
+  type CompiledMatterPage,
   type ExportPayload,
   type PublishOptions,
   type SceneSeparator
@@ -31,6 +33,7 @@ type ParagraphOptions = {
   firstIndent: number;
   leftIndent?: number;
   justify?: boolean;
+  align?: "left" | "center";
   bold?: boolean;
   italic?: boolean;
   spacingBefore?: number;
@@ -53,7 +56,7 @@ function fontStyle(run: InlineRun, forceBold = false, forceItalic = false): stri
 }
 
 export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPayload {
-  const tokens = PRESETS[options.style];
+  const tokens = resolveStyleTokens(options.style, options.customStyles);
   const pdfFont = tokens.pdfFont;
   const pageWidth = tokens.page.widthPt;
   const pageHeight = tokens.page.heightPt;
@@ -64,7 +67,10 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
   const contentWidth = contentRight - contentLeft;
   const bodySize = tokens.bodySizePt;
   const bodyLine = bodySize * tokens.lineHeight;
-  const hasFrontMatter = options.includeTitlePage || Boolean(book.dedication);
+  const hasTitlePage = options.includeTitlePage;
+  const hasCopyrightPage = options.includeCopyrightPage && Boolean(book.copyright);
+  const hasDedication = Boolean(book.dedication);
+  const hasTableOfContents = options.includeTableOfContents && book.chapters.length > 0;
 
   const doc = new jsPDF({
     unit: "pt",
@@ -82,6 +88,8 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
   let pageNumber = 1;
   let y = contentTop + bodySize;
   let bodyStarted = false;
+  let pageHasContent = false;
+  let frontMatterMode = false;
 
   const setFont = (style: string, size: number) => {
     doc.setFont(pdfFont, style);
@@ -105,6 +113,15 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     setColor(INK);
   };
 
+  const startFrontMatterPage = () => {
+    if (pageHasContent) {
+      doc.addPage();
+      pageNumber += 1;
+    }
+    pageHasContent = true;
+    y = contentTop + bodySize;
+  };
+
   const newBodyPage = () => {
     doc.addPage();
     pageNumber += 1;
@@ -114,17 +131,23 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
 
   const beginBody = () => {
     if (bodyStarted) return;
-    if (hasFrontMatter) {
+    if (pageHasContent) {
       doc.addPage();
       pageNumber += 1;
     }
+    pageHasContent = true;
     bodyStarted = true;
     y = contentTop + bodySize;
     drawHeaderFooter();
   };
 
   const ensureSpace = (height: number) => {
-    if (y + height > contentBottom) newBodyPage();
+    if (y + height <= contentBottom) return;
+    if (frontMatterMode) {
+      startFrontMatterPage();
+    } else {
+      newBodyPage();
+    }
   };
 
   const measure = (text: string, run: InlineRun, size: number, bold = false, italic = false): number => {
@@ -264,6 +287,14 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     }
   };
 
+  const plainRuns = (text: string): InlineRun[] => {
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    return lines.flatMap((line, index) => [
+      ...(index > 0 ? [{ text: "", lineBreak: true } as InlineRun] : []),
+      { text: line }
+    ]);
+  };
+
   const renderParagraph = (runs: InlineRun[], opts: ParagraphOptions) => {
     if (runs.length === 0) return;
     const leftIndent = opts.leftIndent ?? 0;
@@ -317,14 +348,17 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       const line = lines[index];
       const offset = index < (dropCapLetter ? dropCapLines : 0) ? dropCapWidth : 0;
       const indent = index === 0 ? firstIndent : 0;
+      const x = opts.align === "center"
+        ? contentLeft + leftIndent + offset + Math.max(0, (maxWidth - offset - indent - line.width) / 2)
+        : contentLeft + leftIndent + indent + offset;
       drawLine(
         line,
-        contentLeft + leftIndent + indent + offset,
+        x,
         y,
         opts.size,
         opts.bold ?? false,
         opts.italic ?? false,
-        opts.justify ?? false
+        (opts.justify ?? false) && opts.align !== "center"
       );
       y += opts.lineHeight;
     }
@@ -496,7 +530,7 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       setColor(MUTED);
       doc.text(`by ${book.author}`, pageWidth / 2, pageHeight * 0.55, { align: "center" });
     }
-    if (book.copyright) {
+    if (book.copyright && !options.includeCopyrightPage) {
       setFont("normal", 8.5);
       setColor(MUTED);
       const lines = doc.splitTextToSize(book.copyright, contentWidth * 0.9) as string[];
@@ -522,14 +556,127 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     y = contentTop + bodySize;
   };
 
-  // Front matter.
-  if (options.includeTitlePage) renderTitlePage();
-  if (book.dedication) {
-    if (options.includeTitlePage) {
-      doc.addPage();
-      pageNumber += 1;
+  const renderCopyrightPage = () => {
+    const size = bodySize * 0.82;
+    const lineHeight = size * 1.6;
+    setFont("normal", size);
+    setColor(MUTED);
+    const lines = doc.splitTextToSize(book.copyright, contentWidth * 0.85) as string[];
+    let copyrightY = Math.min(pageHeight * 0.45, contentBottom - (lines.length - 1) * lineHeight);
+    for (const line of lines) {
+      doc.text(line, pageWidth / 2, copyrightY, { align: "center" });
+      copyrightY += lineHeight;
     }
+    setColor(INK);
+  };
+
+  const renderMatterPage = (page: CompiledMatterPage) => {
+    if (page.title) {
+      renderParagraph(plainRuns(page.title), {
+        size: bodySize * 1.5,
+        lineHeight: bodySize * 1.8,
+        firstIndent: 0,
+        bold: true,
+        align: "center",
+        spacingAfter: bodySize * 0.8
+      });
+    }
+    for (const paragraph of matterParagraphs(page.body)) {
+      renderParagraph(plainRuns(paragraph), {
+        size: bodySize,
+        lineHeight: bodyLine,
+        firstIndent: 0,
+        justify: tokens.justify,
+        spacingAfter: bodySize * 0.6
+      });
+    }
+  };
+
+  const tocHeadingSize = bodySize * 1.5;
+  const tocHeadingBaseline = contentTop + tocHeadingSize;
+  const tocFirstBaseline = tocHeadingBaseline + bodySize * 1.7;
+  const tocLineHeight = bodyLine;
+  const tocEntryGap = bodySize * 0.35;
+  const tocMaxWidth = contentWidth - 48;
+  const tocBottomLimit = contentBottom - bodySize * 0.5;
+  setFont("normal", bodySize);
+  const tocEntries = hasTableOfContents
+    ? book.chapters.map((chapter) => ({
+      label: chapter.label,
+      lines: doc.splitTextToSize(chapter.label, tocMaxWidth) as string[],
+      pageNumber: 0
+    }))
+    : [];
+  let tocPageCount = 0;
+  if (hasTableOfContents) {
+    tocPageCount = 1;
+    let cursor = tocFirstBaseline;
+    for (const entry of tocEntries) {
+      const height = Math.max(1, entry.lines.length) * tocLineHeight + tocEntryGap;
+      if (cursor + height > tocBottomLimit) {
+        tocPageCount += 1;
+        cursor = contentTop + bodySize;
+      }
+      cursor += height;
+    }
+  }
+  const tocPageNumbers: number[] = [];
+  const chapterStartPages: number[] = [];
+
+  const renderTableOfContents = () => {
+    if (!hasTableOfContents || tocPageNumbers.length === 0) return;
+    let tocPageIndex = 0;
+    let cursor = tocFirstBaseline;
+    doc.setPage(tocPageNumbers[0]);
+    setFont("bold", tocHeadingSize);
+    setColor(INK);
+    doc.text("Contents", pageWidth / 2, tocHeadingBaseline, { align: "center" });
+
+    tocEntries.forEach((entry, index) => {
+      const height = Math.max(1, entry.lines.length) * tocLineHeight + tocEntryGap;
+      if (cursor + height > tocBottomLimit && tocPageIndex < tocPageNumbers.length - 1) {
+        tocPageIndex += 1;
+        doc.setPage(tocPageNumbers[tocPageIndex]);
+        cursor = contentTop + bodySize;
+      }
+      setFont("normal", bodySize);
+      setColor(INK);
+      entry.lines.forEach((line, lineIndex) => {
+        doc.text(line, contentLeft, cursor);
+        if (lineIndex === entry.lines.length - 1) {
+          doc.text(String(chapterStartPages[index] ?? 0), contentRight, cursor, { align: "right" });
+        }
+        cursor += tocLineHeight;
+      });
+      cursor += tocEntryGap;
+    });
+    setColor(INK);
+  };
+
+  // Front matter.
+  if (hasTitlePage) {
+    startFrontMatterPage();
+    renderTitlePage();
+  }
+  if (hasCopyrightPage) {
+    startFrontMatterPage();
+    renderCopyrightPage();
+  }
+  if (hasDedication) {
+    startFrontMatterPage();
     renderDedication();
+  }
+  if (hasTableOfContents) {
+    for (let index = 0; index < tocPageCount; index += 1) {
+      startFrontMatterPage();
+      tocPageNumbers.push(pageNumber);
+    }
+  }
+  for (const page of book.frontMatter) {
+    startFrontMatterPage();
+    frontMatterMode = true;
+    renderMatterPage(page);
+    frontMatterMode = false;
   }
 
   book.chapters.forEach((chapter, chapterIndex) => {
@@ -542,11 +689,13 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       y += bodySize * 1.4;
     }
 
+    let chapterStartPage = pageNumber;
     if (options.includeChapterTitles) {
       const headingSize = tokens.chapterHeadingSizePt;
       const headingText = tokens.chapterHeadingUppercase ? chapter.label.toUpperCase() : chapter.label;
       const headingLines = doc.splitTextToSize(headingText, contentWidth) as string[];
       ensureSpace(headingLines.length * headingSize * 1.25 + bodyLine * 2);
+      chapterStartPage = pageNumber;
       y += tokens.chapterHeadingSpaceBefore * headingSize;
       setFont("bold", headingSize);
       setColor(INK);
@@ -558,6 +707,7 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       }
       y += tokens.chapterHeadingSpaceAfter * headingSize;
     }
+    chapterStartPages.push(chapterStartPage);
 
     chapter.scenes.forEach((scene, sceneIndex) => {
       if (options.includeSceneTitles) renderSceneTitle(scene.title);
@@ -575,6 +725,17 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       if (sceneIndex < chapter.scenes.length - 1) renderSeparator(options.sceneSeparator);
     });
   });
+
+  for (const page of book.backMatter) {
+    if (bodyStarted) {
+      newBodyPage();
+    } else {
+      beginBody();
+    }
+    renderMatterPage(page);
+  }
+
+  renderTableOfContents();
 
   const blob = doc.output("blob");
   return {

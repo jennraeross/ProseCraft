@@ -41,11 +41,12 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Basic export (PDF, DOCX, Epub, Markdown, HTML, Plain Text)
 - [x] Paginated & Non-Paginated Preview
 - [x] Preset style support
-- [ ] Custom style support
-- [ ] Front matter
-- [ ] Back matter
-- [ ] TOC
+- [x] Custom style support
+- [x] Front matter
+- [x] Back matter
+- [x] TOC
 - [ ] Cover
+- [ ] Front matter and Back matter in preview
 
 #### Backup & Sync
 - [x] Unencrypted backup
@@ -58,7 +59,7 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Font selection
 - [x] Light / Dark mode
 - [x] Colorscheme selection
-- [ ] Custom fonts
+- [x] Custom fonts
 - [ ] Custom colorschemes
 
 #### Mobile

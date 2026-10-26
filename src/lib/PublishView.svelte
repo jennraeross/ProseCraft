@@ -8,9 +8,26 @@
   import { compileBook, estimatedPages } from "./publish/compile";
   import { renderExport } from "./publish/export";
   import { buildPreviewHtml } from "./publish/html";
+  import {
+    BACK_MATTER_PRESETS,
+    createMatterPage,
+    FRONT_MATTER_PRESETS,
+    MATTER_BODY_LIMIT,
+    MATTER_PAGE_LIMIT,
+    MATTER_TITLE_LIMIT,
+    type MatterPage
+  } from "./publish/matter";
   import { fitPreviewFrame, paginatePreview } from "./publish/preview-pagination";
-  import { PRESETS, PRESET_ORDER } from "./publish/presets";
+  import {
+    createCustomStyle,
+    MAX_CUSTOM_STYLES,
+    normalizeCustomDraft,
+    resolveStyleTokens,
+    styleSummaries,
+    type CustomExportStyle
+  } from "./publish/presets";
   import { saveExport } from "./publish/save";
+  import StyleEditorDialog from "./publish/StyleEditorDialog.svelte";
   import {
     FORMAT_INFO,
     FORMAT_ORDER,
@@ -49,6 +66,11 @@
     typeof document === "undefined" ? defaultPreviewPalette : readPreviewPalette()
   );
   let exporting = $state(false);
+  let styleDraft = $state<CustomExportStyle | null>(null);
+  let styleDraftIsNew = $state(false);
+  let styleDraftDeleteArmed = $state(false);
+  let frontMatterPreset = $state(FRONT_MATTER_PRESETS[0].label);
+  let backMatterPreset = $state(BACK_MATTER_PRESETS[0].label);
   let previewFrame = $state<HTMLIFrameElement>();
   let status = $state<{ tone: "idle" | "success" | "error"; message: string }>({
     tone: "idle",
@@ -69,16 +91,50 @@
     subtitle: options.subtitle,
     copyright: options.copyright,
     dedication: options.dedication,
+    frontMatter: options.frontMatter,
+    backMatter: options.backMatter,
     chapters,
     documents
   }));
+  let styleEntries = $derived(styleSummaries(options.customStyles));
+  let selectedStyle = $derived(resolveStyleTokens(options.style, options.customStyles));
+  let canAddStyle = $derived(options.customStyles.length < MAX_CUSTOM_STYLES);
+  let canAddFrontMatter = $derived(options.frontMatter.length < MATTER_PAGE_LIMIT);
+  let canAddBackMatter = $derived(options.backMatter.length < MATTER_PAGE_LIMIT);
+  let styleExistingLabels = $derived(
+    styleEntries
+      .filter((entry) => entry.id !== styleDraft?.id)
+      .map((entry) => entry.label)
+  );
+  let previewOptions = $derived.by(() => {
+    if (!styleDraft) return options;
+    const draft = normalizeCustomDraft(styleDraft);
+    const customStyles = options.customStyles.some((style) => style.id === draft.id)
+      ? options.customStyles.map((style) => style.id === draft.id ? draft : style)
+      : [...options.customStyles, draft];
+    return { ...options, style: draft.id, customStyles };
+  });
+  let previewStyle = $derived(resolveStyleTokens(previewOptions.style, previewOptions.customStyles));
   let paginatedPreview = $derived(options.format === "pdf" || options.format === "docx");
-  let previewHtml = $derived(buildPreviewHtml(compiled, options, {
+  let previewHtml = $derived(buildPreviewHtml(compiled, previewOptions, {
     dark: theme === "dark",
     paginated: paginatedPreview,
     palette: previewPalette
   }));
-  let pageEstimate = $derived(estimatedPages(compiled.words, PRESETS[options.style].wordsPerPage));
+  let frontMatterPageEstimate = $derived(
+    (options.includeTitlePage ? 1 : 0)
+    + (options.includeCopyrightPage && compiled.copyright ? 1 : 0)
+    + (compiled.dedication ? 1 : 0)
+    + (options.includeTableOfContents && compiled.chapters.length > 0
+      ? Math.max(1, Math.ceil(compiled.chapters.length / 24))
+      : 0)
+    + compiled.frontMatter.length
+  );
+  let backMatterPageEstimate = $derived(compiled.backMatter.length);
+  let pageEstimate = $derived.by(() => {
+    const bodyPages = estimatedPages(compiled.words, previewStyle.wordsPerPage);
+    return bodyPages === null ? null : bodyPages + frontMatterPageEstimate + backMatterPageEstimate;
+  });
   let filename = $derived(`${slugifyFilename(projectName)}.${FORMAT_INFO[options.format].extension}`);
   let canExport = $derived(compiled.scenes > 0 && !exporting);
 
@@ -115,6 +171,102 @@
     onOptionsChange({ ...options, [key]: value });
   }
 
+  function matterPages(placement: "front" | "back"): MatterPage[] {
+    return placement === "front" ? options.frontMatter : options.backMatter;
+  }
+
+  function setMatterPages(placement: "front" | "back", pages: MatterPage[]) {
+    const key = placement === "front" ? "frontMatter" : "backMatter";
+    onOptionsChange({ ...options, [key]: pages });
+  }
+
+  function addMatterPage(placement: "front" | "back", presetLabel: string) {
+    const pages = matterPages(placement);
+    if (pages.length >= MATTER_PAGE_LIMIT) return;
+    const presets = placement === "front" ? FRONT_MATTER_PRESETS : BACK_MATTER_PRESETS;
+    const preset = presets.find((entry) => entry.label === presetLabel) ?? presets[0];
+    setMatterPages(placement, [...pages, createMatterPage(preset.title, preset.blank === true)]);
+  }
+
+  function updateMatterPage(
+    placement: "front" | "back",
+    id: string,
+    patch: Partial<Pick<MatterPage, "title" | "body">>
+  ) {
+    setMatterPages(
+      placement,
+      matterPages(placement).map((page) => page.id === id ? { ...page, ...patch } : page)
+    );
+  }
+
+  function removeMatterPage(placement: "front" | "back", id: string) {
+    setMatterPages(placement, matterPages(placement).filter((page) => page.id !== id));
+  }
+
+  function moveMatterPage(placement: "front" | "back", id: string, offset: -1 | 1) {
+    const pages = [...matterPages(placement)];
+    const index = pages.findIndex((page) => page.id === id);
+    const target = index + offset;
+    if (index < 0 || target < 0 || target >= pages.length) return;
+    [pages[index], pages[target]] = [pages[target], pages[index]];
+    setMatterPages(placement, pages);
+  }
+
+  function startNewStyle() {
+    if (!canAddStyle || styleDraft) return;
+    styleDraftIsNew = true;
+    styleDraftDeleteArmed = false;
+    styleDraft = createCustomStyle(options.style, options.customStyles);
+  }
+
+  function startEditStyle(id: string, armDelete = false) {
+    if (styleDraft) return;
+    const style = options.customStyles.find((entry) => entry.id === id);
+    if (!style) return;
+    styleDraftIsNew = false;
+    styleDraftDeleteArmed = armDelete;
+    styleDraft = { ...style };
+  }
+
+  function updateStyleDraft(draft: CustomExportStyle) {
+    styleDraft = draft;
+  }
+
+  function saveStyleDraft(draft: CustomExportStyle) {
+    const normalized = normalizeCustomDraft(draft);
+    const label = normalized.label.trim();
+    if (!label) return;
+    const duplicate = styleEntries.some((entry) =>
+      entry.id !== normalized.id && entry.label.trim().toLowerCase() === label.toLowerCase()
+    );
+    if (duplicate) return;
+    const saved = { ...normalized, label };
+    const exists = options.customStyles.some((style) => style.id === saved.id);
+    if (!exists && options.customStyles.length >= MAX_CUSTOM_STYLES) return;
+    const customStyles = exists
+      ? options.customStyles.map((style) => style.id === saved.id ? saved : style)
+      : [...options.customStyles, saved];
+    onOptionsChange({ ...options, customStyles, style: saved.id });
+    closeStyleEditor();
+  }
+
+  function deleteStyleDraft() {
+    const draft = styleDraft;
+    if (!draft || styleDraftIsNew) return;
+    const customStyles = options.customStyles.filter((style) => style.id !== draft.id);
+    onOptionsChange({
+      ...options,
+      customStyles,
+      style: options.style === draft.id ? "manuscript" : options.style
+    });
+    closeStyleEditor();
+  }
+
+  function closeStyleEditor() {
+    styleDraft = null;
+    styleDraftDeleteArmed = false;
+  }
+
   async function handleExport() {
     if (!canExport) return;
     const exportOptions = { ...options };
@@ -131,6 +283,8 @@
         subtitle: exportOptions.subtitle,
         copyright: exportOptions.copyright,
         dedication: exportOptions.dedication,
+        frontMatter: exportOptions.frontMatter,
+        backMatter: exportOptions.backMatter,
         chapters,
         documents
       });
@@ -196,38 +350,59 @@
       <section class="publish-section">
         <div class="section-heading">
           <h2>Style</h2>
-          <span>{PRESETS[options.style].label}</span>
+          <span>{selectedStyle.label}</span>
         </div>
         <div class="style-list">
-          {#each PRESET_ORDER as preset (preset)}
-            <button
-              type="button"
-              class="style-card"
-              class:selected={options.style === preset}
-              aria-pressed={options.style === preset}
-              onclick={() => update("style", preset)}
-            >
-              <span class="style-name">{PRESETS[preset].label}</span>
-              <span class="style-detail">{PRESETS[preset].detail}</span>
-            </button>
+          {#each styleEntries as entry (entry.id)}
+            <div class="style-card" class:selected={options.style === entry.id} class:custom={entry.custom}>
+              <button
+                type="button"
+                class="style-select"
+                aria-pressed={options.style === entry.id}
+                onclick={() => update("style", entry.id)}
+              >
+                <span class="style-name">
+                  <span class="style-label">{entry.label}</span>
+                  {#if entry.custom}<span class="style-badge">Custom</span>{/if}
+                </span>
+                <span class="style-detail">{entry.detail}</span>
+              </button>
+              {#if entry.custom}
+                <div class="style-actions">
+                  <button
+                    type="button"
+                    class="style-action"
+                    title="Edit style"
+                    aria-label={`Edit ${entry.label}`}
+                    onclick={() => startEditStyle(entry.id)}
+                  >✎</button>
+                  <button
+                    type="button"
+                    class="style-action style-action-delete"
+                    title="Delete style"
+                    aria-label={`Delete ${entry.label}`}
+                    onclick={() => startEditStyle(entry.id, true)}
+                  >×</button>
+                </div>
+              {/if}
+            </div>
           {/each}
         </div>
+        <button type="button" class="new-style-button" disabled={!canAddStyle} onclick={startNewStyle}>
+          + New style
+        </button>
+        <p class="style-hint">
+          {#if canAddStyle}
+            Custom styles are saved with this project.
+          {:else}
+            You’ve reached the limit of {MAX_CUSTOM_STYLES} custom styles.
+          {/if}
+        </p>
       </section>
 
       <section class="publish-section">
         <div class="section-heading"><h2>Manuscript</h2></div>
         <div class="option-list">
-          <label class="option-row">
-            <input
-              type="checkbox"
-              checked={options.includeTitlePage}
-              onchange={(event) => update("includeTitlePage", (event.currentTarget as HTMLInputElement).checked)}
-            />
-            <span>
-              <strong>Title page</strong>
-              <small>Project title, subtitle, author, and copyright.</small>
-            </span>
-          </label>
           <label class="option-row">
             <input
               type="checkbox"
@@ -291,10 +466,21 @@
 
       <details class="publish-section details-section">
         <summary>
-          <span>Publication details</span>
-          <span class="details-hint">Subtitle, copyright, dedication</span>
+          <span>Front matter</span>
+          <span class="details-hint">Title page, copyright, contents</span>
         </summary>
         <div class="details-body">
+          <label class="option-row">
+            <input
+              type="checkbox"
+              checked={options.includeTitlePage}
+              onchange={(event) => update("includeTitlePage", (event.currentTarget as HTMLInputElement).checked)}
+            />
+            <span>
+              <strong>Title page</strong>
+              <small>Project title, subtitle, author, and copyright.</small>
+            </span>
+          </label>
           <label class="text-field">
             <span>Subtitle</span>
             <input
@@ -315,6 +501,17 @@
               oninput={(event) => updateText("copyright", (event.currentTarget as HTMLTextAreaElement).value)}
             ></textarea>
           </label>
+          <label class="option-row">
+            <input
+              type="checkbox"
+              checked={options.includeCopyrightPage}
+              onchange={(event) => update("includeCopyrightPage", (event.currentTarget as HTMLInputElement).checked)}
+            />
+            <span>
+              <strong>Copyright on its own page</strong>
+              <small>Move the copyright text off the title page.</small>
+            </span>
+          </label>
           <label class="text-field">
             <span>Dedication</span>
             <textarea
@@ -325,6 +522,150 @@
               oninput={(event) => updateText("dedication", (event.currentTarget as HTMLTextAreaElement).value)}
             ></textarea>
           </label>
+          <label class="option-row">
+            <input
+              type="checkbox"
+              checked={options.includeTableOfContents}
+              onchange={(event) => update("includeTableOfContents", (event.currentTarget as HTMLInputElement).checked)}
+            />
+            <span>
+              <strong>Table of contents</strong>
+              <small>List chapter titles at the front of the book.</small>
+            </span>
+          </label>
+          <div class="matter-editor">
+            <div class="matter-editor-heading">
+              <strong>Additional pages</strong>
+              <span>{options.frontMatter.length}/{MATTER_PAGE_LIMIT}</span>
+            </div>
+            <div class="matter-add-row">
+              <select bind:value={frontMatterPreset}>
+                {#each FRONT_MATTER_PRESETS as preset (preset.label)}
+                  <option value={preset.label}>{preset.label}</option>
+                {/each}
+              </select>
+              <button
+                type="button"
+                disabled={!canAddFrontMatter}
+                onclick={() => addMatterPage("front", frontMatterPreset)}
+              >Add page</button>
+            </div>
+            {#each options.frontMatter as page, index (page.id)}
+              <div class="matter-page-card">
+                <div class="matter-page-toolbar">
+                  <input
+                    class="matter-page-title"
+                    type="text"
+                    value={page.title}
+                    maxlength={MATTER_TITLE_LIMIT}
+                    placeholder={page.blank && !page.title ? "Blank page" : "Page title"}
+                    aria-label="Front matter page title"
+                    oninput={(event) => updateMatterPage("front", page.id, { title: (event.currentTarget as HTMLInputElement).value })}
+                  />
+                  <button
+                    type="button"
+                    title="Move page up"
+                    aria-label={`Move ${page.title || "front matter page"} up`}
+                    disabled={index === 0}
+                    onclick={() => moveMatterPage("front", page.id, -1)}
+                  >↑</button>
+                  <button
+                    type="button"
+                    title="Move page down"
+                    aria-label={`Move ${page.title || "front matter page"} down`}
+                    disabled={index === options.frontMatter.length - 1}
+                    onclick={() => moveMatterPage("front", page.id, 1)}
+                  >↓</button>
+                  <button
+                    type="button"
+                    class="matter-page-remove"
+                    title="Remove page"
+                    aria-label={`Remove ${page.title || "front matter page"}`}
+                    onclick={() => removeMatterPage("front", page.id)}
+                  >×</button>
+                </div>
+                <textarea
+                  value={page.body}
+                  maxlength={MATTER_BODY_LIMIT}
+                  rows="3"
+                  placeholder="Page text…"
+                  aria-label={`${page.title || "Front matter"} text`}
+                  oninput={(event) => updateMatterPage("front", page.id, { body: (event.currentTarget as HTMLTextAreaElement).value })}
+                ></textarea>
+              </div>
+            {/each}
+          </div>
+        </div>
+      </details>
+
+      <details class="publish-section details-section">
+        <summary>
+          <span>Back matter</span>
+          <span class="details-hint">Acknowledgments, author notes, appendices</span>
+        </summary>
+        <div class="details-body">
+          <div class="matter-editor">
+            <div class="matter-editor-heading">
+              <strong>Additional pages</strong>
+              <span>{options.backMatter.length}/{MATTER_PAGE_LIMIT}</span>
+            </div>
+            <div class="matter-add-row">
+              <select bind:value={backMatterPreset}>
+                {#each BACK_MATTER_PRESETS as preset (preset.label)}
+                  <option value={preset.label}>{preset.label}</option>
+                {/each}
+              </select>
+              <button
+                type="button"
+                disabled={!canAddBackMatter}
+                onclick={() => addMatterPage("back", backMatterPreset)}
+              >Add page</button>
+            </div>
+            {#each options.backMatter as page, index (page.id)}
+              <div class="matter-page-card">
+                <div class="matter-page-toolbar">
+                  <input
+                    class="matter-page-title"
+                    type="text"
+                    value={page.title}
+                    maxlength={MATTER_TITLE_LIMIT}
+                    placeholder={page.blank && !page.title ? "Blank page" : "Page title"}
+                    aria-label="Back matter page title"
+                    oninput={(event) => updateMatterPage("back", page.id, { title: (event.currentTarget as HTMLInputElement).value })}
+                  />
+                  <button
+                    type="button"
+                    title="Move page up"
+                    aria-label={`Move ${page.title || "back matter page"} up`}
+                    disabled={index === 0}
+                    onclick={() => moveMatterPage("back", page.id, -1)}
+                  >↑</button>
+                  <button
+                    type="button"
+                    title="Move page down"
+                    aria-label={`Move ${page.title || "back matter page"} down`}
+                    disabled={index === options.backMatter.length - 1}
+                    onclick={() => moveMatterPage("back", page.id, 1)}
+                  >↓</button>
+                  <button
+                    type="button"
+                    class="matter-page-remove"
+                    title="Remove page"
+                    aria-label={`Remove ${page.title || "back matter page"}`}
+                    onclick={() => removeMatterPage("back", page.id)}
+                  >×</button>
+                </div>
+                <textarea
+                  value={page.body}
+                  maxlength={MATTER_BODY_LIMIT}
+                  rows="3"
+                  placeholder="Page text…"
+                  aria-label={`${page.title || "Back matter"} text`}
+                  oninput={(event) => updateMatterPage("back", page.id, { body: (event.currentTarget as HTMLTextAreaElement).value })}
+                ></textarea>
+              </div>
+            {/each}
+          </div>
         </div>
       </details>
 
@@ -350,7 +691,7 @@
           <span class="publish-eyebrow">LIVE PREVIEW</span>
           <h2>{projectName || "Untitled"}</h2>
         </div>
-        <span class="preview-badge">{PRESETS[options.style].label} · {FORMAT_INFO[options.format].label}</span>
+        <span class="preview-badge">{previewStyle.label} · {FORMAT_INFO[options.format].label}</span>
       </header>
       {#if compiled.scenes === 0}
         <div class="publish-empty">
@@ -369,16 +710,30 @@
         ></iframe>
         <p class="preview-caption">
           {#if paginatedPreview}
-            Paginated preview of {options.includeTitlePage ? "the title page and " : ""}the first chapter.
+            Paginated preview of the opening pages and first chapter.
           {:else}
-            Previewing {options.includeTitlePage ? "the title page and " : ""}the first chapter.
+            Previewing the opening pages and first chapter.
           {/if}
+          Back matter is included in the export.
           {#if pageEstimate !== null}Estimated {pageEstimate} {pageEstimate === 1 ? "page" : "pages"}.{/if}
         </p>
       {/if}
     </section>
   </div>
 </section>
+
+{#if styleDraft}
+  <StyleEditorDialog
+    initial={styleDraft}
+    isNew={styleDraftIsNew}
+    existingLabels={styleExistingLabels}
+    deleteArmed={styleDraftDeleteArmed}
+    onChange={updateStyleDraft}
+    onSave={saveStyleDraft}
+    onCancel={closeStyleEditor}
+    onDelete={deleteStyleDraft}
+  />
+{/if}
 
 <style>
   .publish-view {
@@ -402,7 +757,7 @@
   }
   .publish-heading { padding: 1px 2px 15px; border-bottom: 1px solid var(--border-soft); }
   .publish-eyebrow { color: var(--eyebrow); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; }
-  .publish-heading h1 { margin: 7px 0 6px; color: var(--text-heading); font-family: var(--editor-font); font-size: 23px; font-weight: 500; letter-spacing: -.35px; }
+  .publish-heading h1 { margin: 7px 0 6px; color: var(--text-heading); font-family: var(--interface-font); font-size: 23px; font-weight: 500; letter-spacing: -.35px; }
   .publish-heading p { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.55; }
   .publish-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 14px 0 15px; border-bottom: 1px solid var(--border-soft); }
   .publish-summary div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
@@ -420,11 +775,23 @@
   .format-ext { color: var(--eyebrow); font-family: ui-monospace, monospace; font-size: 8px; }
   .format-description { overflow: hidden; color: var(--text-muted); font-size: 8px; line-height: 1.35; text-overflow: ellipsis; }
   .style-list { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-  .style-card { display: flex; min-width: 0; flex-direction: column; gap: 3px; padding: 9px 10px; border: 1px solid var(--border-control); border-radius: 7px; background: var(--control-bg); color: var(--text-primary); cursor: pointer; text-align: left; transition: border-color .12s, background .12s, box-shadow .12s; }
+  .style-card { position: relative; display: flex; min-width: 0; flex-direction: column; border: 1px solid var(--border-control); border-radius: 7px; background: var(--control-bg); color: var(--text-primary); transition: border-color .12s, background .12s, box-shadow .12s; }
   .style-card:hover { border-color: var(--accent-soft); background: var(--control-hover); }
   .style-card.selected { border-color: var(--accent); background: var(--selected-bg); box-shadow: 0 0 0 1px var(--accent-ring); }
-  .style-name { color: var(--text-heading); font-family: var(--editor-font); font-size: 12px; font-weight: 600; }
+  .style-select { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 3px; padding: 9px 10px; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+  .style-card.custom .style-select { padding-right: 48px; }
+  .style-actions { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; }
+  .style-action { width: 19px; height: 19px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 12px; line-height: 1; }
+  .style-action:hover { background: var(--surface-raised); color: var(--text-heading); }
+  .style-action-delete:hover { color: var(--danger); }
+  .style-name { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 12px; font-weight: 600; }
+  .style-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .style-badge { flex: 0 0 auto; padding: 1px 3px; border-radius: 2px; background: var(--accent); color: var(--accent-contrast); font-family: ui-sans-serif, sans-serif; font-size: 6px; font-weight: 700; letter-spacing: .35px; text-transform: uppercase; }
   .style-detail { color: var(--text-muted); font-size: 8px; line-height: 1.35; }
+  .new-style-button { width: 100%; height: 29px; margin-top: 8px; border: 1px dashed var(--border-control); border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; font-family: inherit; font-size: 9px; font-weight: 550; transition: border-color .12s, background .12s, color .12s; }
+  .new-style-button:hover:not(:disabled) { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
+  .new-style-button:disabled { cursor: default; opacity: .45; }
+  .style-hint { margin: 6px 0 0; color: var(--text-muted); font-size: 8px; line-height: 1.4; }
   .option-list { display: flex; flex-direction: column; gap: 9px; }
   .option-row { display: flex; align-items: flex-start; gap: 8px; color: var(--text-nav); cursor: pointer; }
   .option-row input { width: 13px; height: 13px; flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--accent-strong); }
@@ -445,6 +812,25 @@
   .text-field > span { color: var(--text-secondary); font-size: 9px; }
   .text-field input, .text-field textarea { width: 100%; padding: 7px 8px; border: 1px solid var(--border-control); border-radius: 5px; outline: none; background: var(--control-bg); color: var(--text-primary); font-family: inherit; font-size: 10px; line-height: 1.45; resize: vertical; }
   .text-field input:focus, .text-field textarea:focus { border-color: var(--accent); }
+  .matter-editor { display: flex; flex-direction: column; gap: 7px; padding-top: 2px; }
+  .matter-editor-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--text-secondary); font-size: 9px; }
+  .matter-editor-heading strong { color: var(--text-heading); font-size: 9px; font-weight: 600; }
+  .matter-editor-heading span { color: var(--text-muted); font-size: 8px; }
+  .matter-add-row { display: flex; gap: 6px; }
+  .matter-add-row select { min-width: 0; height: 28px; flex: 1; padding: 0 6px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-primary); font-family: inherit; font-size: 9px; }
+  .matter-add-row button { height: 28px; flex: 0 0 auto; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-family: inherit; font-size: 9px; font-weight: 550; }
+  .matter-add-row button:hover:not(:disabled) { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
+  .matter-add-row button:disabled { cursor: default; opacity: .45; }
+  .matter-page-card { display: flex; flex-direction: column; gap: 5px; padding: 7px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--surface); }
+  .matter-page-toolbar { display: flex; gap: 3px; align-items: center; }
+  .matter-page-title { min-width: 0; height: 26px; flex: 1; padding: 0 6px; border: 1px solid var(--border-control); border-radius: 4px; outline: none; background: var(--control-bg); color: var(--text-primary); font-family: inherit; font-size: 9px; font-weight: 550; }
+  .matter-page-title:focus { border-color: var(--accent); }
+  .matter-page-toolbar button { width: 22px; height: 22px; flex: 0 0 auto; padding: 0; border: 1px solid var(--border-control); border-radius: 4px; background: var(--control-bg); color: var(--text-muted); cursor: pointer; font-size: 10px; line-height: 1; }
+  .matter-page-toolbar button:hover:not(:disabled) { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
+  .matter-page-toolbar button:disabled { cursor: default; opacity: .35; }
+  .matter-page-remove:hover:not(:disabled) { color: var(--danger); }
+  .matter-page-card textarea { width: 100%; padding: 6px 7px; border: 1px solid var(--border-control); border-radius: 4px; outline: none; background: var(--control-bg); color: var(--text-primary); font-family: inherit; font-size: 9px; line-height: 1.45; resize: vertical; }
+  .matter-page-card textarea:focus { border-color: var(--accent); }
   .export-panel { padding-top: 15px; }
   .filename-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 9px; color: var(--text-muted); font-size: 8px; }
   .filename-row span { flex: 0 0 auto; letter-spacing: .5px; text-transform: uppercase; }
@@ -457,12 +843,12 @@
   .export-status.error { color: var(--danger); }
   .publish-preview { position: sticky; top: 15px; min-width: 0; min-height: 0; }
   .preview-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding: 2px 2px 11px; border-bottom: 1px solid var(--border-soft); }
-  .preview-header h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--editor-font); font-size: 22px; font-weight: 500; }
+  .preview-header h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 22px; font-weight: 500; }
   .preview-badge { padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text-muted); font-size: 8px; letter-spacing: .35px; white-space: nowrap; }
   .preview-frame { display: block; width: 100%; height: min(84vh, 900px); border: 1px solid var(--border); border-radius: 9px; background: var(--page-bg); box-shadow: var(--shadow-preview-frame); }
   .preview-caption { margin: 8px 2px 0; color: var(--text-muted); font-size: 8px; line-height: 1.45; }
   .publish-empty { display: flex; min-height: 320px; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border: 1px dashed var(--border-control); border-radius: 9px; background: var(--surface); color: var(--text-muted); text-align: center; }
-  .publish-empty strong { color: var(--text-heading); font-family: var(--editor-font); font-size: 18px; font-weight: 500; }
+  .publish-empty strong { color: var(--text-heading); font-family: var(--interface-font); font-size: 18px; font-weight: 500; }
   .publish-empty p { max-width: 280px; margin: 8px 0 0; font-size: 10px; line-height: 1.55; }
 
   @container (max-width: 820px) {
