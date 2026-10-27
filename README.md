@@ -33,9 +33,9 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Place templates
 - [x] Folders for notes
 - [ ] Universal file binder
-- [ ] Typewriter mode
-- [ ] Focus mode
-- [ ] Zen mode
+- [x] Typewriter mode
+- [x] Focus mode
+- [x] Zen mode
 
 #### Publishing
 - [x] Basic export (PDF, DOCX, Epub, Markdown, HTML, Plain Text)

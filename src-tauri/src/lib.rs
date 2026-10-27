@@ -4,7 +4,7 @@ use tauri::AppHandle;
 #[cfg(desktop)]
 use tauri::Emitter;
 #[cfg(desktop)]
-use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +94,99 @@ fn update_project_menu(
     let _ = (app, projects, active_project_id);
 
     Ok(())
+}
+
+#[tauri::command]
+fn set_typewriter_menu_checked(app: AppHandle, checked: bool) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        let menu = app
+            .menu()
+            .ok_or_else(|| "Application menu is unavailable".to_string())?;
+        let view_menu = menu
+            .get("view-menu")
+            .ok_or_else(|| "View menu is unavailable".to_string())?;
+        let view_submenu = match view_menu {
+            MenuItemKind::Submenu(submenu) => submenu,
+            _ => return Err("View menu has an invalid type".to_string()),
+        };
+        let item = view_submenu
+            .get("typewriter-mode")
+            .ok_or_else(|| "Typewriter menu item is unavailable".to_string())?;
+        match item {
+            MenuItemKind::Check(check_item) => check_item
+                .set_checked(checked)
+                .map_err(|error| error.to_string()),
+            _ => Err("Typewriter menu item has an invalid type".to_string()),
+        }
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, checked);
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn set_fade_paragraphs_menu_checked(app: AppHandle, checked: bool) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        let menu = app
+            .menu()
+            .ok_or_else(|| "Application menu is unavailable".to_string())?;
+        let view_menu = menu
+            .get("view-menu")
+            .ok_or_else(|| "View menu is unavailable".to_string())?;
+        let view_submenu = match view_menu {
+            MenuItemKind::Submenu(submenu) => submenu,
+            _ => return Err("View menu has an invalid type".to_string()),
+        };
+        let item = view_submenu
+            .get("fade-other-paragraphs")
+            .ok_or_else(|| "Fade paragraphs menu item is unavailable".to_string())?;
+        match item {
+            MenuItemKind::Check(check_item) => check_item
+                .set_checked(checked)
+                .map_err(|error| error.to_string()),
+            _ => Err("Fade paragraphs menu item has an invalid type".to_string()),
+        }
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, checked);
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn set_zen_mode_menu_checked(app: AppHandle, checked: bool) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        let menu = app
+            .menu()
+            .ok_or_else(|| "Application menu is unavailable".to_string())?;
+        let view_menu = menu
+            .get("view-menu")
+            .ok_or_else(|| "View menu is unavailable".to_string())?;
+        let view_submenu = match view_menu {
+            MenuItemKind::Submenu(submenu) => submenu,
+            _ => return Err("View menu has an invalid type".to_string()),
+        };
+        let item = view_submenu
+            .get("zen-mode")
+            .ok_or_else(|| "Zen mode menu item is unavailable".to_string())?;
+        match item {
+            MenuItemKind::Check(check_item) => check_item
+                .set_checked(checked)
+                .map_err(|error| error.to_string()),
+            _ => Err("Zen mode menu item has an invalid type".to_string()),
+        }
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, checked);
+        Ok(())
+    }
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -231,8 +324,33 @@ pub fn run() {
                     true,
                     &[&undo, &redo, &separator, &cut, &copy, &paste, &select_all],
                 )?;
+                let typewriter_mode = CheckMenuItem::with_id(
+                    app,
+                    "typewriter-mode",
+                    "Typewriter Mode",
+                    true,
+                    false,
+                    None::<&str>,
+                )?;
+                let fade_other_paragraphs = CheckMenuItem::with_id(
+                    app,
+                    "fade-other-paragraphs",
+                    "Fade Other Paragraphs",
+                    true,
+                    false,
+                    None::<&str>,
+                )?;
+                let zen_mode =
+                    CheckMenuItem::with_id(app, "zen-mode", "Zen Mode", true, false, None::<&str>)?;
+                let view_menu = Submenu::with_id_and_items(
+                    app,
+                    "view-menu",
+                    "View",
+                    true,
+                    &[&typewriter_mode, &fade_other_paragraphs, &zen_mode],
+                )?;
 
-                let menu = Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu])?;
+                let menu = Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &view_menu])?;
                 app.set_menu(menu)?;
             }
             Ok(())
@@ -247,6 +365,9 @@ pub fn run() {
             "export-document" => Some("prosecraft:export-document"),
             "publish-manuscript" => Some("prosecraft:open-publish"),
             "new-project" => Some("prosecraft:new-project"),
+            "typewriter-mode" => Some("prosecraft:toggle-typewriter"),
+            "fade-other-paragraphs" => Some("prosecraft:toggle-fade-paragraphs"),
+            "zen-mode" => Some("prosecraft:toggle-zen-mode"),
             _ => None,
         };
         if let Some(event_name) = event_name {
@@ -264,6 +385,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             update_project_menu,
+            set_typewriter_menu_checked,
+            set_fade_paragraphs_menu_checked,
+            set_zen_mode_menu_checked,
             list_system_font_families,
             sync_list_dir,
             sync_read_text,

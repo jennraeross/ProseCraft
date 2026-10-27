@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { markdown } from "@codemirror/lang-markdown";
-  import { EditorState, type Range as DecorationRange } from "@codemirror/state";
+  import { EditorState, StateEffect, type Range as DecorationRange } from "@codemirror/state";
   import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
   import { tags } from "@lezer/highlight";
   import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from "@codemirror/view";
@@ -13,6 +13,7 @@
   import "@fontsource/ibm-plex-sans/latin-700.css";
   import "$lib/color-schemes.css";
   import { autoResize } from "$lib/auto-resize";
+  import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import EntitySheet, { type SheetSection } from "$lib/EntitySheet.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
@@ -89,6 +90,9 @@
   const markdownSystemFontStorageKey = "prosecraft-markdown-editor-system-font";
   const scaleStorageKey = "prosecraft-editor-scale";
   const markdownEditorStorageKey = "prosecraft-markdown-editor-enabled";
+  const typewriterStorageKey = "prosecraft-typewriter-mode";
+  const fadeParagraphsStorageKey = "prosecraft-fade-other-paragraphs";
+  const zenModeStorageKey = "prosecraft-zen-mode";
   const goalsStorageKey = "prosecraft-writing-goals";
   const activityStorageKey = "prosecraft-writing-activity";
   const projectSettingsStorageKey = "prosecraft-project-settings";
@@ -237,10 +241,21 @@
   let systemFontsRequest: Promise<void> | undefined;
   let editorScale = $state(100);
   let markdownEditorEnabled = $state(false);
+  let typewriterMode = $state(false);
+  let fadeOtherParagraphs = $state(false);
+  let zenMode = $state(false);
+  let zenInterfaceHidden = $state(false);
   let markdownEditorMode = $state(false);
   let markdownSource = $state("");
   let markdownEditorHost = $state<HTMLDivElement>();
+  let editorColumn = $state<HTMLDivElement>();
   let markdownCodeEditor: EditorView | undefined;
+  let richTextTypewriterFrame: number | undefined;
+  let markdownTypewriterFrame: number | undefined;
+  let richTextFadeFrame: number | undefined;
+  let richTextFadeNeedsApply = false;
+  let richTextFadeActiveBlocks: HTMLElement[] = [];
+  const writingBlockSelector = "p, h1, h2, h3, blockquote, pre, li, td, th, div";
   let selectedEditorImage = $state<HTMLImageElement | null>(null);
   let imageFileInput = $state<HTMLInputElement>();
   let imageDropActive = $state(false);
@@ -335,6 +350,73 @@
     },
     { decorations: (plugin) => plugin.decorations }
   );
+  const refreshMarkdownFadeEffect = StateEffect.define<null>();
+  const fadedMarkdownLine = Decoration.line({ class: "cm-faded-line" });
+
+  function markdownActiveParagraphRange(view: EditorView): [number, number] {
+    const { state } = view;
+    const selection = state.selection.main;
+    const fromLine = state.doc.lineAt(selection.from).number;
+    const toLine = state.doc.lineAt(selection.to).number;
+    let start = fromLine;
+    let end = toLine;
+
+    if (state.doc.line(fromLine).text.trim() !== "") {
+      while (start > 1 && state.doc.line(start - 1).text.trim() !== "") start--;
+    }
+    if (state.doc.line(toLine).text.trim() !== "") {
+      while (end < state.doc.lines && state.doc.line(end + 1).text.trim() !== "") end++;
+    }
+    return [start, end];
+  }
+
+  const markdownFadePlugin = ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+
+      constructor(view: EditorView) {
+        this.decorations = untrack(() => this.buildDecorations(view));
+      }
+
+      update(update: ViewUpdate) {
+        if (
+          update.docChanged
+          || update.selectionSet
+          || update.viewportChanged
+          || update.focusChanged
+          || update.transactions.some((transaction) =>
+            transaction.effects.some((effect) => effect.is(refreshMarkdownFadeEffect))
+          )
+        ) {
+          this.decorations = untrack(() => this.buildDecorations(update.view));
+        }
+      }
+
+      buildDecorations(view: EditorView): DecorationSet {
+        if (!fadeOtherParagraphs || !view.hasFocus) return Decoration.none;
+
+        const [startLine, endLine] = markdownActiveParagraphRange(view);
+        const ranges: DecorationRange<Decoration>[] = [];
+        for (const { from, to } of view.visibleRanges) {
+          const firstLine = view.state.doc.lineAt(from).number;
+          const lastLine = view.state.doc.lineAt(to).number;
+          for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber++) {
+            if (lineNumber >= startLine && lineNumber <= endLine) continue;
+            ranges.push(fadedMarkdownLine.range(view.state.doc.line(lineNumber).from));
+          }
+        }
+        return Decoration.set(ranges, true);
+      }
+    },
+    { decorations: (plugin) => plugin.decorations }
+  );
+  const markdownZenInput = EditorView.domEventHandlers({
+    beforeinput(event) {
+      const inputEvent = event as InputEvent;
+      if (isTypingInputType(inputEvent.inputType)) hideZenInterface();
+      return false;
+    }
+  });
   $effect(() => {
     if (!markdownEditorMode || !markdownEditorHost) return;
     const view = new EditorView({
@@ -343,6 +425,8 @@
         extensions: [
           markdown(),
           embeddedImageAbbreviation,
+          markdownFadePlugin,
+          markdownZenInput,
           syntaxHighlighting(HighlightStyle.define([
             { tag: tags.heading, color: "var(--text-heading)", fontWeight: "600" },
             { tag: tags.heading1, color: "var(--accent)", fontWeight: "700" },
@@ -374,10 +458,20 @@
             ".cm-gutters": { display: "none" },
             ".cm-cursor": { borderLeftColor: "var(--text-primary)" }
           }),
-          EditorView.updateListener.of(({ docChanged, state }) => {
-            if (!docChanged) return;
-            markdownSource = state.doc.toString();
-            handleMarkdownInput();
+          EditorView.updateListener.of((update) => {
+            const { docChanged, state } = update;
+            if (docChanged) {
+              markdownSource = state.doc.toString();
+              handleMarkdownInput();
+            }
+            if (update.focusChanged && !update.view.hasFocus) showZenInterface();
+            if (
+              typewriterMode
+              && update.view.hasFocus
+              && (update.selectionSet || docChanged || update.focusChanged)
+            ) {
+              scheduleMarkdownTypewriter(update.view);
+            }
           })
         ]
       }),
@@ -587,6 +681,7 @@
     if (active) {
       activeDocumentId = active.id;
       title = active.title;
+      clearRichTextFade();
       editor.innerHTML = active.content;
       setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
     } else {
@@ -692,6 +787,9 @@
       localStorage.setItem(markdownSystemFontStorageKey, markdownSystemFont);
       localStorage.setItem(scaleStorageKey, String(editorScale));
       localStorage.setItem(markdownEditorStorageKey, String(markdownEditorEnabled));
+      localStorage.setItem(typewriterStorageKey, String(typewriterMode));
+      localStorage.setItem(fadeParagraphsStorageKey, String(fadeOtherParagraphs));
+      localStorage.setItem(zenModeStorageKey, String(zenMode));
       preferencesSaved = true;
     } catch {
       preferencesSaved = false;
@@ -725,6 +823,292 @@
       "--markdown-editor-font",
       markdownFontStack(markdownFontPreference, markdownSystemFont)
     );
+  }
+
+  async function syncTypewriterMenu(checked: boolean) {
+    try {
+      const { invoke, isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      await invoke("set_typewriter_menu_checked", { checked });
+    } catch (error) {
+      console.error("Could not update the typewriter menu.", error);
+    }
+  }
+
+  async function syncFadeParagraphsMenu(checked: boolean) {
+    try {
+      const { invoke, isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      await invoke("set_fade_paragraphs_menu_checked", { checked });
+    } catch (error) {
+      console.error("Could not update the fade paragraphs menu.", error);
+    }
+  }
+
+  async function syncZenModeMenu(checked: boolean) {
+    try {
+      const { invoke, isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      await invoke("set_zen_mode_menu_checked", { checked });
+    } catch (error) {
+      console.error("Could not update the Zen mode menu.", error);
+    }
+  }
+
+  function closestWritingBlock(node: Node | null): HTMLElement | null {
+    if (!node) return null;
+    const element = node.nodeType === Node.ELEMENT_NODE
+      ? node as Element
+      : node.parentElement;
+    const block = element?.closest(writingBlockSelector);
+    if (!block || block === editor || !editor.contains(block)) return null;
+    return block as HTMLElement;
+  }
+
+  function writingBlockAncestors(block: HTMLElement): HTMLElement[] {
+    const ancestors: HTMLElement[] = [];
+    let parent = block.parentElement;
+    while (parent && parent !== editor) {
+      if (parent.matches(writingBlockSelector)) ancestors.push(parent);
+      parent = parent.parentElement;
+    }
+    return ancestors;
+  }
+
+  function selectedWritingBlocks(selection: Selection): HTMLElement[] {
+    if (selection.isCollapsed) {
+      const block = closestWritingBlock(selection.focusNode);
+      return block ? [block] : [];
+    }
+    if (!selection.rangeCount) return [];
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return [];
+    return Array.from(editor.querySelectorAll<HTMLElement>(writingBlockSelector))
+      .filter((block) => block !== editor && range.intersectsNode(block));
+  }
+
+  function sameWritingBlocks(first: HTMLElement[], second: HTMLElement[]): boolean {
+    return first.length === second.length && first.every((block, index) => block === second[index]);
+  }
+
+  function removeRichTextFadeClasses() {
+    if (!editor) return;
+    for (const block of editor.querySelectorAll<HTMLElement>(".faded-writing-block")) {
+      block.classList.remove("faded-writing-block");
+    }
+  }
+
+  function clearRichTextFade() {
+    if (richTextFadeFrame === undefined && richTextFadeActiveBlocks.length === 0) return;
+    if (richTextFadeFrame !== undefined) {
+      cancelAnimationFrame(richTextFadeFrame);
+      richTextFadeFrame = undefined;
+    }
+    richTextFadeNeedsApply = false;
+    richTextFadeActiveBlocks = [];
+    removeRichTextFadeClasses();
+  }
+
+  function applyRichTextFade(force = false) {
+    if (!editor) return;
+    if (!fadeOtherParagraphs || markdownEditorMode || !editor.contains(document.activeElement)) {
+      clearRichTextFade();
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !selection.focusNode || !editor.contains(selection.focusNode)) {
+      clearRichTextFade();
+      return;
+    }
+
+    const activeBlocks = selectedWritingBlocks(selection);
+    if (activeBlocks.length === 0) {
+      clearRichTextFade();
+      return;
+    }
+
+    const unchanged = sameWritingBlocks(activeBlocks, richTextFadeActiveBlocks)
+      && richTextFadeActiveBlocks.every((block) => block.isConnected && editor.contains(block));
+    if (!force && unchanged) return;
+
+    removeRichTextFadeClasses();
+    richTextFadeActiveBlocks = activeBlocks;
+    const keep = new Set<HTMLElement>(activeBlocks);
+    for (const block of activeBlocks) {
+      for (const ancestor of writingBlockAncestors(block)) keep.add(ancestor);
+    }
+    for (const block of editor.querySelectorAll<HTMLElement>(writingBlockSelector)) {
+      if (block === editor || keep.has(block) || block.querySelector(writingBlockSelector)) continue;
+      block.classList.add("faded-writing-block");
+    }
+  }
+
+  function scheduleRichTextFade(force = false) {
+    if (!fadeOtherParagraphs || markdownEditorMode) return;
+    if (force) richTextFadeNeedsApply = true;
+    if (richTextFadeFrame !== undefined) return;
+    richTextFadeFrame = requestAnimationFrame(() => {
+      richTextFadeFrame = undefined;
+      const shouldForce = richTextFadeNeedsApply;
+      richTextFadeNeedsApply = false;
+      applyRichTextFade(shouldForce);
+    });
+  }
+
+  function refreshMarkdownFade() {
+    markdownCodeEditor?.dispatch({ effects: refreshMarkdownFadeEffect.of(null) });
+  }
+
+  function richTextCaretRect(): DOMRect | null {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !selection.isCollapsed || !selection.focusNode) {
+      return null;
+    }
+
+    const range = document.createRange();
+    try {
+      range.setStart(selection.focusNode, selection.focusOffset);
+      range.collapse(true);
+    } catch {
+      return null;
+    }
+
+    const rect = range.getBoundingClientRect();
+    if (rect.height > 0) return rect;
+
+    const element = selection.focusNode.nodeType === Node.ELEMENT_NODE
+      ? selection.focusNode as Element
+      : selection.focusNode.parentElement;
+    const block = element?.closest("p, li, blockquote, h1, h2, h3, pre, div");
+    if (!block || block === editor) return null;
+    const blockRect = block.getBoundingClientRect();
+    return blockRect.height > 0 ? blockRect : null;
+  }
+
+  function scheduleRichTextTypewriter() {
+    if (!typewriterMode || richTextTypewriterFrame !== undefined) return;
+    richTextTypewriterFrame = requestAnimationFrame(() => {
+      richTextTypewriterFrame = undefined;
+      if (!typewriterMode || !editor || !editor.contains(document.activeElement)) return;
+      const selection = window.getSelection();
+      if (!selection || !selection.rangeCount || !selection.isCollapsed || !selection.focusNode) return;
+      if (!editor.contains(selection.focusNode)) return;
+      const rect = richTextCaretRect();
+      if (rect) centerCaretInViewport(rect);
+    });
+  }
+
+  function scheduleMarkdownTypewriter(view: EditorView) {
+    if (!typewriterMode || markdownTypewriterFrame !== undefined) return;
+    markdownTypewriterFrame = requestAnimationFrame(() => {
+      markdownTypewriterFrame = undefined;
+      if (!typewriterMode || !view.dom.isConnected || !view.hasFocus) return;
+      const selection = view.state.selection.main;
+      if (!selection.empty) return;
+      const coords = view.coordsAtPos(selection.head);
+      if (coords) centerCaretInViewport(coords);
+    });
+  }
+
+  function handleRichTextSelectionChange() {
+    if (!editor) return;
+    if (!editor.contains(document.activeElement)) {
+      clearRichTextFade();
+      return;
+    }
+
+    if (fadeOtherParagraphs) scheduleRichTextFade();
+
+    if (!typewriterMode) return;
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !selection.isCollapsed || !selection.focusNode) return;
+    if (!editor.contains(selection.focusNode)) return;
+    scheduleRichTextTypewriter();
+  }
+
+  function setTypewriterMode(enabled: boolean, syncMenu = true) {
+    typewriterMode = enabled;
+    savePreferences();
+    if (syncMenu) void syncTypewriterMenu(enabled);
+
+    if (!enabled) {
+      if (richTextTypewriterFrame !== undefined) {
+        cancelAnimationFrame(richTextTypewriterFrame);
+        richTextTypewriterFrame = undefined;
+      }
+      if (markdownTypewriterFrame !== undefined) {
+        cancelAnimationFrame(markdownTypewriterFrame);
+        markdownTypewriterFrame = undefined;
+      }
+      return;
+    }
+
+    if (markdownEditorMode && markdownCodeEditor) {
+      scheduleMarkdownTypewriter(markdownCodeEditor);
+    } else {
+      scheduleRichTextTypewriter();
+    }
+  }
+
+  function setFadeOtherParagraphs(enabled: boolean, syncMenu = true) {
+    fadeOtherParagraphs = enabled;
+    savePreferences();
+    if (syncMenu) void syncFadeParagraphsMenu(enabled);
+
+    if (!enabled) {
+      clearRichTextFade();
+      refreshMarkdownFade();
+      return;
+    }
+
+    if (markdownEditorMode && markdownCodeEditor) {
+      refreshMarkdownFade();
+    } else {
+      scheduleRichTextFade(true);
+    }
+  }
+
+  function hideZenInterface() {
+    if (!zenMode || workspaceView !== "writing" || zenInterfaceHidden) return;
+    leftSidebarHovered = false;
+    rightSidebarHovered = false;
+    zenInterfaceHidden = true;
+  }
+
+  function showZenInterface() {
+    if (!zenInterfaceHidden) return;
+    zenInterfaceHidden = false;
+  }
+
+  function setZenMode(enabled: boolean, syncMenu = true) {
+    zenMode = enabled;
+    savePreferences();
+    if (syncMenu) void syncZenModeMenu(enabled);
+    if (!enabled) showZenInterface();
+  }
+
+  function handleEditorBeforeInput(event: InputEvent) {
+    if (!zenMode) return;
+    if (isTypingInputType(event.inputType)) hideZenInterface();
+  }
+
+  function isTypingInputType(inputType: string | undefined): boolean {
+    if (!inputType) return false;
+    return inputType.startsWith("delete")
+      || inputType.startsWith("insertFrom")
+      || inputType === "insertText"
+      || inputType === "insertCompositionText"
+      || inputType === "insertParagraph"
+      || inputType === "insertLineBreak"
+      || inputType === "insertReplacementText";
+  }
+
+  function handleZenPointerMove(event: PointerEvent) {
+    if (!zenInterfaceHidden) return;
+    const target = event.target;
+    if (target instanceof Node && editorColumn?.contains(target)) return;
+    showZenInterface();
   }
 
   function setRichTextFontPreference(value: RichTextFontPreference) {
@@ -806,11 +1190,13 @@
   }
 
   function openSettings() {
+    showZenInterface();
     if (settingsDialog && !settingsDialog.open) settingsDialog.showModal();
     void ensureSystemFonts();
   }
 
   function openProjectSettings() {
+    showZenInterface();
     projectNameDraft = projectName;
     authorNameDraft = authorName;
     if (projectSettingsDialog && !projectSettingsDialog.open) projectSettingsDialog.showModal();
@@ -833,6 +1219,7 @@
 
   function switchProject(id: string) {
     if (id === activeProjectId) return;
+    showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const next = projects.find((project) => project.id === id);
@@ -842,6 +1229,7 @@
   }
 
   function createProject() {
+    showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const number = projects.length + 1;
@@ -1157,6 +1545,7 @@
 
   function setWorkspaceView(next: WorkspaceView) {
     if (next === workspaceView) return;
+    showZenInterface();
     if (workspaceView === "writing" && next !== "writing") {
       writingSidebarState = { left: leftSidebarVisible, right: rightSidebarVisible };
     }
@@ -1215,6 +1604,7 @@
     const active = documents.find((doc) => doc.id === activeDocumentId);
     setMarkdownSource(active?.markdownSource ?? htmlToMarkdown(editor.innerHTML));
     selectEditorImage(null);
+    clearRichTextFade();
     markdownEditorMode = true;
   }
 
@@ -1230,9 +1620,11 @@
     refreshCounts();
     lastEditorWordCount = wordCount;
     persistNow();
+    void tick().then(() => scheduleRichTextFade(true));
   }
 
   function toggleEditorMode() {
+    showZenInterface();
     if (markdownEditorMode) switchToRichTextEditor();
     else switchToMarkdownEditor();
   }
@@ -1611,6 +2003,7 @@
     selectEditorImage(null);
     activeDocumentId = next.id;
     title = next.title;
+    clearRichTextFade();
     editor.innerHTML = cleanHtml(next.content);
     setMarkdownSource(next.markdownSource ?? htmlToMarkdown(next.content));
     refreshCounts();
@@ -1638,6 +2031,7 @@
     documents = [...documents, next];
     activeDocumentId = next.id;
     title = next.title;
+    clearRichTextFade();
     editor.innerHTML = next.content;
     setMarkdownSource("");
     refreshCounts();
@@ -1849,6 +2243,12 @@
   }
 
   function updatePointerInteractions(event: PointerEvent) {
+    handleZenPointerMove(event);
+    if (zenInterfaceHidden) {
+      leftSidebarHovered = false;
+      rightSidebarHovered = false;
+      return;
+    }
     handleSidebarPointerMove(event);
     updateChapterDropTarget(event);
     updateStoryboardDropTarget(event);
@@ -1964,6 +2364,7 @@
     }
     activeDocumentId = next.id;
     title = next.title;
+    clearRichTextFade();
     editor.innerHTML = next.content;
     setMarkdownSource("");
     refreshCounts();
@@ -2088,12 +2489,14 @@
   }
 
   function createDocument() {
+    showZenInterface();
     const chapter = chapters[0];
     if (chapter) createScene(chapter.id);
     else createChapter();
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") showZenInterface();
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
       event.preventDefault();
       createDocument();
@@ -2111,12 +2514,15 @@
     trackActivity(wordCount - previousWordCount);
     lastEditorWordCount = wordCount;
     persist();
+    scheduleRichTextTypewriter();
+    if (fadeOtherParagraphs) scheduleRichTextFade();
   }
 
   function runCommand(command: string, value?: string) {
     editor?.focus();
     document.execCommand(command, false, value);
     handleInput();
+    if (fadeOtherParagraphs) scheduleRichTextFade(true);
   }
 
   function changeBlock(event: Event) {
@@ -2165,6 +2571,9 @@
       const savedScale = Number(localStorage.getItem(scaleStorageKey));
       if ([80, 90, 100, 110, 120, 130, 140].includes(savedScale)) editorScale = savedScale;
       markdownEditorEnabled = localStorage.getItem(markdownEditorStorageKey) === "true";
+      typewriterMode = localStorage.getItem(typewriterStorageKey) === "true";
+      fadeOtherParagraphs = localStorage.getItem(fadeParagraphsStorageKey) === "true";
+      zenMode = localStorage.getItem(zenModeStorageKey) === "true";
       const savedProjectSettings = localStorage.getItem(projectSettingsStorageKey);
       if (savedProjectSettings) {
         const parsed: unknown = JSON.parse(savedProjectSettings);
@@ -2218,6 +2627,9 @@
     applyRichTextFont();
     applyMarkdownFont();
     document.documentElement.style.setProperty("--editor-scale", String(editorScale / 100));
+    void syncTypewriterMenu(typewriterMode);
+    void syncFadeParagraphsMenu(fadeOtherParagraphs);
+    void syncZenModeMenu(zenMode);
 
     try {
       let loadedProject = false;
@@ -2325,13 +2737,20 @@
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     if (publishTimer) clearTimeout(publishTimer);
+    if (richTextTypewriterFrame !== undefined) cancelAnimationFrame(richTextTypewriterFrame);
+    if (markdownTypewriterFrame !== undefined) cancelAnimationFrame(markdownTypewriterFrame);
+    if (richTextFadeFrame !== undefined) cancelAnimationFrame(richTextFadeFrame);
     persistNow();
     themeMediaQuery?.removeEventListener("change", handleSystemThemeChange);
   });
 
   onMount(() => {
     window.addEventListener("resize", handleViewportResize);
-    return () => window.removeEventListener("resize", handleViewportResize);
+    document.addEventListener("selectionchange", handleRichTextSelectionChange);
+    return () => {
+      window.removeEventListener("resize", handleViewportResize);
+      document.removeEventListener("selectionchange", handleRichTextSelectionChange);
+    };
   });
 
   onMount(() => {
@@ -2360,6 +2779,15 @@
         const exportUnlisten = await listen("prosecraft:export-document", exportDocument);
         const newSceneUnlisten = await listen("prosecraft:new-scene", createDocument);
         const publishUnlisten = await listen("prosecraft:open-publish", openPublishView);
+        const typewriterUnlisten = await listen("prosecraft:toggle-typewriter", () => {
+          setTypewriterMode(!typewriterMode, false);
+        });
+        const fadeParagraphsUnlisten = await listen("prosecraft:toggle-fade-paragraphs", () => {
+          setFadeOtherParagraphs(!fadeOtherParagraphs, false);
+        });
+        const zenModeUnlisten = await listen("prosecraft:toggle-zen-mode", () => {
+          setZenMode(!zenMode, false);
+        });
         if (disposed) {
           settingsUnlisten();
           projectSettingsUnlisten();
@@ -2368,6 +2796,9 @@
           exportUnlisten();
           newSceneUnlisten();
           publishUnlisten();
+          typewriterUnlisten();
+          fadeParagraphsUnlisten();
+          zenModeUnlisten();
         } else {
           unlisten.push(
             settingsUnlisten,
@@ -2376,7 +2807,10 @@
             switchProjectUnlisten,
             exportUnlisten,
             newSceneUnlisten,
-            publishUnlisten
+            publishUnlisten,
+            typewriterUnlisten,
+            fadeParagraphsUnlisten,
+            zenModeUnlisten
           );
         }
       } catch (error) {
@@ -2402,12 +2836,12 @@
   <meta name="description" content="A quiet place to find the words." />
 </svelte:head>
 
-<div class="app-shell">
+<div class="app-shell" class:zen-hidden={zenInterfaceHidden}>
   <aside
     class="sidebar"
     class:peek={!leftSidebarVisible}
     class:peek-open={!leftSidebarVisible && leftSidebarHovered}
-    inert={!leftSidebarVisible && !leftSidebarHovered}
+    inert={zenInterfaceHidden || (!leftSidebarVisible && !leftSidebarHovered)}
     aria-label="Chapter and story navigation"
   >
     <div class="project-identity">
@@ -2660,9 +3094,10 @@
           </button>
         </div>
       </div>
-      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"}>
+      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode}>
       <div
         class="editor-column"
+        bind:this={editorColumn}
         class:image-drop-active={imageDropActive}
         role="region"
         aria-label="Writing editor. Drop images here to insert them."
@@ -2770,6 +3205,7 @@
           <div
             bind:this={markdownEditorHost}
             class="markdown-source-editor"
+            class:fade-other-paragraphs={fadeOtherParagraphs}
             role="textbox"
             aria-label="Markdown source"
             aria-multiline="true"
@@ -2779,6 +3215,7 @@
           class="editor-content"
           class:sheet-notes={isCharacterDocument || isPlaceDocument}
           class:editor-content-hidden={markdownEditorMode}
+          class:fade-other-paragraphs={fadeOtherParagraphs}
           bind:this={editor}
           contenteditable="true"
           role="textbox"
@@ -2786,6 +3223,12 @@
           aria-label="Document text"
           aria-multiline="true"
           spellcheck="true"
+          onbeforeinput={handleEditorBeforeInput}
+          onfocus={() => scheduleRichTextFade(true)}
+          onblur={() => {
+            clearRichTextFade();
+            showZenInterface();
+          }}
           oninput={handleInput}
           onclick={handleEditorClick}
           onkeydown={(event) => { if (event.key === "Escape") selectEditorImage(null); }}
@@ -2948,7 +3391,7 @@
       class="progress-sidebar"
       class:peek={!rightSidebarVisible}
       class:peek-open={!rightSidebarVisible && rightSidebarHovered}
-      inert={!rightSidebarVisible && !rightSidebarHovered}
+      inert={zenInterfaceHidden || (!rightSidebarVisible && !rightSidebarHovered)}
       aria-label="Writing goals and activity"
     >
       <div class="progress-header">
@@ -3136,8 +3579,38 @@
       </div>
     </section>
     <section class="preference-section">
+      <div class="preference-heading"><strong>Writing experience</strong><span>Control how the editor follows your focus</span></div>
+      <label class="preference-toggle">
+        <input
+          type="checkbox"
+          checked={typewriterMode}
+          onchange={(event) => setTypewriterMode((event.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>Typewriter mode</span>
+      </label>
+      <p class="preference-help">Keeps the caret near the vertical center of the page in both the rich-text and Markdown editors.</p>
+      <label class="preference-toggle">
+        <input
+          type="checkbox"
+          checked={fadeOtherParagraphs}
+          onchange={(event) => setFadeOtherParagraphs((event.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>Fade other paragraphs</span>
+      </label>
+      <p class="preference-help">Keeps the paragraph you’re editing at full contrast and fades the rest while an editor is focused.</p>
+      <label class="preference-toggle">
+        <input
+          type="checkbox"
+          checked={zenMode}
+          onchange={(event) => setZenMode((event.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>Zen mode</span>
+      </label>
+      <p class="preference-help">Hides the interface while you type. Move the mouse outside the editor or press Escape to bring it back.</p>
+    </section>
+    <section class="preference-section">
       <div class="preference-heading"><strong>Markdown editor</strong><span>Enable an optional plain-text Markdown editor alongside rich text</span></div>
-      <label class="markdown-editor-toggle">
+      <label class="preference-toggle">
         <input
           type="checkbox"
           checked={markdownEditorEnabled}
@@ -3145,7 +3618,7 @@
         />
         <span>Enable Markdown editor</span>
       </label>
-      <p class="markdown-editor-help">When enabled, use the Markdown editor button above a document to switch between Markdown source and rich text.</p>
+      <p class="preference-help">When enabled, use the Markdown editor button above a document to switch between Markdown source and rich text.</p>
     </section>
     <section class="preference-section">
       <div class="preference-heading"><strong>Data</strong><span>Back up or move your projects between devices</span></div>
@@ -3502,7 +3975,7 @@
     padding: 18px 12px 14px;
     background: var(--sidebar-bg);
     border-right: 1px solid var(--border);
-    transition: transform .18s ease;
+    transition: transform .18s ease, opacity .18s ease;
   }
   .sidebar.peek { transform: translateX(-100%); pointer-events: none; }
   .sidebar.peek.peek-open { transform: translateX(0); pointer-events: auto; box-shadow: var(--shadow-panel); }
@@ -3587,7 +4060,7 @@
   .sync-status { display: flex; align-items: center; gap: 7px; padding: 0 8px 13px; color: var(--text-muted); font-size: 10px; }
   .sync-dot, .save-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
-  .progress-sidebar { position: fixed; inset: 0 0 0 auto; z-index: 2; display: flex; width: 286px; flex-direction: column; overflow-y: auto; padding: 27px 19px 22px; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; transition: transform .18s ease; }
+  .progress-sidebar { position: fixed; inset: 0 0 0 auto; z-index: 2; display: flex; width: 286px; flex-direction: column; overflow-y: auto; padding: 27px 19px 22px; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; transition: transform .18s ease, opacity .18s ease; }
   .progress-sidebar.peek { transform: translateX(100%); pointer-events: none; }
   .progress-sidebar.peek.peek-open { transform: translateX(0); pointer-events: auto; box-shadow: var(--shadow-panel-left); }
   .progress-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 0 3px 19px; }
@@ -3662,6 +4135,7 @@
   .panel-toggle:hover { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
   .panel-toggle svg { width: 15px; height: 15px; }
   .editor-panel { display: flex; width: 100%; justify-content: center; }
+  .editor-panel.typewriter-mode { padding-bottom: 50vh; }
   .editor-panel-hidden { display: none; }
   .editor-column { position: relative; width: min(100%, 690px); }
   .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
@@ -3698,9 +4172,14 @@
   .markdown-source-editor :global(.cm-line) { padding: 0; }
   .markdown-source-editor :global(.cm-gutters) { display: none; }
   .markdown-source-editor :global(.cm-focused) { outline: none; }
+  .markdown-source-editor.fade-other-paragraphs :global(.cm-line.cm-faded-line) { opacity: .38; }
   :global(.markdown-image-placeholder) { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font: 10px/1.6 var(--markdown-editor-font); white-space: nowrap; }
   .editor-content-hidden { display: none; }
   .editor-content { min-height: 430px; padding: 37px 1px 35px; outline: none; color: var(--text-body); font-family: var(--writing-font, var(--interface-font)); font-size: calc(16px * var(--editor-scale)); line-height: 1.85; }
+  .editor-content.fade-other-paragraphs :global(.faded-writing-block) {
+    opacity: .38;
+    transition: opacity .15s ease;
+  }
   .editor-content :global(.eyebrow) { margin: 0 0 11px; color: var(--eyebrow); font-family: ui-sans-serif, sans-serif; font-size: calc(9px * var(--editor-scale)); font-weight: 650; letter-spacing: 1.3px; line-height: 1.5; }
   .editor-content :global(h2) { margin: 0 0 19px; color: var(--text-heading); font-size: calc(24px * var(--editor-scale)); font-weight: 500; letter-spacing: -.5px; line-height: 1.4; }
   .editor-content :global(h1) { color: var(--text-heading); font-size: calc(30px * var(--editor-scale)); font-weight: 500; line-height: 1.35; }
@@ -3793,9 +4272,10 @@
   .preference-label { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 10px; }
   .markdown-font-label { margin-top: 14px; }
   .font-picker-warning { margin: 6px 0 0; color: var(--warning); font-size: 10px; line-height: 1.5; }
-  .markdown-editor-toggle { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); cursor: pointer; font-size: 11px; }
-  .markdown-editor-toggle input { accent-color: var(--accent-strong); }
-  .markdown-editor-help { margin: 9px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+  .preference-toggle { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); cursor: pointer; font-size: 11px; }
+  .preference-help + .preference-toggle { margin-top: 12px; }
+  .preference-toggle input { accent-color: var(--accent-strong); }
+  .preference-help { margin: 9px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
   .color-scheme-label { margin-top: 14px; }
   .preference-select { width: 100%; height: 35px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
   .project-author-label { margin-top: 16px; }
@@ -3865,5 +4345,30 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .sidebar, .progress-sidebar { transition: none; }
+  }
+
+  .app-shell.zen-hidden .sidebar,
+  .app-shell.zen-hidden .sidebar.peek,
+  .app-shell.zen-hidden .sidebar.peek.peek-open {
+    opacity: 0;
+    transform: translateX(-100%);
+    pointer-events: none;
+  }
+  .app-shell.zen-hidden .progress-sidebar,
+  .app-shell.zen-hidden .progress-sidebar.peek,
+  .app-shell.zen-hidden .progress-sidebar.peek.peek-open {
+    opacity: 0;
+    transform: translateX(100%);
+    pointer-events: none;
+  }
+  .app-shell.zen-hidden .main-panel { margin-right: 0; margin-left: 0; }
+  .app-shell.zen-hidden .workspace-controls,
+  .app-shell.zen-hidden .document-meta,
+  .app-shell.zen-hidden .title-input,
+  .app-shell.zen-hidden .toolbar,
+  .app-shell.zen-hidden .image-edit-toolbar,
+  .app-shell.zen-hidden .image-insert-error,
+  .app-shell.zen-hidden .editor-footer {
+    display: none;
   }
 </style>
