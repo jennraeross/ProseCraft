@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use tauri::AppHandle;
 #[cfg(desktop)]
@@ -261,6 +262,135 @@ fn sync_exists(path: String) -> Result<bool, String> {
     Ok(std::path::Path::new(&path).exists())
 }
 
+const MAX_RESEARCH_FILE_BYTES: u64 = 200 * 1024 * 1024;
+
+fn research_root(root: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(root);
+    if !path.is_absolute() || !path.exists() || !path.is_dir() {
+        return Err("The research files folder is unavailable.".to_string());
+    }
+    Ok(path)
+}
+
+fn validate_research_component(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('\0')
+    {
+        return Err(format!("Invalid {label}."));
+    }
+    Ok(())
+}
+
+fn research_destination(
+    root: &str,
+    project_folder: &str,
+    storage_key: &str,
+) -> Result<PathBuf, String> {
+    validate_research_component(project_folder, "project folder")?;
+    let relative = Path::new(storage_key);
+    let components: Vec<Component> = relative.components().collect();
+    if relative.is_absolute()
+        || !storage_key.starts_with("research/")
+        || storage_key.contains('\\')
+        || components.len() != 3
+        || components[0].as_os_str().to_string_lossy() != "research"
+    {
+        return Err("Invalid research file path.".to_string());
+    }
+    for component in components {
+        match component {
+            Component::Normal(_) => {}
+            _ => return Err("Invalid research file path.".to_string()),
+        }
+    }
+    Ok(research_root(root)?.join(project_folder).join(relative))
+}
+
+#[tauri::command]
+fn research_prepare_project_folder(root: String, project_folder: String) -> Result<String, String> {
+    validate_research_component(&project_folder, "project folder")?;
+    let folder = research_root(&root)?.join(&project_folder);
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    Ok(folder.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn research_import_file(
+    root: String,
+    project_folder: String,
+    storage_key: String,
+    source_path: String,
+) -> Result<u64, String> {
+    let source = PathBuf::from(&source_path);
+    if !source.is_file() {
+        return Err("The selected file could not be read.".to_string());
+    }
+    let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_RESEARCH_FILE_BYTES {
+        return Err("Research files must be 200 MB or smaller.".to_string());
+    }
+    let destination = research_destination(&root, &project_folder, &storage_key)?;
+    if destination.exists() {
+        return Err("That research file already exists.".to_string());
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+    Ok(metadata.len())
+}
+
+#[tauri::command]
+fn research_file_path(
+    root: String,
+    project_folder: String,
+    storage_key: String,
+) -> Result<String, String> {
+    let destination = research_destination(&root, &project_folder, &storage_key)?;
+    if !destination.is_file() {
+        return Err("That research file is no longer in the project folder.".to_string());
+    }
+    Ok(destination.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn research_open_file(
+    root: String,
+    project_folder: String,
+    storage_key: String,
+) -> Result<(), String> {
+    let destination = research_destination(&root, &project_folder, &storage_key)?;
+    if !destination.is_file() {
+        return Err("That research file is no longer in the project folder.".to_string());
+    }
+    tauri_plugin_opener::open_path(&destination, None::<&str>).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn research_delete_file(
+    root: String,
+    project_folder: String,
+    storage_key: String,
+) -> Result<(), String> {
+    let destination = research_destination(&root, &project_folder, &storage_key)?;
+    if destination.exists() {
+        std::fs::remove_file(&destination).map_err(|error| error.to_string())?;
+    }
+    if let Some(parent) = destination.parent() {
+        let is_empty = std::fs::read_dir(parent)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if is_empty && parent.file_name().and_then(|name| name.to_str()) != Some("research") {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -394,7 +524,12 @@ pub fn run() {
             sync_write_text,
             sync_create_dir,
             sync_remove,
-            sync_exists
+            sync_exists,
+            research_prepare_project_folder,
+            research_import_file,
+            research_file_path,
+            research_open_file,
+            research_delete_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -119,6 +119,9 @@ export function projectContentKey(project: ProjectData): string {
     storyboardCards: project.storyboardCards ?? [],
     storyboardRows: project.storyboardRows ?? [],
     noteFolders: project.noteFolders ?? [],
+    researchFolderName: project.researchFolderName ?? "",
+    researchFolders: project.researchFolders ?? [],
+    researchItems: project.researchItems ?? [],
     publishOptions: project.publishOptions ?? null
   });
 }

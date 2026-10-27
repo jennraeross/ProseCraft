@@ -32,7 +32,7 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Character templates
 - [x] Place templates
 - [x] Folders for notes
-- [ ] Universal file binder
+- [x] Universal file binder
 - [x] Typewriter mode
 - [x] Focus mode
 - [x] Zen mode

@@ -50,12 +50,33 @@
     type ChapterData,
     type CharacterSheet,
     type DocumentData,
+    type BinderFolder,
     type NoteFolder,
     type PlaceSheet,
     type PublishOptions,
+    type ResearchFile,
+    type ResearchItem,
+    type ResearchLink,
     type SpaceName
   } from "$lib/publish/types";
   import { saveExport } from "$lib/publish/save";
+  import {
+    createResearchFolderName,
+    formatResearchFileSize,
+    MAX_RESEARCH_FILE_BYTES,
+    normalizeResearchFolderName,
+    normalizeResearchItems,
+    normalizeResearchUrl,
+    researchFileNameFromPath,
+    researchMimeType,
+    researchTitleFromUrl,
+    safeResearchFileName
+  } from "$lib/research";
+  import {
+    deleteBrowserResearchFile,
+    openBrowserResearchFile,
+    saveBrowserResearchFile
+  } from "$lib/research-files";
   import {
     createBundleText,
     createEncryptedBundleText,
@@ -93,6 +114,7 @@
   const typewriterStorageKey = "prosecraft-typewriter-mode";
   const fadeParagraphsStorageKey = "prosecraft-fade-other-paragraphs";
   const zenModeStorageKey = "prosecraft-zen-mode";
+  const researchRootStorageKey = "prosecraft-research-root";
   const goalsStorageKey = "prosecraft-writing-goals";
   const activityStorageKey = "prosecraft-writing-activity";
   const projectSettingsStorageKey = "prosecraft-project-settings";
@@ -199,6 +221,11 @@
   type NoteTreeItem =
     | { kind: "folder"; folder: NoteFolder; depth: number }
     | { kind: "document"; document: DocumentData; depth: number };
+  type ResearchTreeItem =
+    | { kind: "folder"; folder: BinderFolder; depth: number }
+    | { kind: "document"; document: DocumentData; depth: number }
+    | { kind: "file"; item: ResearchFile; depth: number }
+    | { kind: "link"; item: ResearchLink; depth: number };
   type WorkspaceView = "outline" | "writing" | "storyboard" | "publish";
 
   let editor: HTMLDivElement;
@@ -284,6 +311,25 @@
   let noteFolderInput = $state<HTMLInputElement>();
   let editingNoteFolderId = $state<string | null>(null);
   let noteFolderNameDraft = $state("");
+  let researchFolderInput = $state<HTMLInputElement>();
+  let editingResearchFolderId = $state<string | null>(null);
+  let researchFolderNameDraft = $state("");
+  let researchLinkDialog: HTMLDialogElement;
+  let researchFileInput = $state<HTMLInputElement>();
+  let researchLinkTitle = $state("");
+  let researchLinkUrl = $state("");
+  let researchLinkDescription = $state("");
+  let researchLinkError = $state("");
+  let researchLinkFolderId = $state<string | null>(null);
+  let researchRoot = $state("");
+  let researchFolderName = $state("");
+  let researchFolders = $state<BinderFolder[]>([]);
+  let researchItems = $state<ResearchItem[]>([]);
+  let expandedResearchFolders = $state<Record<string, boolean>>({});
+  let researchStatus = $state("");
+  let researchSettingsStatus = $state("");
+  let researchBusy = $state(false);
+  let pendingResearchFolderId = $state<string | null>(null);
   let draggedChapterId = $state<string | null>(null);
   let chapterDragPointerId = $state<number | null>(null);
   let boardDragSource = $state<BoardDragSource | null>(null);
@@ -513,6 +559,51 @@
     visit(null, 0);
     return choices;
   });
+  let researchTreeItems = $derived.by(() => {
+    const items: ResearchTreeItem[] = [];
+    const researchDocuments = documents.filter((doc) => doc.space === "Research" && !doc.trashed);
+    const appendLevel = (parentId: string | null, depth: number) => {
+      for (const folder of researchFolders.filter((entry) => entry.parentId === parentId)) {
+        items.push({ kind: "folder", folder, depth });
+        if (expandedResearchFolders[folder.id] === false) continue;
+        appendLevel(folder.id, depth + 1);
+        items.push(...researchDocuments
+          .filter((document) => document.folderId === folder.id)
+          .map((document) => ({ kind: "document" as const, document, depth: depth + 1 })));
+        items.push(...researchItems
+          .filter((item) => item.folderId === folder.id)
+          .map((item) => item.kind === "file"
+            ? { kind: "file" as const, item, depth: depth + 1 }
+            : { kind: "link" as const, item, depth: depth + 1 }));
+      }
+    };
+    appendLevel(null, 0);
+    items.push(...researchDocuments
+      .filter((document) => !document.folderId)
+      .map((document) => ({ kind: "document" as const, document, depth: 0 })));
+    items.push(...researchItems
+      .filter((item) => !item.folderId)
+      .map((item) => item.kind === "file"
+        ? { kind: "file" as const, item, depth: 0 }
+        : { kind: "link" as const, item, depth: 0 }));
+    return items;
+  });
+  let researchFolderChoices = $derived.by(() => {
+    const choices: Array<{ folder: BinderFolder; depth: number }> = [];
+    const visit = (parentId: string | null, depth: number) => {
+      for (const folder of researchFolders.filter((item) => item.parentId === parentId)) {
+        choices.push({ folder, depth });
+        visit(folder.id, depth + 1);
+      }
+    };
+    visit(null, 0);
+    return choices;
+  });
+  let researchEmpty = $derived(
+    researchFolders.length === 0
+    && researchItems.length === 0
+    && !documents.some((doc) => doc.space === "Research" && !doc.trashed)
+  );
   let isCharacterDocument = $derived(activeDocument?.space === "Characters");
   let isPlaceDocument = $derived(activeDocument?.space === "Places");
   let characterSheet = $derived(normalizeCharacterSheet(activeDocument?.character));
@@ -571,6 +662,9 @@
       storyboardCards,
       storyboardRows,
       noteFolders,
+      researchFolderName,
+      researchFolders,
+      researchItems,
       publishOptions
     };
   }
@@ -618,11 +712,26 @@
     projectName = project.name;
     authorName = project.author;
     noteFolders = normalizeNoteFolders(project.noteFolders);
+    researchFolders = normalizeNoteFolders(project.researchFolders);
+    researchFolderName = normalizeResearchFolderName(project.researchFolderName);
     expandedNoteFolders = {};
-    const folderIds = new Set(noteFolders.map((folder) => folder.id));
+    expandedResearchFolders = {};
+    researchStatus = "";
+    researchSettingsStatus = "";
+    pendingResearchFolderId = null;
+    editingResearchFolderId = null;
+    researchFolderNameDraft = "";
+    const noteFolderIds = new Set(noteFolders.map((folder) => folder.id));
+    const researchFolderIds = new Set(researchFolders.map((folder) => folder.id));
+    researchItems = normalizeResearchItems(project.researchItems, researchFolderIds);
     documents = project.documents.map((doc) => {
       const normalized = normalizeDocumentSheets(doc);
-      if (normalized.space === "Notes" && normalized.folderId && folderIds.has(normalized.folderId)) {
+      const validFolderIds = normalized.space === "Notes"
+        ? noteFolderIds
+        : normalized.space === "Research"
+          ? researchFolderIds
+          : null;
+      if (validFolderIds && normalized.folderId && validFolderIds.has(normalized.folderId)) {
         return normalized;
       }
       if (!normalized.folderId) return normalized;
@@ -790,6 +899,7 @@
       localStorage.setItem(typewriterStorageKey, String(typewriterMode));
       localStorage.setItem(fadeParagraphsStorageKey, String(fadeOtherParagraphs));
       localStorage.setItem(zenModeStorageKey, String(zenMode));
+      localStorage.setItem(researchRootStorageKey, researchRoot);
       preferencesSaved = true;
     } catch {
       preferencesSaved = false;
@@ -1246,6 +1356,9 @@
       storyboardCards: [],
       storyboardRows: [{ id: crypto.randomUUID(), title: "Timeline" }],
       noteFolders: [],
+      researchFolderName: "",
+      researchFolders: [],
+      researchItems: [],
       publishOptions: defaultPublishOptions()
     };
     const chapter = next.chapters[0];
@@ -2353,7 +2466,7 @@
       title: `Untitled ${spaceNouns[space]}`,
       content: "<p><br></p>",
       space,
-      ...(space === "Notes" && folderId ? { folderId } : {}),
+      ...(space === "Notes" || space === "Research" ? folderId ? { folderId } : {} : {}),
       ...(space === "Characters" ? { character: emptyCharacterSheet() } : {}),
       ...(space === "Places" ? { place: emptyPlaceSheet() } : {})
     };
@@ -2361,6 +2474,9 @@
     expandedSpaces[space] = true;
     if (space === "Notes" && folderId) {
       expandNoteFolderPath(folderId);
+    }
+    if (space === "Research" && folderId) {
+      expandResearchFolderPath(folderId);
     }
     activeDocumentId = next.id;
     title = next.title;
@@ -2438,6 +2554,480 @@
       ...expandedNoteFolders,
       [id]: expandedNoteFolders[id] === false
     };
+  }
+
+  async function createResearchFolder(parentId: string | null = null) {
+    const folder: BinderFolder = {
+      id: crypto.randomUUID(),
+      title: "Untitled folder",
+      parentId
+    };
+    researchFolders = [...researchFolders, folder];
+    expandedSpaces.Research = true;
+    if (parentId) expandResearchFolderPath(parentId);
+    expandedResearchFolders = { ...expandedResearchFolders, [folder.id]: true };
+    persist();
+    await startResearchFolderRename(folder);
+  }
+
+  async function startResearchFolderRename(folder: BinderFolder) {
+    editingResearchFolderId = folder.id;
+    researchFolderNameDraft = folder.title;
+    await tick();
+    researchFolderInput?.focus();
+    researchFolderInput?.select();
+  }
+
+  function saveResearchFolderRename(id: string) {
+    if (editingResearchFolderId !== id) return;
+    const nextTitle = researchFolderNameDraft.trim().slice(0, 60);
+    if (nextTitle) {
+      researchFolders = researchFolders.map((folder) => folder.id === id ? { ...folder, title: nextTitle } : folder);
+      persist();
+    }
+    editingResearchFolderId = null;
+  }
+
+  function cancelResearchFolderRename() {
+    editingResearchFolderId = null;
+    researchFolderNameDraft = "";
+  }
+
+  function toggleResearchFolder(id: string) {
+    expandedResearchFolders = {
+      ...expandedResearchFolders,
+      [id]: expandedResearchFolders[id] === false
+    };
+  }
+
+  function expandResearchFolderPath(id: string) {
+    const expanded = { ...expandedResearchFolders };
+    let currentId: string | null | undefined = id;
+    while (currentId) {
+      expanded[currentId] = true;
+      currentId = researchFolders.find((folder) => folder.id === currentId)?.parentId;
+    }
+    expandedResearchFolders = expanded;
+  }
+
+  function removeResearchFolder(folder: BinderFolder) {
+    const parentId = folder.parentId;
+    const parentTitle = parentId
+      ? researchFolders.find((entry) => entry.id === parentId)?.title ?? "the parent folder"
+      : "the Research root";
+    if (!window.confirm(`Remove “${folder.title}”? Its folders, notes, files, and links will move to ${parentTitle}.`)) {
+      return;
+    }
+    researchFolders = researchFolders
+      .filter((entry) => entry.id !== folder.id)
+      .map((entry) => entry.parentId === folder.id ? { ...entry, parentId } : entry);
+    documents = documents.map((doc) => {
+      if (doc.space !== "Research" || doc.folderId !== folder.id) return doc;
+      if (parentId) return { ...doc, folderId: parentId };
+      const { folderId: _folderId, ...withoutFolder } = doc;
+      return withoutFolder;
+    });
+    researchItems = researchItems.map((item) =>
+      item.folderId === folder.id ? { ...item, folderId: parentId } : item
+    );
+    if (parentId) expandResearchFolderPath(parentId);
+    persist();
+  }
+
+  function moveResearchDocument(documentId: string, folderId: string) {
+    if (folderId && !researchFolders.some((folder) => folder.id === folderId)) return;
+    documents = documents.map((doc) => {
+      if (doc.id !== documentId || doc.space !== "Research") return doc;
+      if (folderId) return { ...doc, folderId };
+      const { folderId: _folderId, ...withoutFolder } = doc;
+      return withoutFolder;
+    });
+    if (folderId) expandResearchFolderPath(folderId);
+    persist();
+  }
+
+  function moveResearchItem(itemId: string, folderId: string) {
+    if (folderId && !researchFolders.some((folder) => folder.id === folderId)) return;
+    researchItems = researchItems.map((item) =>
+      item.id === itemId ? { ...item, folderId: folderId || null } : item
+    );
+    if (folderId) expandResearchFolderPath(folderId);
+    persist();
+  }
+
+  function ensureResearchFolderName(): string {
+    if (researchFolderName) return researchFolderName;
+    researchFolderName = createResearchFolderName(projectName, activeProjectId);
+    return researchFolderName;
+  }
+
+  function researchErrorMessage(error: unknown, fallback: string): string {
+    if (typeof error === "string" && error.trim()) return error;
+    if (error instanceof Error && error.message) return error.message;
+    return fallback;
+  }
+
+  function researchImportStatus(added: number, failures: string[]): string {
+    const noun = added === 1 ? "file" : "files";
+    if (added === 0 && failures.length > 0) return `Could not add files. ${failures[0]}`;
+    if (failures.length > 0) return `Added ${added} ${noun}. ${failures[0]}`;
+    return `Added ${added} ${noun}.`;
+  }
+
+  async function ensureResearchRoot(): Promise<string | null> {
+    if (!desktopRuntime) return null;
+    if (researchRoot) return researchRoot;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose a folder for research files",
+        defaultPath: researchRoot || undefined
+      });
+      if (typeof picked !== "string" || !picked) return null;
+      researchRoot = picked;
+      savePreferences();
+      researchStatus = "Research files folder saved for this device.";
+      return picked;
+    } catch (error) {
+      console.error("Could not choose a research files folder.", error);
+      researchStatus = "Could not open the folder picker.";
+      return null;
+    }
+  }
+
+  async function chooseResearchRoot() {
+    if (!desktopRuntime) return;
+    researchSettingsStatus = "";
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose a folder for research files",
+        defaultPath: researchRoot || undefined
+      });
+      if (typeof picked !== "string" || !picked) return;
+      researchRoot = picked;
+      savePreferences();
+      researchSettingsStatus = "Research files folder saved. Existing files remain in the previous folder.";
+    } catch (error) {
+      console.error("Could not choose a research files folder.", error);
+      researchSettingsStatus = "Could not open the folder picker.";
+    }
+  }
+
+  async function revealResearchProjectFolder() {
+    if (!desktopRuntime) return;
+    researchSettingsStatus = "";
+    const root = await ensureResearchRoot();
+    if (!root) return;
+    const projectFolder = ensureResearchFolderName();
+    persist();
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const path = await invoke<string>("research_prepare_project_folder", { root, projectFolder });
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(path);
+      researchSettingsStatus = "";
+    } catch (error) {
+      console.error("Could not reveal the research folder.", error);
+      researchSettingsStatus = researchErrorMessage(error, "Could not reveal the research folder.");
+    }
+  }
+
+  async function addResearchFiles(folderId: string | null = null) {
+    if (researchBusy) return;
+    researchStatus = "";
+    if (!desktopRuntime) {
+      pendingResearchFolderId = folderId;
+      if (researchFileInput) {
+        researchFileInput.value = "";
+        researchFileInput.click();
+      }
+      return;
+    }
+
+    const root = await ensureResearchRoot();
+    if (!root) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ multiple: true, title: "Add research files" });
+      const paths = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
+      if (paths.length === 0) return;
+
+      researchBusy = true;
+      researchStatus = "Adding files…";
+      const projectFolder = ensureResearchFolderName();
+      const importProjectId = activeProjectId;
+      const { invoke } = await import("@tauri-apps/api/core");
+      let added = 0;
+      const failures: string[] = [];
+
+      for (const sourcePath of paths) {
+        try {
+          const id = crypto.randomUUID();
+          const fileName = researchFileNameFromPath(sourcePath);
+          const storageKey = `research/${id}/${fileName}`;
+          const size = await invoke<number>("research_import_file", {
+            root,
+            projectFolder,
+            storageKey,
+            sourcePath
+          });
+          if (activeProjectId !== importProjectId) {
+            await invoke("research_delete_file", { root, projectFolder, storageKey });
+            continue;
+          }
+          const item: ResearchFile = {
+            id,
+            kind: "file",
+            folderId,
+            title: fileName,
+            fileName,
+            mimeType: researchMimeType(fileName),
+            size,
+            storageKey,
+            addedAt: Date.now()
+          };
+          researchItems = [...researchItems, item];
+          added += 1;
+        } catch (error) {
+          console.error("Could not import a research file.", error);
+          failures.push(researchErrorMessage(error, "Unknown error"));
+        }
+      }
+
+      if (added > 0 && activeProjectId === importProjectId) {
+        expandedSpaces.Research = true;
+        if (folderId) expandResearchFolderPath(folderId);
+        persist();
+      }
+      if (activeProjectId === importProjectId) {
+        researchStatus = researchImportStatus(added, failures);
+      }
+    } catch (error) {
+      console.error("Could not add research files.", error);
+      researchStatus = "Could not open the file picker.";
+    } finally {
+      researchBusy = false;
+    }
+  }
+
+  async function handleBrowserResearchFiles(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    const folderId = pendingResearchFolderId;
+    pendingResearchFolderId = null;
+    input.value = "";
+    if (files.length === 0) return;
+
+    researchBusy = true;
+    researchStatus = "Adding files…";
+    const importProjectId = activeProjectId;
+    let added = 0;
+    const failures: string[] = [];
+    for (const file of files) {
+      try {
+        if (file.size > MAX_RESEARCH_FILE_BYTES) {
+          throw new Error("Research files must be 200 MB or smaller.");
+        }
+        const id = crypto.randomUUID();
+        const fileName = safeResearchFileName(file.name);
+        const storageKey = `research/${id}/${fileName}`;
+        const mimeType = file.type || researchMimeType(fileName);
+        await saveBrowserResearchFile(importProjectId, storageKey, file, fileName, mimeType);
+        if (activeProjectId !== importProjectId) {
+          await deleteBrowserResearchFile(importProjectId, storageKey);
+          continue;
+        }
+        const item: ResearchFile = {
+          id,
+          kind: "file",
+          folderId,
+          title: fileName,
+          fileName,
+          mimeType,
+          size: file.size,
+          storageKey,
+          addedAt: Date.now()
+        };
+        researchItems = [...researchItems, item];
+        added += 1;
+      } catch (error) {
+        console.error("Could not save a research file in browser storage.", error);
+        failures.push(researchErrorMessage(error, "Unknown error"));
+      }
+    }
+    if (added > 0 && activeProjectId === importProjectId) {
+      expandedSpaces.Research = true;
+      if (folderId) expandResearchFolderPath(folderId);
+      persist();
+    }
+    if (activeProjectId === importProjectId) {
+      researchStatus = researchImportStatus(added, failures);
+    }
+    researchBusy = false;
+  }
+
+  function researchItemTitle(item: ResearchItem): string {
+    return item.title || (item.kind === "file" ? item.fileName : item.url);
+  }
+
+  function researchItemMeta(item: ResearchItem): string {
+    if (item.kind === "link") {
+      const description = item.description?.trim();
+      return description ? `${item.url}\n${description}` : item.url;
+    }
+    return [formatResearchFileSize(item.size), item.mimeType].filter(Boolean).join(" · ");
+  }
+
+  function researchFileGlyph(item: ResearchFile): string {
+    if (item.mimeType === "application/pdf") return "PDF";
+    if (item.mimeType.startsWith("image/")) return "▧";
+    return "▤";
+  }
+
+  async function openResearchFile(item: ResearchFile) {
+    researchStatus = "";
+    try {
+      if (!desktopRuntime) {
+        await openBrowserResearchFile(activeProjectId, item.storageKey, item.fileName, item.mimeType);
+        researchStatus = "";
+        return;
+      }
+      const root = await ensureResearchRoot();
+      if (!root) return;
+      const projectFolder = ensureResearchFolderName();
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("research_open_file", {
+        root,
+        projectFolder,
+        storageKey: item.storageKey
+      });
+      researchStatus = "";
+    } catch (error) {
+      console.error("Could not open a research file.", error);
+      researchStatus = researchErrorMessage(error, "Could not open that file.");
+    }
+  }
+
+  async function revealResearchFile(item: ResearchFile) {
+    if (!desktopRuntime) {
+      researchStatus = "Revealing files in a folder is only available in the desktop app.";
+      return;
+    }
+    researchStatus = "";
+    try {
+      const root = await ensureResearchRoot();
+      if (!root) return;
+      const projectFolder = ensureResearchFolderName();
+      const { invoke } = await import("@tauri-apps/api/core");
+      const path = await invoke<string>("research_file_path", {
+        root,
+        projectFolder,
+        storageKey: item.storageKey
+      });
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(path);
+      researchStatus = "";
+    } catch (error) {
+      console.error("Could not reveal a research file.", error);
+      researchStatus = researchErrorMessage(error, "Could not reveal that file.");
+    }
+  }
+
+  async function openResearchLink(item: ResearchLink) {
+    const url = normalizeResearchUrl(item.url);
+    if (!url) {
+      researchStatus = "That research link is not a valid web address.";
+      return;
+    }
+    try {
+      if (desktopRuntime) {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(url);
+      } else {
+        const opened = window.open(url, "_blank");
+        if (!opened) {
+          researchStatus = "The browser blocked the link. Allow pop-ups for ProseCraft and try again.";
+          return;
+        }
+        try {
+          opened.opener = null;
+        } catch {
+          // Cross-origin viewers may already own the new window.
+        }
+      }
+      researchStatus = "";
+    } catch (error) {
+      console.error("Could not open a research link.", error);
+      researchStatus = "Could not open that link.";
+    }
+  }
+
+  function openResearchLinkDialog(folderId: string | null = null) {
+    researchLinkTitle = "";
+    researchLinkUrl = "";
+    researchLinkDescription = "";
+    researchLinkError = "";
+    researchLinkFolderId = folderId;
+    if (researchLinkDialog && !researchLinkDialog.open) researchLinkDialog.showModal();
+  }
+
+  function saveResearchLink(event: SubmitEvent) {
+    event.preventDefault();
+    const url = normalizeResearchUrl(researchLinkUrl);
+    if (!url) {
+      researchLinkError = "Enter a valid http or https address.";
+      return;
+    }
+    const title = researchLinkTitle.trim().slice(0, 200) || researchTitleFromUrl(url);
+    const item: ResearchLink = {
+      id: crypto.randomUUID(),
+      kind: "link",
+      folderId: researchLinkFolderId,
+      title,
+      url,
+      description: researchLinkDescription.trim().slice(0, 2000) || undefined,
+      addedAt: Date.now()
+    };
+    researchItems = [...researchItems, item];
+    expandedSpaces.Research = true;
+    if (researchLinkFolderId) expandResearchFolderPath(researchLinkFolderId);
+    persist();
+    researchStatus = "Link added.";
+    researchLinkDialog.close();
+  }
+
+  async function removeResearchItem(item: ResearchItem) {
+    const label = researchItemTitle(item);
+    if (!window.confirm(`Remove “${label}” from Research?${item.kind === "file" ? " The file will be deleted from the project folder." : ""}`)) {
+      return;
+    }
+    researchItems = researchItems.filter((entry) => entry.id !== item.id);
+    persist();
+    try {
+      if (item.kind === "file") {
+        if (desktopRuntime) {
+          if (researchRoot && researchFolderName) {
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("research_delete_file", {
+              root: researchRoot,
+              projectFolder: researchFolderName,
+              storageKey: item.storageKey
+            });
+          }
+        } else {
+          await deleteBrowserResearchFile(activeProjectId, item.storageKey);
+        }
+      }
+      researchStatus = "";
+    } catch (error) {
+      console.error("Could not delete a research file.", error);
+      researchStatus = "The item was removed, but its file could not be deleted.";
+    }
   }
 
   function toggleChapter(id: string) {
@@ -2574,6 +3164,7 @@
       typewriterMode = localStorage.getItem(typewriterStorageKey) === "true";
       fadeOtherParagraphs = localStorage.getItem(fadeParagraphsStorageKey) === "true";
       zenMode = localStorage.getItem(zenModeStorageKey) === "true";
+      researchRoot = localStorage.getItem(researchRootStorageKey) ?? "";
       const savedProjectSettings = localStorage.getItem(projectSettingsStorageKey);
       if (savedProjectSettings) {
         const parsed: unknown = JSON.parse(savedProjectSettings);
@@ -2943,8 +3534,12 @@
             </button>
             {#if space === "Notes"}
               <button class="row-add" aria-label="Add folder to Notes" title="Add folder" onclick={() => createNoteFolder()}>▱</button>
+            {:else if space === "Research"}
+              <button class="row-add research-add" aria-label="Add folder to Research" title="Add folder" onclick={() => createResearchFolder()}>▱</button>
+              <button class="row-add research-add" aria-label="Add file to Research" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}>↥</button>
+              <button class="row-add research-add" aria-label="Add link to Research" title="Add web link" onclick={() => openResearchLinkDialog()}>↗</button>
             {/if}
-            <button class="row-add" aria-label="Add to {space}" title="Add to {space}" onclick={() => createSpaceDocument(space)}>+</button>
+            <button class="row-add" class:research-add={space === "Research"} aria-label="Add to {space}" title="Add to {space}" onclick={() => createSpaceDocument(space)}>+</button>
           </div>
           {#if expandedSpaces[space]}
             <div class="space-items">
@@ -3011,6 +3606,131 @@
                 {/each}
                 {#if !documents.some((doc) => doc.space === "Notes" && !doc.trashed) && noteFolders.length === 0}
                   <span class="empty-tree">Nothing here yet</span>
+                {/if}
+              {:else if space === "Research"}
+                {#each researchTreeItems as item (item.kind === "folder"
+                  ? `folder-${item.folder.id}`
+                  : item.kind === "document"
+                    ? `document-${item.document.id}`
+                    : `${item.kind}-${item.item.id}`)}
+                  {#if item.kind === "folder"}
+                    <div class="note-folder-row research-folder-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                      {#if editingResearchFolderId === item.folder.id}
+                        <input
+                          bind:this={researchFolderInput}
+                          class="chapter-name-input note-folder-name-input"
+                          aria-label="Rename folder {item.folder.title}"
+                          bind:value={researchFolderNameDraft}
+                          maxlength="60"
+                          onblur={() => saveResearchFolderRename(item.folder.id)}
+                          onkeydown={(event) => {
+                            if (event.key === "Enter") (event.currentTarget as HTMLInputElement).blur();
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelResearchFolderRename();
+                            }
+                          }}
+                          onpointerdown={(event) => event.stopPropagation()}
+                        />
+                      {:else}
+                        <button
+                          class="note-folder-toggle"
+                          aria-expanded={expandedResearchFolders[item.folder.id] !== false}
+                          onclick={() => toggleResearchFolder(item.folder.id)}
+                        >
+                          <span class:rotated={expandedResearchFolders[item.folder.id] !== false} class="chevron">›</span>
+                          <span class="note-folder-icon" aria-hidden="true">▱</span>
+                          <span class="tree-name">{item.folder.title}</span>
+                        </button>
+                      {/if}
+                      <div class="note-folder-actions">
+                        <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}>▱+</button>
+                        <button class="chapter-action" aria-label="Add note to {item.folder.title}" title="Add research note" onclick={() => createSpaceDocument("Research", item.folder.id)}>+</button>
+                        <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}>✎</button>
+                        <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}>×</button>
+                      </div>
+                    </div>
+                  {:else if item.kind === "document"}
+                    <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                      <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(item.document.id)}>
+                        <span class="scene-mark">¶</span>
+                        <span class="tree-name">{item.document.title || "Untitled"}</span>
+                      </button>
+                      {#if researchFolderChoices.length > 0}
+                        <select
+                          class="note-folder-select"
+                          aria-label="Move {item.document.title || 'research note'} to folder"
+                          value={item.document.folderId ?? ""}
+                          onchange={(event) => moveResearchDocument(item.document.id, (event.currentTarget as HTMLSelectElement).value)}
+                        >
+                          <option value="">Unfiled</option>
+                          {#each researchFolderChoices as choice (choice.folder.id)}
+                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
+                          {/each}
+                        </select>
+                      {/if}
+                      <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}>×</button>
+                    </div>
+                  {:else if item.kind === "file"}
+                    <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                      <button
+                        class="document-select"
+                        title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
+                        onclick={() => openResearchFile(item.item)}
+                      >
+                        <span class="scene-mark research-file-mark">{researchFileGlyph(item.item)}</span>
+                        <span class="tree-name">{researchItemTitle(item.item)}</span>
+                      </button>
+                      {#if researchFolderChoices.length > 0}
+                        <select
+                          class="note-folder-select"
+                          aria-label="Move {researchItemTitle(item.item)} to folder"
+                          value={item.item.folderId ?? ""}
+                          onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
+                        >
+                          <option value="">Unfiled</option>
+                          {#each researchFolderChoices as choice (choice.folder.id)}
+                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
+                          {/each}
+                        </select>
+                      {/if}
+                      {#if desktopRuntime}
+                        <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}>⌖</button>
+                      {/if}
+                      <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}>×</button>
+                    </div>
+                  {:else}
+                    <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                      <button
+                        class="document-select"
+                        title={researchItemMeta(item.item)}
+                        onclick={() => openResearchLink(item.item)}
+                      >
+                        <span class="scene-mark research-link-mark">↗</span>
+                        <span class="tree-name">{researchItemTitle(item.item)}</span>
+                      </button>
+                      {#if researchFolderChoices.length > 0}
+                        <select
+                          class="note-folder-select"
+                          aria-label="Move {researchItemTitle(item.item)} to folder"
+                          value={item.item.folderId ?? ""}
+                          onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
+                        >
+                          <option value="">Unfiled</option>
+                          {#each researchFolderChoices as choice (choice.folder.id)}
+                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
+                          {/each}
+                        </select>
+                      {/if}
+                      <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}>×</button>
+                    </div>
+                  {/if}
+                {/each}
+                {#if researchEmpty}
+                  <span class="empty-tree">Add a note, file, or link</span>
+                {/if}
+                {#if researchStatus}
+                  <p class="research-status" role="status">{researchStatus}</p>
                 {/if}
               {:else}
                 {#each documents.filter((doc) => doc.space === space && !doc.trashed) as doc (doc.id)}
@@ -3664,6 +4384,22 @@
           {#if syncStatus}<p class="data-status" role="status">{syncStatus}</p>{/if}
         </div>
       {/if}
+      <div class="data-group">
+        <span class="data-group-label">Research files</span>
+        {#if desktopRuntime}
+          <p class="data-help">Imported research files live in a project folder on this device. They are stored as plain files, not encrypted, and are not included in project backups or device sync. Their metadata travels with the project. Files can be up to 200 MB each.</p>
+          <div class="sync-folder-row">
+            <span class="sync-folder-path" title={researchRoot}>{researchRoot || "No folder chosen"}</span>
+            <button type="button" class="data-button" onclick={chooseResearchRoot}>Choose folder…</button>
+          </div>
+          <div class="data-actions">
+            <button type="button" class="data-button" onclick={revealResearchProjectFolder}>Reveal project folder</button>
+          </div>
+          {#if researchSettingsStatus}<p class="data-status" role="status">{researchSettingsStatus}</p>{/if}
+        {:else}
+          <p class="data-help">Imported research files are stored as plain files in this browser’s local database. They are not encrypted or included in project backups or device sync. Files can be up to 200 MB each.</p>
+        {/if}
+      </div>
       <input
         id="plain-import-input"
         class="data-file-input"
@@ -3773,6 +4509,61 @@
     <div class="settings-footer"><span>Project details are saved on this device.</span><button class="done-button" type="submit">Save</button></div>
   </form>
 </dialog>
+
+<dialog class="settings-dialog research-link-dialog" bind:this={researchLinkDialog} onclick={(event) => {
+  if (event.target === researchLinkDialog) researchLinkDialog.close();
+}}>
+  <form onsubmit={saveResearchLink}>
+    <div class="settings-header">
+      <div><span class="settings-kicker">RESEARCH</span><h2>Add web link</h2></div>
+      <button class="close-settings" aria-label="Close link dialog" type="button" onclick={() => researchLinkDialog.close()}>×</button>
+    </div>
+    <div class="settings-body">
+      <section class="preference-section">
+        <div class="preference-heading"><strong>Link details</strong><span>Save a website or online resource in the Research binder</span></div>
+        <label class="preference-label" for="research-link-url">Web address</label>
+        <input
+          id="research-link-url"
+          class="preference-select"
+          type="text"
+          inputmode="url"
+          placeholder="https://example.com"
+          bind:value={researchLinkUrl}
+          required
+        />
+        <label class="preference-label research-link-label" for="research-link-title">Title</label>
+        <input
+          id="research-link-title"
+          class="preference-select"
+          type="text"
+          placeholder="Optional — defaults to the site name"
+          maxlength="200"
+          bind:value={researchLinkTitle}
+        />
+        <label class="preference-label research-link-label" for="research-link-description">Description</label>
+        <textarea
+          id="research-link-description"
+          class="preference-select research-link-description"
+          rows="3"
+          placeholder="Optional note about this resource"
+          maxlength="2000"
+          bind:value={researchLinkDescription}
+        ></textarea>
+        {#if researchLinkError}<p class="preference-error" role="alert">{researchLinkError}</p>{/if}
+      </section>
+    </div>
+    <div class="settings-footer"><span>Only http and https links are supported.</span><button class="done-button" type="submit">Add link</button></div>
+  </form>
+</dialog>
+
+<input
+  class="data-file-input"
+  type="file"
+  multiple
+  aria-label="Add research files"
+  bind:this={researchFileInput}
+  onchange={handleBrowserResearchFiles}
+/>
 
 <style>
   :global(*) { box-sizing: border-box; }
@@ -4020,7 +4811,10 @@
   .tree-name { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
   .chapter-toggle .tree-name, .space-toggle .tree-name { color: var(--text-nav); font-size: 11px; font-weight: 550; }
   .row-add { opacity: 0; }
-  .chapter-row:hover .row-add, .space-heading:hover .row-add, .row-add:focus-visible { opacity: 1; }
+  .chapter-row:hover .row-add:not(:disabled), .space-heading:hover .row-add:not(:disabled), .row-add:focus-visible { opacity: 1; }
+  .row-add.research-add { opacity: .55; }
+  .space-heading:hover .row-add.research-add:not(:disabled), .row-add.research-add:focus-visible { opacity: 1; }
+  .row-add:disabled { opacity: .18; cursor: default; }
   .scene-list, .space-items { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 5px 22px; padding-left: 7px; border-left: 1px solid var(--tree-divider); }
   .note-folder-row { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 1px; padding-right: 2px; border-radius: 5px; }
   .note-folder-row:hover { background: var(--hover-bg); }
@@ -4029,6 +4823,8 @@
   .note-folder-actions { display: flex; flex: 0 0 auto; align-items: center; }
   .note-folder-actions .chapter-action { opacity: .45; }
   .note-folder-row:hover .chapter-action, .note-folder-actions .chapter-action:focus-visible { opacity: 1; }
+  .note-folder-row:hover .row-add, .note-folder-actions .row-add:focus-visible { opacity: 1; }
+  .note-folder-row:hover .row-action, .note-folder-actions .row-action:focus-visible { opacity: 1; }
   .note-folder-name-input { height: 23px; }
   .note-document-row { padding-right: 2px; }
   .note-folder-select { width: 19px; height: 20px; flex: 0 0 auto; padding: 0; border: 0; appearance: none; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; opacity: .45; }
@@ -4041,6 +4837,10 @@
   .row-action { width: 21px; height: 21px; opacity: .45; font-size: 15px; }
   .document-row:hover .row-action, .row-action:focus-visible { opacity: 1; }
   .restore-action, .delete-action { opacity: 1; }
+  .research-file-mark { min-width: 20px; font-size: 9px; letter-spacing: -.02em; text-align: center; }
+  .research-link-mark { color: var(--text-muted); font-family: inherit; font-size: 12px; }
+  .research-item-row .document-select { gap: 5px; }
+  .research-status { margin: 4px 6px 3px; color: var(--text-muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
   .trashed-document { color: var(--text-muted); }
   .empty-tree, .empty-action { display: block; padding: 5px 7px; color: var(--text-faint); font-size: 10px; }
   .empty-action { border: 0; background: transparent; cursor: pointer; text-align: left; }
@@ -4258,6 +5058,7 @@
 
   .settings-dialog { width: min(440px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 32px)); padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-dialog); }
   .project-settings-dialog form { margin: 0; }
+  .research-link-dialog form { margin: 0; }
   .settings-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
   .settings-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 23px 25px 18px; border-bottom: 1px solid var(--border-soft); }
   .settings-kicker { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 1.2px; }
@@ -4278,6 +5079,8 @@
   .preference-help { margin: 9px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
   .color-scheme-label { margin-top: 14px; }
   .preference-select { width: 100%; height: 35px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
+  .research-link-label { margin-top: 14px; }
+  .research-link-description { height: auto; min-height: 68px; padding: 8px 9px; resize: vertical; font-family: inherit; line-height: 1.45; }
   .project-author-label { margin-top: 16px; }
   .preference-select:focus-visible, .close-settings:focus-visible, .done-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .preference-error { margin: 12px 0 0; color: var(--danger); font-size: 10px; }
@@ -4302,6 +5105,11 @@
   .settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 25px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 9px; }
   .done-button { height: 30px; padding: 0 14px; border: 1px solid transparent; border-radius: 5px; background: var(--accent-strong); color: var(--accent-contrast); cursor: pointer; font-size: 10px; }
   .done-button:hover { background: var(--accent-strong-hover); }
+
+  @media (hover: none) {
+    .row-add, .chapter-action { opacity: .55; }
+    .note-folder-select { width: auto; max-width: 88px; appearance: auto; opacity: 1; }
+  }
 
   @media (max-width: 1050px) {
     .progress-sidebar { width: 270px; box-shadow: var(--shadow-panel-left); }

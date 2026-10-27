@@ -10,7 +10,33 @@ export const SPACE_NAMES = ["Characters", "Places", "Research", "Notes"] as cons
 export type SpaceName = (typeof SPACE_NAMES)[number];
 
 export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string };
-export type NoteFolder = { id: string; title: string; parentId: string | null };
+export type BinderFolder = { id: string; title: string; parentId: string | null };
+export type NoteFolder = BinderFolder;
+export type ResearchFolder = BinderFolder;
+
+export type ResearchFile = {
+  id: string;
+  kind: "file";
+  folderId: string | null;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  storageKey: string;
+  addedAt: number;
+};
+
+export type ResearchLink = {
+  id: string;
+  kind: "link";
+  folderId: string | null;
+  title: string;
+  url: string;
+  description?: string;
+  addedAt: number;
+};
+
+export type ResearchItem = ResearchFile | ResearchLink;
 
 /**
  * Structured profile stored on character documents.
