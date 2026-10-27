@@ -18,6 +18,7 @@
   import EntitySheet, { type SheetSection } from "$lib/EntitySheet.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
   import PublishView from "$lib/PublishView.svelte";
+  import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
   import {
     isMarkdownFontPreference,
@@ -77,6 +78,7 @@
     openBrowserResearchFile,
     saveBrowserResearchFile
   } from "$lib/research-files";
+  import { createTimelineNode, normalizeTimelineNodes } from "$lib/timeline";
   import {
     createBundleText,
     createEncryptedBundleText,
@@ -96,7 +98,8 @@
     ProjectData,
     StoryboardCard,
     StoryboardKind,
-    StoryboardRow
+    StoryboardRow,
+    TimelineNode
   } from "$lib/storage/types";
 
   const storageKey = "prosecraft-documents";
@@ -226,7 +229,7 @@
     | { kind: "document"; document: DocumentData; depth: number }
     | { kind: "file"; item: ResearchFile; depth: number }
     | { kind: "link"; item: ResearchLink; depth: number };
-  type WorkspaceView = "outline" | "writing" | "storyboard" | "publish";
+  type WorkspaceView = "outline" | "writing" | "storyboard" | "timeline" | "publish";
 
   let editor: HTMLDivElement;
   let settingsDialog: HTMLDialogElement;
@@ -336,6 +339,7 @@
   let boardDropTarget = $state<{ rowId: string; index: number } | null>(null);
   let storyboardCards = $state<StoryboardCard[]>([]);
   let storyboardRows = $state<StoryboardRow[]>([]);
+  let timelineNodes = $state<TimelineNode[]>([]);
   let workspaceView = $state<WorkspaceView>("writing");
   let writingSidebarState = {
     left: initialViewportWidth > 760,
@@ -661,6 +665,7 @@
       activity,
       storyboardCards,
       storyboardRows,
+      timelineNodes,
       noteFolders,
       researchFolderName,
       researchFolders,
@@ -746,6 +751,7 @@
     projectGoal = project.projectGoal;
     chapterGoals = project.chapterGoals;
     activity = project.activity;
+    timelineNodes = normalizeTimelineNodes(project.timelineNodes);
     publishOptions = normalizePublishOptions(project.publishOptions);
     const savedRows = Array.isArray(project.storyboardRows)
       ? project.storyboardRows.filter((row): row is StoryboardRow =>
@@ -1355,6 +1361,7 @@
       activity: {},
       storyboardCards: [],
       storyboardRows: [{ id: crypto.randomUUID(), title: "Timeline" }],
+      timelineNodes: [],
       noteFolders: [],
       researchFolderName: "",
       researchFolders: [],
@@ -1696,6 +1703,46 @@
 
   function updateChapterSummary(chapterId: string, summary: string) {
     syncChapterSummary(chapterId, summary);
+    persist();
+  }
+
+  function addTimelineNode(): string {
+    const node = createTimelineNode();
+    timelineNodes = [...timelineNodes, node];
+    persist();
+    return node.id;
+  }
+
+  function updateTimelineNode(id: string, patch: Partial<Omit<TimelineNode, "id">>) {
+    timelineNodes = timelineNodes.map((node) => node.id === id ? { ...node, ...patch } : node);
+    persist();
+  }
+
+  function removeTimelineNode(id: string) {
+    timelineNodes = timelineNodes.filter((node) => node.id !== id);
+    persist();
+  }
+
+  function moveTimelineNode(id: string, offset: number) {
+    const index = timelineNodes.findIndex((node) => node.id === id);
+    if (index < 0) return;
+    const target = Math.max(0, Math.min(index + offset, timelineNodes.length - 1));
+    if (target === index) return;
+    const next = [...timelineNodes];
+    const [node] = next.splice(index, 1);
+    next.splice(target, 0, node);
+    timelineNodes = next;
+    persist();
+  }
+
+  function reorderTimelineNodes(orderedIds: string[]) {
+    const byId = new Map(timelineNodes.map((node) => [node.id, node]));
+    const next = orderedIds.flatMap((id) => {
+      const node = byId.get(id);
+      return node ? [node] : [];
+    });
+    if (next.length !== timelineNodes.length) return;
+    timelineNodes = next;
     persist();
   }
 
@@ -3801,6 +3848,7 @@
           <button class="workspace-mode" class:active={workspaceView === "outline"} role="tab" aria-selected={workspaceView === "outline"} onclick={openOutlineView}>Outline</button>
           <button class="workspace-mode" class:active={workspaceView === "writing"} role="tab" aria-selected={workspaceView === "writing"} onclick={() => setWorkspaceView("writing")}>Write</button>
           <button class="workspace-mode" class:active={workspaceView === "storyboard"} role="tab" aria-selected={workspaceView === "storyboard"} onclick={() => setWorkspaceView("storyboard")}>Storyboard</button>
+          <button class="workspace-mode" class:active={workspaceView === "timeline"} role="tab" aria-selected={workspaceView === "timeline"} onclick={() => setWorkspaceView("timeline")}>Timeline</button>
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
         <div class="panel-toggles">
@@ -4091,6 +4139,16 @@
             </div>
           </section>
         </div>
+        {#if workspaceView === "timeline"}
+          <TimelineView
+            nodes={timelineNodes}
+            onAdd={addTimelineNode}
+            onUpdate={updateTimelineNode}
+            onRemove={removeTimelineNode}
+            onMove={moveTimelineNode}
+            onReorder={reorderTimelineNodes}
+          />
+        {/if}
         {#if workspaceView === "publish"}
           <PublishView
             {chapters}

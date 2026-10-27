@@ -19,7 +19,7 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 #### Outlining
 - [x] Chapter by chapter Outline mode
 - [x] Storyboarding mode
-- [ ] Full timeline support
+- [x] Full timeline support
 - [ ] Image support
 - [ ] Plot grid
 

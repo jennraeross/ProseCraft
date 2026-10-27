@@ -19,6 +19,13 @@ export type StoryboardCard = {
   title: string;
   note: string;
 };
+export type TimelineNode = {
+  id: string;
+  title: string;
+  date: string;
+  time: string;
+  description: string;
+};
 
 /**
  * The in-memory shape the editor works with. This is also the shape legacy
@@ -36,6 +43,7 @@ export type ProjectData = {
   activity: Record<string, ActivityRecord>;
   storyboardCards?: StoryboardCard[];
   storyboardRows?: StoryboardRow[];
+  timelineNodes?: TimelineNode[];
   noteFolders?: NoteFolder[];
   researchFolderName?: string;
   researchFolders?: ResearchFolder[];
