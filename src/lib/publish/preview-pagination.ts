@@ -99,6 +99,12 @@ class PreviewPaginator {
     this.page!.content.append(node.cloneNode(true));
   }
 
+  addCover(node: HTMLElement): void {
+    this.startPage("front");
+    this.page!.element.classList.add("cover-preview-page");
+    this.page!.content.append(node.cloneNode(true));
+  }
+
   addChapter(chapter: HTMLElement): void {
     this.chapterClass = chapter.className || "chapter";
     this.startPage("body");
@@ -390,7 +396,9 @@ export function paginatePreview(doc: Document): void {
   const paginator = new PreviewPaginator(doc, pages, metrics);
 
   for (const child of Array.from(source.children) as HTMLElement[]) {
-    if (
+    if (child.classList.contains("cover-page")) {
+      paginator.addCover(child);
+    } else if (
       child.classList.contains("title-page")
       || child.classList.contains("dedication")
       || child.classList.contains("copyright-page")
@@ -400,6 +408,9 @@ export function paginatePreview(doc: Document): void {
       if (child.classList.contains("matter-page") && child.children.length === 0) {
         paginator.addFrontMatter(child);
       } else {
+        // A back-matter page is previewed on its own here, so its print-time
+        // page break would push the page content outside the visible page.
+        child.classList.remove("back-matter");
         child.classList.add("chapter");
         paginator.addChapter(child);
       }

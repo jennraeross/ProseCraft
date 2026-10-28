@@ -6,6 +6,7 @@ import {
 import { markDropCapParagraph } from "./content";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens, type PresetTokens } from "./presets";
+import { listManuscriptSections, type ManuscriptSection } from "./sections";
 import { escapeXml, escapeXmlAttribute } from "./xhtml";
 import {
   FORMAT_INFO,
@@ -31,6 +32,11 @@ function separatorMarkup(separator: SceneSeparator): string {
     default:
       return "";
   }
+}
+
+function coverPageHtml(book: CompiledBook): string {
+  if (!book.cover) return "";
+  return `<section class="cover-page" style="background:${escapeXmlAttribute(book.cover.background)}" aria-label="Cover"><img src="${escapeXmlAttribute(book.cover.dataUrl)}" alt="Cover of ${escapeXmlAttribute(book.title)}" /></section>`;
 }
 
 function titlePageHtml(book: CompiledBook, includeCopyright: boolean): string {
@@ -101,23 +107,47 @@ function chapterHtml(
   return `<section class="chapter${breakClass}" id="chapter-${escapeXmlAttribute(chapter.id)}">${heading}\n${scenes}</section>`;
 }
 
-export function buildManuscriptBody(book: CompiledBook, options: PublishOptions, preview = false): string {
-  const chapters = preview ? book.chapters.slice(0, 1) : book.chapters;
+export function buildManuscriptSectionHtml(
+  book: CompiledBook,
+  options: PublishOptions,
+  section: ManuscriptSection,
+  preview = false,
+  dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap
+): string {
+  switch (section.kind) {
+    case "cover":
+      return coverPageHtml(book);
+    case "title-page":
+      return titlePageHtml(book, !options.includeCopyrightPage);
+    case "copyright-page":
+      return copyrightPageHtml(book);
+    case "dedication":
+      return dedicationHtml(book);
+    case "contents":
+      return tableOfContentsHtml(book);
+    case "front-matter": {
+      const page = book.frontMatter.find((entry) => entry.id === section.matterId);
+      return page ? matterPageHtml(page, "front") : "";
+    }
+    case "back-matter": {
+      const page = book.backMatter.find((entry) => entry.id === section.matterId);
+      return page ? matterPageHtml(page, "back") : "";
+    }
+    case "chapter": {
+      const index = book.chapters.findIndex((chapter) => chapter.id === section.chapterId);
+      const chapter = book.chapters[index];
+      if (!chapter) return "";
+      return chapterHtml(chapter, options, preview || index === 0, dropCaps);
+    }
+  }
+}
+
+export function buildManuscriptBody(book: CompiledBook, options: PublishOptions): string {
   const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
-  const openingPages = [
-    options.includeTitlePage ? titlePageHtml(book, !options.includeCopyrightPage) : "",
-    options.includeCopyrightPage ? copyrightPageHtml(book) : "",
-    dedicationHtml(book),
-    options.includeTableOfContents ? tableOfContentsHtml(book) : "",
-    ...book.frontMatter.map((page) => matterPageHtml(page, "front"))
-  ].filter(Boolean);
-  const body = chapters
-    .map((chapter, index) => chapterHtml(chapter, options, index === 0, dropCaps))
+  return listManuscriptSections(book, options)
+    .map((section) => buildManuscriptSectionHtml(book, options, section, false, dropCaps))
+    .filter(Boolean)
     .join("\n");
-  const backMatter = preview
-    ? []
-    : book.backMatter.map((page) => matterPageHtml(page, "back")).filter(Boolean);
-  return [...openingPages, body, ...backMatter].filter(Boolean).join("\n");
 }
 
 function manuscriptCss(
@@ -172,6 +202,23 @@ function manuscriptCss(
       -webkit-font-smoothing: antialiased;
     }
     .book { max-width: ${inch(page.widthPt)}; margin: 0 auto; }
+    .cover-page {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 80vh;
+      padding: 0;
+      overflow: hidden;
+      page-break-after: always;
+    }
+    .cover-page img {
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: calc(var(--page-height) - var(--page-margin-top) - var(--page-margin-bottom));
+      object-fit: contain;
+    }
     .title-page {
       display: flex;
       flex-direction: column;
@@ -352,6 +399,11 @@ function manuscriptCss(
       zoom: var(--preview-scale, 1);
     }
     .scene a { pointer-events: none; }
+    .book > .cover-page {
+      width: calc(100% + var(--page-margin-left) + var(--page-margin-right));
+      min-height: calc(var(--page-height) - var(--page-margin-top) - var(--page-margin-bottom));
+      margin: calc(-1 * var(--page-margin-top)) calc(-1 * var(--page-margin-right)) calc(-1 * var(--page-margin-bottom)) calc(-1 * var(--page-margin-left));
+    }
     .title-page { min-height: calc(var(--page-height) - var(--page-margin-top) - var(--page-margin-bottom)); }
     .dedication { min-height: 60vh; }
     .preview-empty { margin: 2in 1in; color: var(--muted); font-family: ui-sans-serif, sans-serif; font-size: 13px; text-align: center; }
@@ -390,8 +442,13 @@ function manuscriptCss(
     }
     .page-header { top: calc(var(--page-margin-top) / 2); }
     .page-footer { bottom: calc(var(--page-margin-bottom) / 2); }
+    .page.cover-preview-page { padding: 0; }
+    .page.cover-preview-page .page-content { height: 100%; overflow: hidden; }
+    .page .cover-page { height: 100%; min-height: 0; padding: 0; }
+    .page .cover-page img { width: 100%; height: 100%; object-fit: contain; }
     .page .title-page, .page .dedication { min-height: 100%; padding: 0; }
-    .page .copyright-page, .page .matter-page, .page .toc-page { min-height: 100%; padding: 0; }
+    .page .copyright-page { min-height: 100%; padding: 0; }
+    .page .matter-page, .page .toc-page { min-height: 0; padding: 0; }
     .page .chapter { padding: 0; }
     .page .preview-empty { margin: 2in 1in; }
     ` : ""}
@@ -404,7 +461,7 @@ function manuscriptCss(
       body { background: #ffffff; }
       .book { max-width: none; }
       .chapter-break { break-before: page; }
-      .title-page, .dedication, .copyright-page, .matter-page { break-after: page; }
+      .cover-page, .title-page, .dedication, .copyright-page, .matter-page { break-after: page; }
       .back-matter { break-before: page; }
     }
   `;
@@ -414,6 +471,7 @@ type PreviewRenderOptions = {
   dark?: boolean;
   paginated?: boolean;
   palette?: PreviewPalette;
+  section?: ManuscriptSection | null;
 };
 
 function documentShell(
@@ -447,19 +505,23 @@ export function buildPreviewHtml(
   const dark = render.dark ?? false;
   const paginated = render.paginated ?? false;
   const palette = render.palette ?? (dark ? defaultDarkPreviewPalette : defaultPreviewPalette);
-  const content = book.chapters.length > 0
-    ? buildManuscriptBody(book, options, true)
+  const section = render.section ?? listManuscriptSections(book, options)[0] ?? null;
+  const content = section ? buildManuscriptSectionHtml(book, options, section, true) : "";
+  const hasContent = content.length > 0;
+  const renderedContent = hasContent
+    ? content
     : '<p class="preview-empty">Add a scene to see a preview of your manuscript.</p>';
-  const body = paginated && book.chapters.length > 0
-    ? `<div id="preview-source" class="preview-source">${content}</div>
+  const usePages = paginated && hasContent;
+  const body = usePages
+    ? `<div id="preview-source" class="preview-source">${renderedContent}</div>
 <div id="preview-pages" class="preview-pages"></div>`
     : `<div class="book">
-${content}
+${renderedContent}
 </div>`;
   const classes = [
     options.dropCaps && tokens.dropCap ? "drop-caps" : "",
     dark ? "preview-dark" : "",
-    paginated ? "preview-paginated" : ""
+    usePages ? "preview-paginated" : ""
   ].filter(Boolean).join(" ");
   const header = book.author ? `${book.author} / ${book.title}` : book.title;
   const attributes = [
@@ -469,14 +531,14 @@ ${content}
     `data-page-margin-right-pt="${page.marginRightPt}"`,
     `data-page-margin-bottom-pt="${page.marginBottomPt}"`,
     `data-page-margin-left-pt="${page.marginLeftPt}"`,
-    `data-paginated="${paginated && book.chapters.length > 0 ? "true" : "false"}"`,
+    `data-paginated="${usePages ? "true" : "false"}"`,
     `data-page-numbers="${tokens.pageNumbers ? "true" : "false"}"`,
     `data-running-header="${escapeXmlAttribute(tokens.runningHeader ? header : "")}"`
   ].join(" ");
   return documentShell(
     `${book.title} preview`,
     body,
-    manuscriptCss(tokens, options, true, dark, paginated, palette),
+    manuscriptCss(tokens, options, true, dark, usePages, palette),
     classes,
     attributes
   );
@@ -484,7 +546,7 @@ ${content}
 
 export function exportHtml(book: CompiledBook, options: PublishOptions): ExportPayload {
   const tokens = resolveStyleTokens(options.style, options.customStyles);
-  const body = buildManuscriptBody(book, options, false);
+  const body = buildManuscriptBody(book, options);
   const html = documentShell(
     book.title,
     `<div class="book">\n${body}\n</div>`,

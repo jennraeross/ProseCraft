@@ -1,3 +1,4 @@
+import { isEmbeddedImageSrc } from "../sanitize";
 import { normalizeMatterPages, type MatterPage } from "./matter";
 import {
   BUILTIN_STYLE_IDS,
@@ -106,12 +107,40 @@ export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text
 export type StylePreset = BuiltinStyleId;
 export type SceneSeparator = "blank" | "asterisks" | "hash" | "line" | "none";
 
+export const COVER_MODE_IDS = ["none", "image", "generated"] as const;
+export type CoverMode = (typeof COVER_MODE_IDS)[number];
+
+export const COVER_DESIGN_IDS = ["classic", "modern", "minimal", "bold"] as const;
+export type CoverDesign = (typeof COVER_DESIGN_IDS)[number];
+
+export const COVER_PALETTE_IDS = ["ink", "sage", "clay", "ocean", "plum"] as const;
+export type CoverPalette = (typeof COVER_PALETTE_IDS)[number];
+
+export type CoverOptions = {
+  mode: CoverMode;
+  /** Embedded data URL for an uploaded cover; empty in generated/none modes. */
+  image: string;
+  design: CoverDesign;
+  palette: CoverPalette;
+};
+
+/** Resolved, render-ready cover art. Generated covers are not persisted. */
+export type CompiledCover = {
+  dataUrl: string;
+  width: number;
+  height: number;
+  mediaType: "image/png" | "image/jpeg" | "image/webp";
+  /** Used behind the cover when the page and image aspect ratios differ. */
+  background: string;
+};
+
 export type PublishOptions = {
   format: ExportFormat;
   /** A built-in style ID or the ID of an entry in `customStyles`. */
   style: string;
   /** Project-owned styles, stored with the rest of the publishing settings. */
   customStyles: CustomExportStyle[];
+  cover: CoverOptions;
   includeTitlePage: boolean;
   includeCopyrightPage: boolean;
   includeTableOfContents: boolean;
@@ -162,6 +191,8 @@ export type CompiledBook = {
   chapters: CompiledChapter[];
   words: number;
   scenes: number;
+  /** Attached at preview/export time; generated covers are never persisted. */
+  cover?: CompiledCover;
 };
 
 export type ExportPayload = {
@@ -222,6 +253,12 @@ export function defaultPublishOptions(): PublishOptions {
     format: "pdf",
     style: "manuscript",
     customStyles: [],
+    cover: {
+      mode: "none",
+      image: "",
+      design: "classic",
+      palette: "ink"
+    },
     includeTitlePage: true,
     includeCopyrightPage: false,
     includeTableOfContents: false,
@@ -242,6 +279,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizeCover(value: unknown, defaults: CoverOptions): CoverOptions {
+  if (!isRecord(value)) return defaults;
+  const mode = COVER_MODE_IDS.includes(value.mode as CoverMode)
+    ? value.mode as CoverMode
+    : defaults.mode;
+  const design = COVER_DESIGN_IDS.includes(value.design as CoverDesign)
+    ? value.design as CoverDesign
+    : defaults.design;
+  const palette = COVER_PALETTE_IDS.includes(value.palette as CoverPalette)
+    ? value.palette as CoverPalette
+    : defaults.palette;
+  const image = typeof value.image === "string" && isEmbeddedImageSrc(value.image)
+    ? value.image
+    : "";
+  return {
+    mode: mode === "image" && !image ? "none" : mode,
+    image: mode === "image" ? image : "",
+    design,
+    palette
+  };
+}
+
 export function normalizePublishOptions(value: unknown): PublishOptions {
   const defaults = defaultPublishOptions();
   if (!isRecord(value)) return defaults;
@@ -259,6 +318,7 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     format: formats.includes(value.format as ExportFormat) ? value.format as ExportFormat : defaults.format,
     style,
     customStyles,
+    cover: normalizeCover(value.cover, defaults.cover),
     includeTitlePage: typeof value.includeTitlePage === "boolean" ? value.includeTitlePage : defaults.includeTitlePage,
     includeCopyrightPage: typeof value.includeCopyrightPage === "boolean" ? value.includeCopyrightPage : defaults.includeCopyrightPage,
     includeTableOfContents: typeof value.includeTableOfContents === "boolean" ? value.includeTableOfContents : defaults.includeTableOfContents,

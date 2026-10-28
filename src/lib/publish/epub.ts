@@ -3,7 +3,7 @@ import { markDropCapParagraph } from "./content";
 import { decodeEmbeddedImage } from "./embedded-image";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens } from "./presets";
-import { escapeXml, htmlToXhtml } from "./xhtml";
+import { escapeXml, escapeXmlAttribute, htmlToXhtml } from "./xhtml";
 import {
   FORMAT_INFO,
   slugifyFilename,
@@ -43,6 +43,14 @@ ${body}
 </body>
 </html>
 `;
+}
+
+function coverXhtml(book: CompiledBook, imageHref: string): string {
+  return xhtmlPage(
+    "Cover",
+    `<div class="cover"><img src="${escapeXmlAttribute(imageHref)}" alt="Cover of ${escapeXmlAttribute(book.title)}" /></div>`,
+    "cover-page-body"
+  );
 }
 
 function titlePageXhtml(book: CompiledBook, includeCopyright: boolean): string {
@@ -147,6 +155,9 @@ function stylesheet(options: PublishOptions): string {
   line-height: ${tokens.lineHeight};
 }
 h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
+.cover-page-body { margin: 0; padding: 0; }
+.cover { margin: 0; padding: 0; text-align: center; }
+.cover img { max-width: 100%; max-height: 100vh; }
 .titlepage, .dedication-page { text-align: center; }
 .title-page { margin-top: 28%; }
 .book-title { font-size: 2.2em; font-weight: 500; line-height: 1.2; margin-bottom: 0.4em; }
@@ -327,6 +338,7 @@ export async function exportEpub(book: CompiledBook, options: PublishOptions): P
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const files: Zippable = {};
   files["mimetype"] = [strToU8("application/epub+zip"), { level: 0 }];
+  const coverAsset = book.cover ? await decodeEmbeddedImage(book.cover.dataUrl) : null;
   const imagePaths = new Map<string, string>();
   const imageManifest: string[] = [];
   let imageIndex = 0;
@@ -358,8 +370,15 @@ export async function exportEpub(book: CompiledBook, options: PublishOptions): P
     '    <item id="css" href="styles.css" media-type="text/css" />',
     ...imageManifest
   ];
+  if (coverAsset) {
+    manifest.push(`    <item id="cover-image" href="images/cover.${coverAsset.extension}" media-type="${coverAsset.mediaType}" properties="cover-image" />`);
+  }
   const spine: string[] = [];
 
+  if (coverAsset) {
+    manifest.push('    <item id="cover" href="text/cover.xhtml" media-type="application/xhtml+xml" />');
+    spine.push('    <itemref idref="cover" />');
+  }
   if (options.includeTitlePage) {
     manifest.push('    <item id="titlepage" href="text/titlepage.xhtml" media-type="application/xhtml+xml" />');
     spine.push('    <itemref idref="titlepage" />');
@@ -398,6 +417,7 @@ export async function exportEpub(book: CompiledBook, options: PublishOptions): P
     <dc:title>${escapeXml(book.title)}</dc:title>
     ${book.author ? `<dc:creator>${escapeXml(book.author)}</dc:creator>` : ""}
     <dc:language>en</dc:language>
+    ${coverAsset ? '<meta name="cover" content="cover-image" />' : ""}
     <meta property="dcterms:modified">${modified}</meta>
   </metadata>
   <manifest>
@@ -420,6 +440,12 @@ ${spine.join("\n")}
   files["OEBPS/nav.xhtml"] = strToU8(navXhtml(book, chapterItems));
   files["OEBPS/toc.ncx"] = strToU8(ncx(book, identifier, chapterItems));
   files["OEBPS/styles.css"] = strToU8(stylesheet(options));
+  if (coverAsset) {
+    files[`OEBPS/images/cover.${coverAsset.extension}`] = coverAsset.bytes;
+    files["OEBPS/text/cover.xhtml"] = strToU8(
+      coverXhtml(book, `../images/cover.${coverAsset.extension}`)
+    );
+  }
   if (options.includeTitlePage) {
     files["OEBPS/text/titlepage.xhtml"] = strToU8(titlePageXhtml(book, !options.includeCopyrightPage));
   }

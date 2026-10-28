@@ -3,7 +3,16 @@ const safeTags = new Set([
   "IMG", "LI", "OL", "P", "PRE", "S", "STRIKE", "STRONG", "TABLE", "TBODY", "TD", "TH",
   "THEAD", "TR", "U", "UL"
 ]);
-const MAX_EMBEDDED_IMAGE_BYTES = 1_500_000;
+export const MAX_EMBEDDED_IMAGE_BYTES = 1_500_000;
+
+/** Returns true when a data URL is an embedded image within the export limit. */
+export function isEmbeddedImageSrc(src: string): boolean {
+  const encodedImage = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(src);
+  return Boolean(
+    encodedImage
+    && encodedImage[1].length <= Math.ceil(MAX_EMBEDDED_IMAGE_BYTES / 3) * 4
+  );
+}
 
 function cleanNode(node: Node): Node | null {
   if (node.nodeType === Node.TEXT_NODE) return node.cloneNode();
@@ -39,8 +48,7 @@ function cleanNode(node: Node): Node | null {
   }
   if (node.tagName === "IMG") {
     const src = node.getAttribute("src") ?? "";
-    const encodedImage = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(src);
-    if (!encodedImage || encodedImage[1].length > Math.ceil(MAX_EMBEDDED_IMAGE_BYTES / 3) * 4) return null;
+    if (!isEmbeddedImageSrc(src)) return null;
     clean.setAttribute("src", src);
     clean.setAttribute("alt", (node.getAttribute("alt") ?? "").slice(0, 500));
     for (const dimension of ["width", "height"]) {

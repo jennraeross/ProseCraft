@@ -55,6 +55,18 @@ function fontStyle(run: InlineRun, forceBold = false, forceItalic = false): stri
   return "normal";
 }
 
+function pdfColor(hex: string): [number, number, number] {
+  const value = Number.parseInt(hex.replace("#", ""), 16);
+  if (!Number.isFinite(value)) return [255, 255, 255];
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function pdfImageFormat(mediaType: string): string {
+  if (mediaType === "image/jpeg") return "JPEG";
+  if (mediaType === "image/webp") return "WEBP";
+  return "PNG";
+}
+
 export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPayload {
   const tokens = resolveStyleTokens(options.style, options.customStyles);
   const pdfFont = tokens.pdfFont;
@@ -509,6 +521,36 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     setColor(INK);
   };
 
+  const renderCoverPage = () => {
+    const cover = book.cover;
+    if (!cover) return;
+    const ratio = cover.width / cover.height;
+    const pageRatio = pageWidth / pageHeight;
+    let drawWidth = pageWidth;
+    let drawHeight = pageHeight;
+    if (ratio > pageRatio) {
+      drawWidth = pageWidth;
+      drawHeight = drawWidth / ratio;
+    } else {
+      drawHeight = pageHeight;
+      drawWidth = drawHeight * ratio;
+    }
+    const [red, green, blue] = pdfColor(cover.background);
+    doc.setFillColor(red, green, blue);
+    doc.rect(0, 0, pageWidth, pageHeight, "F");
+    doc.addImage(
+      cover.dataUrl,
+      pdfImageFormat(cover.mediaType),
+      (pageWidth - drawWidth) / 2,
+      (pageHeight - drawHeight) / 2,
+      drawWidth,
+      drawHeight,
+      undefined,
+      "FAST"
+    );
+    pageHasContent = true;
+  };
+
   const renderTitlePage = () => {
     const titleSize = Math.min(bodySize * 2.7, 34);
     setFont("normal", titleSize);
@@ -654,6 +696,9 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
   };
 
   // Front matter.
+  if (book.cover) {
+    renderCoverPage();
+  }
   if (hasTitlePage) {
     startFrontMatterPage();
     renderTitlePage();

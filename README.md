@@ -46,7 +46,7 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Back matter
 - [x] TOC
 - [ ] Cover
-- [ ] Front matter and Back matter in preview
+- [x] Front matter and Back matter in preview
 
 #### Backup & Sync
 - [x] Unencrypted backup

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import {
     defaultPreviewPalette,
     readPreviewPalette,
@@ -6,6 +7,13 @@
     type PreviewPalette
   } from "./color-schemes";
   import { compileBook, estimatedPages } from "./publish/compile";
+  import {
+    COVER_ACCEPT,
+    COVER_DESIGNS,
+    COVER_PALETTES,
+    imageFileToCoverDataUrl,
+    resolveCoverImage
+  } from "./publish/cover";
   import { renderExport } from "./publish/export";
   import { buildPreviewHtml } from "./publish/html";
   import {
@@ -27,12 +35,15 @@
     type CustomExportStyle
   } from "./publish/presets";
   import { saveExport } from "./publish/save";
+  import { listManuscriptSections } from "./publish/sections";
   import StyleEditorDialog from "./publish/StyleEditorDialog.svelte";
   import {
     FORMAT_INFO,
     FORMAT_ORDER,
     slugifyFilename,
     type ChapterData,
+    type CompiledCover,
+    type CoverMode,
     type DocumentData,
     type PublishOptions,
     type SceneSeparator
@@ -71,7 +82,14 @@
   let styleDraftDeleteArmed = $state(false);
   let frontMatterPreset = $state(FRONT_MATTER_PRESETS[0].label);
   let backMatterPreset = $state(BACK_MATTER_PRESETS[0].label);
+  let coverImageInput = $state<HTMLInputElement>();
+  let coverAsset = $state<CompiledCover | null>(null);
+  let coverBusy = $state(false);
+  let coverError = $state("");
+  let coverRequest = 0;
   let previewFrame = $state<HTMLIFrameElement>();
+  let previewNav = $state<HTMLElement>();
+  let previewSectionId = $state("");
   let status = $state<{ tone: "idle" | "success" | "error"; message: string }>({
     tone: "idle",
     message: ""
@@ -115,14 +133,63 @@
     return { ...options, style: draft.id, customStyles };
   });
   let previewStyle = $derived(resolveStyleTokens(previewOptions.style, previewOptions.customStyles));
+  let previewBook = $derived(coverAsset ? { ...compiled, cover: coverAsset } : compiled);
+  let coverDesign = $derived(
+    COVER_DESIGNS.find((design) => design.id === options.cover.design) ?? COVER_DESIGNS[0]
+  );
+  let coverSummary = $derived(
+    options.cover.mode === "none"
+      ? "None"
+      : coverBusy
+        ? "Preparing…"
+        : options.cover.mode === "image"
+          ? "Image"
+          : coverDesign.label
+  );
+  let previewSections = $derived(listManuscriptSections(previewBook, options));
+  let activePreviewSection = $derived(
+    previewSections.find((section) => section.id === previewSectionId) ?? previewSections[0] ?? null
+  );
+  let previewSectionIndex = $derived(
+    activePreviewSection
+      ? previewSections.findIndex((section) => section.id === activePreviewSection.id)
+      : -1
+  );
+  let previewGroups = $derived([
+    {
+      id: "front",
+      label: "Front Matter",
+      sections: previewSections.filter((section) => section.group === "front")
+    },
+    {
+      id: "chapters",
+      label: "Chapters",
+      sections: previewSections.filter((section) => section.group === "chapters")
+    },
+    {
+      id: "back",
+      label: "Back Matter",
+      sections: previewSections.filter((section) => section.group === "back")
+    }
+  ].filter((group) => group.sections.length > 0));
+  let hasPreviewableContent = $derived(
+    compiled.chapters.length > 0
+    || compiled.frontMatter.length > 0
+    || compiled.backMatter.length > 0
+  );
   let paginatedPreview = $derived(options.format === "pdf" || options.format === "docx");
-  let previewHtml = $derived(buildPreviewHtml(compiled, previewOptions, {
+  let previewHtml = $derived(buildPreviewHtml(previewBook, previewOptions, {
     dark: theme === "dark",
     paginated: paginatedPreview,
-    palette: previewPalette
+    palette: previewPalette,
+    section: activePreviewSection
   }));
   let frontMatterPageEstimate = $derived(
-    (options.includeTitlePage ? 1 : 0)
+    (previewSections.some((section) => section.kind === "cover")
+      && (options.format === "pdf" || options.format === "docx")
+      ? 1
+      : 0)
+    + (options.includeTitlePage ? 1 : 0)
     + (options.includeCopyrightPage && compiled.copyright ? 1 : 0)
     + (compiled.dedication ? 1 : 0)
     + (options.includeTableOfContents && compiled.chapters.length > 0
@@ -146,11 +213,59 @@
   });
 
   $effect(() => {
+    const request = ++coverRequest;
+    const currentOptions = previewOptions;
+    const book = compiled;
+    let cancelled = false;
+
+    if (currentOptions.cover.mode === "none") {
+      coverAsset = null;
+      coverBusy = false;
+      coverError = "";
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    coverBusy = true;
+    resolveCoverImage(book, currentOptions)
+      .then((asset) => {
+        if (cancelled || request !== coverRequest) return;
+        coverAsset = asset;
+        coverError = "";
+      })
+      .catch((error) => {
+        if (cancelled || request !== coverRequest) return;
+        coverAsset = null;
+        coverError = error instanceof Error ? error.message : "Could not prepare that cover.";
+      })
+      .finally(() => {
+        if (!cancelled && request === coverRequest) coverBusy = false;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  $effect(() => {
     const frame = previewFrame;
     if (!frame) return;
     const observer = new ResizeObserver(() => fitPreviewFrame(frame));
     observer.observe(frame);
     return () => observer.disconnect();
+  });
+
+  $effect(() => {
+    const activeId = activePreviewSection?.id;
+    const nav = previewNav;
+    if (!activeId || !nav) return;
+    tick().then(() => {
+      if (previewNav !== nav) return;
+      const items = Array.from(nav.querySelectorAll<HTMLElement>("[data-preview-section]"));
+      const item = items.find((entry) => entry.dataset.previewSection === activeId);
+      item?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
   });
 
   async function handlePreviewFrameLoad() {
@@ -160,7 +275,40 @@
     await doc.fonts?.ready;
     if (previewFrame !== frame || frame.contentDocument !== doc) return;
     paginatePreview(doc);
+    wirePreviewContents(doc);
     fitPreviewFrame(frame);
+  }
+
+  function selectPreviewSection(id: string) {
+    previewSectionId = id;
+  }
+
+  function movePreviewSection(offset: number) {
+    const next = previewSections[previewSectionIndex + offset];
+    if (next) previewSectionId = next.id;
+  }
+
+  /**
+   * Makes the Contents page jump between chapters without reloading the whole
+   * book. The preview sandbox enables scripts so these handlers can run; its
+   * srcdoc is generated entirely from escaped book content.
+   */
+  function wirePreviewContents(doc: Document) {
+    for (const anchor of Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[href^="#chapter-"]'))) {
+      anchor.addEventListener("click", (event) => {
+        const href = anchor.getAttribute("href");
+        if (!href) return;
+        const anchorId = href.slice(1);
+        const section = previewSections.find((entry) =>
+          entry.kind === "chapter"
+          && entry.chapterId
+          && `chapter-${entry.chapterId}` === anchorId
+        );
+        if (!section) return;
+        event.preventDefault();
+        previewSectionId = section.id;
+      });
+    }
   }
 
   function update<K extends keyof PublishOptions>(key: K, value: PublishOptions[K]) {
@@ -169,6 +317,41 @@
 
   function updateText(key: "subtitle" | "copyright" | "dedication", value: string) {
     onOptionsChange({ ...options, [key]: value });
+  }
+
+  function updateCover(patch: Partial<PublishOptions["cover"]>) {
+    onOptionsChange({ ...options, cover: { ...options.cover, ...patch } });
+  }
+
+  function setCoverMode(mode: CoverMode) {
+    coverError = "";
+    updateCover({
+      mode,
+      image: mode === "image" ? options.cover.image : ""
+    });
+  }
+
+  function removeCoverImage() {
+    coverError = "";
+    updateCover({ mode: "none", image: "" });
+  }
+
+  async function handleCoverFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+
+    coverBusy = true;
+    coverError = "";
+    try {
+      const image = await imageFileToCoverDataUrl(file);
+      updateCover({ mode: "image", image });
+    } catch (error) {
+      coverError = error instanceof Error ? error.message : "Could not prepare that cover image.";
+    } finally {
+      coverBusy = false;
+    }
   }
 
   function matterPages(placement: "front" | "back"): MatterPage[] {
@@ -398,6 +581,115 @@
             You’ve reached the limit of {MAX_CUSTOM_STYLES} custom styles.
           {/if}
         </p>
+      </section>
+
+      <section class="publish-section">
+        <div class="section-heading">
+          <h2>Cover</h2>
+          <span>{coverSummary}</span>
+        </div>
+        <div class="cover-mode-tabs" role="group" aria-label="Cover mode">
+          <button
+            type="button"
+            class:selected={options.cover.mode === "none"}
+            aria-pressed={options.cover.mode === "none"}
+            onclick={() => setCoverMode("none")}
+          >None</button>
+          <button
+            type="button"
+            class:selected={options.cover.mode === "image"}
+            aria-pressed={options.cover.mode === "image"}
+            onclick={() => setCoverMode("image")}
+          >Image</button>
+          <button
+            type="button"
+            class:selected={options.cover.mode === "generated"}
+            aria-pressed={options.cover.mode === "generated"}
+            onclick={() => setCoverMode("generated")}
+          >Generated</button>
+        </div>
+
+        {#if options.cover.mode === "image"}
+          <div class="cover-image-panel">
+            <div class="cover-thumb" class:empty={!coverAsset}>
+              {#if coverAsset}
+                <img src={coverAsset.dataUrl} alt="Cover preview" />
+              {:else}
+                <span>No image</span>
+              {/if}
+            </div>
+            <div class="cover-image-copy">
+              <div class="cover-action-row">
+                <button
+                  type="button"
+                  class="cover-action"
+                  onclick={() => coverImageInput?.click()}
+                >{options.cover.image ? "Replace" : "Choose image"}</button>
+                {#if options.cover.image}
+                  <button
+                    type="button"
+                    class="cover-action cover-action-quiet"
+                    onclick={removeCoverImage}
+                  >Remove</button>
+                {/if}
+              </div>
+              <p>PNG, JPG, or WebP. Cropped to a 2:3 cover.</p>
+            </div>
+          </div>
+          <input
+            bind:this={coverImageInput}
+            class="cover-file-input"
+            type="file"
+            accept={COVER_ACCEPT}
+            onchange={handleCoverFile}
+          />
+        {:else if options.cover.mode === "generated"}
+          <div class="cover-generated-panel">
+            <div class="cover-thumb" class:empty={!coverAsset}>
+              {#if coverAsset}
+                <img src={coverAsset.dataUrl} alt="Generated cover preview" />
+              {:else}
+                <span>Generating…</span>
+              {/if}
+            </div>
+            <div class="cover-generated-copy">
+              <div class="cover-design-list">
+                {#each COVER_DESIGNS as design (design.id)}
+                  <button
+                    type="button"
+                    class="cover-design"
+                    class:selected={options.cover.design === design.id}
+                    aria-pressed={options.cover.design === design.id}
+                    title={design.detail}
+                    onclick={() => updateCover({ design: design.id })}
+                  >
+                    <span class="cover-design-name">{design.label}</span>
+                    <span class="cover-design-detail">{design.detail}</span>
+                  </button>
+                {/each}
+              </div>
+              <div class="cover-palette-row" aria-label="Cover palette">
+                {#each COVER_PALETTES as palette (palette.id)}
+                  <button
+                    type="button"
+                    class="cover-palette"
+                    class:selected={options.cover.palette === palette.id}
+                    style={`--swatch:${palette.background};--swatch-ink:${palette.ink}`}
+                    aria-label={`${palette.label} palette`}
+                    aria-pressed={options.cover.palette === palette.id}
+                    title={palette.label}
+                    onclick={() => updateCover({ palette: palette.id })}
+                  ></button>
+                {/each}
+              </div>
+            </div>
+          </div>
+          <p class="cover-hint">Uses your title, subtitle, and author. Updates automatically.</p>
+        {/if}
+        {#if coverError}
+          <p class="cover-error" role="alert">{coverError}</p>
+        {/if}
+        <p class="cover-hint">Included in PDF, EPUB, DOCX, and HTML exports.</p>
       </section>
 
       <section class="publish-section">
@@ -693,29 +985,80 @@
         </div>
         <span class="preview-badge">{previewStyle.label} · {FORMAT_INFO[options.format].label}</span>
       </header>
-      {#if compiled.scenes === 0}
+      {#if !hasPreviewableContent || !activePreviewSection}
         <div class="publish-empty">
           <strong>Nothing to publish yet</strong>
           <p>Add a scene to a chapter and it will appear here, ready to export.</p>
         </div>
       {:else}
-        <iframe
-          class="preview-frame"
-          class:dark={theme === "dark"}
-          title="Manuscript preview"
-          sandbox="allow-same-origin"
-          bind:this={previewFrame}
-          onload={handlePreviewFrameLoad}
-          srcdoc={previewHtml}
-        ></iframe>
+        <div class="preview-workspace">
+          <nav class="preview-nav" aria-label="Document navigator" bind:this={previewNav}>
+            <div class="preview-nav-head">
+              <span>Navigate</span>
+              <div class="preview-nav-steps">
+                <button
+                  type="button"
+                  aria-label="Previous section"
+                  title="Previous section"
+                  disabled={previewSectionIndex <= 0}
+                  onclick={() => movePreviewSection(-1)}
+                >‹</button>
+                <span>{previewSectionIndex + 1} / {previewSections.length}</span>
+                <button
+                  type="button"
+                  aria-label="Next section"
+                  title="Next section"
+                  disabled={previewSectionIndex >= previewSections.length - 1}
+                  onclick={() => movePreviewSection(1)}
+                >›</button>
+              </div>
+            </div>
+            <div class="preview-nav-groups">
+              {#each previewGroups as group (group.id)}
+                <section class="preview-nav-group" aria-labelledby={`preview-nav-${group.id}`}>
+                  <h3 id={`preview-nav-${group.id}`}>{group.label}</h3>
+                  <div class="preview-nav-items">
+                    {#each group.sections as section, index (section.id)}
+                      <button
+                        type="button"
+                        class="preview-nav-item"
+                        class:active={activePreviewSection.id === section.id}
+                        aria-current={activePreviewSection.id === section.id ? "page" : undefined}
+                        data-preview-section={section.id}
+                        title={section.label}
+                        onclick={() => selectPreviewSection(section.id)}
+                      >
+                        {#if group.id === "chapters"}
+                          <span class="preview-nav-number">{String(index + 1).padStart(2, "0")}</span>
+                        {/if}
+                        <span class="preview-nav-label">{section.label}</span>
+                      </button>
+                    {/each}
+                  </div>
+                </section>
+              {/each}
+            </div>
+          </nav>
+          <div class="preview-stage">
+            <iframe
+              class="preview-frame"
+              class:dark={theme === "dark"}
+              title={`${activePreviewSection.label} preview`}
+              sandbox="allow-same-origin allow-scripts"
+              bind:this={previewFrame}
+              onload={handlePreviewFrameLoad}
+              srcdoc={previewHtml}
+            ></iframe>
+          </div>
+        </div>
         <p class="preview-caption">
           {#if paginatedPreview}
-            Paginated preview of the opening pages and first chapter.
+            Paginated preview of {activePreviewSection.label}.
           {:else}
-            Previewing the opening pages and first chapter.
+            Previewing {activePreviewSection.label}.
           {/if}
-          Back matter is included in the export.
-          {#if pageEstimate !== null}Estimated {pageEstimate} {pageEstimate === 1 ? "page" : "pages"}.{/if}
+          Section {previewSectionIndex + 1} of {previewSections.length}.
+          {#if pageEstimate !== null}Estimated {pageEstimate} {pageEstimate === 1 ? "page" : "pages"} for the full book.{/if}
         </p>
       {/if}
     </section>
@@ -792,6 +1135,33 @@
   .new-style-button:hover:not(:disabled) { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
   .new-style-button:disabled { cursor: default; opacity: .45; }
   .style-hint { margin: 6px 0 0; color: var(--text-muted); font-size: 8px; line-height: 1.4; }
+  .cover-mode-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); }
+  .cover-mode-tabs button { height: 25px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-family: inherit; font-size: 9px; font-weight: 550; }
+  .cover-mode-tabs button:hover { background: var(--control-hover); color: var(--text-heading); }
+  .cover-mode-tabs button.selected { background: var(--selected-bg); color: var(--text-heading); box-shadow: 0 0 0 1px var(--accent-ring); }
+  .cover-image-panel, .cover-generated-panel { display: flex; align-items: flex-start; gap: 10px; margin-top: 9px; }
+  .cover-thumb { display: flex; width: 64px; height: 96px; flex: 0 0 auto; align-items: center; justify-content: center; overflow: hidden; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font-size: 8px; line-height: 1.35; text-align: center; }
+  .cover-thumb.empty { border-style: dashed; }
+  .cover-thumb img { display: block; width: 100%; height: 100%; background: #fff; object-fit: contain; }
+  .cover-image-copy, .cover-generated-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 6px; }
+  .cover-action-row { display: flex; flex-wrap: wrap; gap: 4px; }
+  .cover-action { height: 26px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-family: inherit; font-size: 9px; font-weight: 550; }
+  .cover-action:hover { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
+  .cover-action-quiet { color: var(--text-muted); }
+  .cover-image-copy p { margin: 0; color: var(--text-muted); font-size: 8px; line-height: 1.4; }
+  .cover-hint { margin: 7px 0 0; color: var(--text-muted); font-size: 8px; line-height: 1.4; }
+  .cover-error { margin: 7px 0 0; color: var(--danger); font-size: 8px; line-height: 1.4; }
+  .cover-file-input { display: none; }
+  .cover-design-list { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+  .cover-design { display: flex; min-width: 0; flex-direction: column; gap: 2px; padding: 6px 7px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-family: inherit; text-align: left; }
+  .cover-design:hover { border-color: var(--accent-soft); background: var(--control-hover); }
+  .cover-design.selected { border-color: var(--accent); background: var(--selected-bg); box-shadow: 0 0 0 1px var(--accent-ring); }
+  .cover-design-name { color: var(--text-heading); font-size: 9px; font-weight: 600; }
+  .cover-design-detail { overflow: hidden; color: var(--text-muted); font-size: 7px; line-height: 1.35; text-overflow: ellipsis; }
+  .cover-palette-row { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+  .cover-palette { position: relative; width: 19px; height: 19px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: var(--swatch); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22); cursor: pointer; }
+  .cover-palette.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-ring); }
+  .cover-mode-tabs button:focus-visible, .cover-design:focus-visible, .cover-action:focus-visible, .cover-palette:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .option-list { display: flex; flex-direction: column; gap: 9px; }
   .option-row { display: flex; align-items: flex-start; gap: 8px; color: var(--text-nav); cursor: pointer; }
   .option-row input { width: 13px; height: 13px; flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--accent-strong); }
@@ -845,12 +1215,42 @@
   .preview-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding: 2px 2px 11px; border-bottom: 1px solid var(--border-soft); }
   .preview-header h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 22px; font-weight: 500; }
   .preview-badge { padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text-muted); font-size: 8px; letter-spacing: .35px; white-space: nowrap; }
+  .preview-workspace { display: grid; grid-template-columns: 174px minmax(0, 1fr); gap: 10px; align-items: stretch; }
+  .preview-nav { display: flex; min-width: 0; max-height: min(84vh, 900px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .preview-nav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 9px 8px; border-bottom: 1px solid var(--border-soft); color: var(--text-muted); font-size: 7px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
+  .preview-nav-steps { display: flex; align-items: center; gap: 3px; letter-spacing: 0; text-transform: none; }
+  .preview-nav-steps button { display: grid; width: 19px; height: 19px; place-items: center; padding: 0; border: 1px solid var(--border-control); border-radius: 4px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; line-height: 1; }
+  .preview-nav-steps button:hover:not(:disabled) { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
+  .preview-nav-steps button:disabled { cursor: default; opacity: .35; }
+  .preview-nav-steps > span { min-width: 29px; color: var(--text-muted); font-size: 7px; font-variant-numeric: tabular-nums; text-align: center; }
+  .preview-nav-groups { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 5px 7px; }
+  .preview-nav-group { padding: 6px 1px 1px; }
+  .preview-nav-group + .preview-nav-group { margin-top: 4px; border-top: 1px solid var(--border-soft); }
+  .preview-nav-group h3 { margin: 0 4px 4px; color: var(--eyebrow); font-size: 7px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
+  .preview-nav-items { display: flex; flex-direction: column; gap: 2px; }
+  .preview-nav-item { display: flex; width: 100%; min-width: 0; align-items: center; gap: 5px; padding: 6px 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; font-family: inherit; font-size: 9px; line-height: 1.35; text-align: left; }
+  .preview-nav-item:hover { background: var(--control-hover); color: var(--text-heading); }
+  .preview-nav-item.active { border-color: var(--accent-soft); background: var(--selected-bg); color: var(--text-heading); }
+  .preview-nav-number { flex: 0 0 auto; color: var(--eyebrow); font-family: ui-monospace, monospace; font-size: 7px; font-variant-numeric: tabular-nums; }
+  .preview-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preview-nav-item:focus-visible, .preview-nav-steps button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .preview-stage { min-width: 0; }
   .preview-frame { display: block; width: 100%; height: min(84vh, 900px); border: 1px solid var(--border); border-radius: 9px; background: var(--page-bg); box-shadow: var(--shadow-preview-frame); }
   .preview-caption { margin: 8px 2px 0; color: var(--text-muted); font-size: 8px; line-height: 1.45; }
   .publish-empty { display: flex; min-height: 320px; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border: 1px dashed var(--border-control); border-radius: 9px; background: var(--surface); color: var(--text-muted); text-align: center; }
   .publish-empty strong { color: var(--text-heading); font-family: var(--interface-font); font-size: 18px; font-weight: 500; }
   .publish-empty p { max-width: 280px; margin: 8px 0 0; font-size: 10px; line-height: 1.55; }
 
+  @container (max-width: 980px) {
+    .preview-workspace { grid-template-columns: 1fr; gap: 8px; }
+    .preview-nav { max-height: none; }
+    .preview-nav-groups { display: flex; gap: 12px; overflow-x: auto; overflow-y: hidden; padding: 5px 6px 7px; }
+    .preview-nav-group { flex: 0 0 auto; min-width: 0; padding: 0; }
+    .preview-nav-group + .preview-nav-group { margin-top: 0; border-top: 0; border-left: 1px solid var(--border-soft); padding-left: 12px; }
+    .preview-nav-group h3 { margin-bottom: 3px; }
+    .preview-nav-items { flex-direction: row; gap: 4px; }
+    .preview-nav-item { width: auto; max-width: 180px; white-space: nowrap; }
+  }
   @container (max-width: 820px) {
     .publish-grid { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr); gap: 14px; }
   }
@@ -861,7 +1261,7 @@
   }
   @container (max-width: 380px) {
     .publish-controls { padding: 14px 12px; }
-    .format-grid, .style-list { grid-template-columns: 1fr; }
+    .format-grid, .style-list, .cover-design-list { grid-template-columns: 1fr; }
     .publish-summary { grid-template-columns: 1fr 1fr; row-gap: 10px; }
   }
 </style>

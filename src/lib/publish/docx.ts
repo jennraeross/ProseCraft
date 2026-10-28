@@ -31,6 +31,7 @@ import {
   FORMAT_INFO,
   slugifyFilename,
   type CompiledBook,
+  type CompiledCover,
   type ExportPayload,
   type PublishOptions,
   type SceneSeparator
@@ -179,6 +180,41 @@ function separatorParagraph(separator: SceneSeparator): Paragraph | null {
     style: "SceneBreak",
     children: [new TextRun({ text: symbol || " ", size: halfPoint(10) })]
   });
+}
+
+async function coverSection(
+  cover: CompiledCover,
+  page: { widthPt: number; heightPt: number }
+): Promise<ISectionOptions> {
+  const image = await decodeEmbeddedImage(cover.dataUrl);
+  const pageWidthPx = page.widthPt * 96 / 72;
+  const pageHeightPx = page.heightPt * 96 / 72;
+  const scale = Math.min(pageWidthPx / image.width, pageHeightPx / image.height);
+  const displayWidth = Math.max(1, Math.round(image.width * scale));
+  const displayHeight = Math.max(1, Math.round(image.height * scale));
+
+  return {
+    properties: {
+      page: {
+        size: { width: twip(page.widthPt), height: twip(page.heightPt) },
+        margin: { top: 0, right: 0, bottom: 0, left: 0, header: 0, footer: 0 }
+      }
+    },
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 0, after: 0 },
+        children: [
+          new ImageRun({
+            data: image.bytes,
+            type: image.extension,
+            transformation: { width: displayWidth, height: displayHeight },
+            altText: { name: "Cover", description: "" }
+          })
+        ]
+      })
+    ]
+  };
 }
 
 export async function exportDocx(book: CompiledBook, options: PublishOptions): Promise<ExportPayload> {
@@ -351,6 +387,9 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
   }
 
   const sections: ISectionOptions[] = [];
+  if (book.cover) {
+    sections.push(await coverSection(book.cover, tokens.page));
+  }
   if (titleMatter.length > 0) {
     sections.push({
       properties: { page: pageProperties, verticalAlign: VerticalAlignSection.CENTER },
