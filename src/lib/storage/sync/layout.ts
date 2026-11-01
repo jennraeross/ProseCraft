@@ -13,10 +13,10 @@ import {
   type StoredEntityKind,
   type StoredProject
 } from "../types";
+import { PROJECTS_DIR } from "./files";
 import type { SyncFileSystem } from "./types";
 
-export const VAULT_FILE = "vault.json";
-export const PROJECTS_DIR = "projects";
+export { PROJECTS_DIR, VAULT_FILE } from "./files";
 
 export type EncodedFile = {
   path: string;
@@ -61,7 +61,7 @@ export function entityDir(kind: StoredEntityKind): string {
  * This also guarantees the result is never `.` or `..`, so a crafted project id
  * cannot escape the sync folder during a later delete or prune.
  */
-function safeName(id: string): string {
+export function safeName(id: string): string {
   if (/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(id)) return id;
   const bytes = new TextEncoder().encode(id);
   let binary = "";

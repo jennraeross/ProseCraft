@@ -61,6 +61,7 @@
     type SpaceName
   } from "$lib/publish/types";
   import { saveExport } from "$lib/publish/save";
+  import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
     createResearchFolderName,
     formatResearchFileSize,
@@ -92,7 +93,7 @@
   } from "$lib/storage/repository";
   import { readEncryptedBundleHint } from "$lib/storage/encrypted-bundle";
   import { clearSyncState, loadSyncState, saveSyncState } from "$lib/storage/sync/state";
-  import type { FolderSyncProvider } from "$lib/storage/sync/folder-provider";
+  import type { SyncMode, SyncProvider } from "$lib/storage/sync/types";
   import type {
     ActivityRecord,
     ProjectData,
@@ -237,6 +238,8 @@
   let chapterNameInput = $state<HTMLInputElement>();
   let dataImportInput = $state<HTMLInputElement>();
   let dataStatus = $state("");
+  let epubImportInput = $state<HTMLInputElement>();
+  let epubImportBusy = $state(false);
   let encryptedImportInput: HTMLInputElement;
   let passphraseDialog: HTMLDialogElement;
   let passphraseMode = $state<"export" | "import">("export");
@@ -249,11 +252,12 @@
   let pendingEncryptedHint = $state("");
   let desktopRuntime = $state(false);
   let syncFolder = $state("");
+  let syncMode = $state<SyncMode>("encrypted-file");
   let syncPassphrase = $state("");
   let syncBusy = $state(false);
   let syncStatus = $state("");
-  let syncProvider: FolderSyncProvider | undefined;
-  let syncProviderFolder = "";
+  let syncProvider: SyncProvider | undefined;
+  let syncProviderKey = "";
   let lastEditorWordCount = 0;
   let title = $state("The shape of a first draft");
   let saveState = $state("All changes saved");
@@ -1461,6 +1465,80 @@
     dataImportInput?.click();
   }
 
+  function triggerEpubImport() {
+    if (epubImportBusy) return;
+    if (desktopRuntime) {
+      void pickDesktopEpub();
+      return;
+    }
+    epubImportInput?.click();
+  }
+
+  async function pickDesktopEpub() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: false,
+        directory: false,
+        title: "Import EPUB",
+        filters: [{ name: "EPUB", extensions: ["epub"] }]
+      });
+      if (typeof picked !== "string" || !picked) return;
+      const { invoke } = await import("@tauri-apps/api/core");
+      const bytes = await invoke<ArrayBuffer>("read_import_file", { path: picked });
+      const name = picked.split(/[\\/]/).pop() || "book.epub";
+      await importEpubData(name, new Uint8Array(bytes));
+    } catch (error) {
+      console.error("Could not open that EPUB.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not open that EPUB.";
+      openSettings();
+    }
+  }
+
+  async function handleEpubImport(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    try {
+      await importEpubData(file.name, new Uint8Array(await file.arrayBuffer()));
+    } catch (error) {
+      dataStatus = error instanceof Error ? error.message : "Could not read that file.";
+    }
+  }
+
+  async function importEpubData(name: string, data: Uint8Array) {
+    if (epubImportBusy) return;
+    epubImportBusy = true;
+    dataStatus = "Reading EPUB…";
+    try {
+      const manuscript = await parseEpub(data, {
+        fallbackTitle: name,
+        onProgress: (message) => {
+          dataStatus = message;
+        }
+      });
+      const project = buildEpubProject(manuscript);
+      showZenInterface();
+      if (saveTimer) clearTimeout(saveTimer);
+      persistNow();
+      projects = [...projects, project];
+      loadProject(project);
+      saveVault(projects, project.id);
+      void syncNativeProjectMenu();
+      const images = manuscript.skippedImages;
+      dataStatus = `Imported “${project.name}” — ${project.chapters.length} chapter(s), `
+        + `${project.documents.length} scene(s)${images ? `, ${images} image(s) skipped` : ""}.`;
+      settingsDialog?.close();
+    } catch (error) {
+      console.error("Could not import that EPUB.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not import that EPUB.";
+      openSettings();
+    } finally {
+      epubImportBusy = false;
+    }
+  }
+
   async function handleImportData(event: Event) {
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
@@ -1559,15 +1637,64 @@
     }
   }
 
-  async function getSyncProvider(folder: string): Promise<FolderSyncProvider> {
-    if (syncProvider && syncProviderFolder === folder) return syncProvider;
-    const [{ FolderSyncProvider: Provider }, { TauriFileSystem }] = await Promise.all([
+  async function getSyncProvider(folder: string, mode: SyncMode): Promise<SyncProvider> {
+    const key = `${mode}\u0000${folder}`;
+    if (syncProvider && syncProviderKey === key) return syncProvider;
+    const [
+      { TauriFileSystem },
+      { FolderSyncProvider },
+      { EncryptedFileSyncProvider },
+      { OpenFolderSyncProvider }
+    ] = await Promise.all([
+      import("$lib/storage/sync/tauri-fs"),
       import("$lib/storage/sync/folder-provider"),
-      import("$lib/storage/sync/tauri-fs")
+      import("$lib/storage/sync/bundle-provider"),
+      import("$lib/storage/sync/open-provider")
     ]);
-    syncProvider = new Provider(new TauriFileSystem(folder));
-    syncProviderFolder = folder;
+    const fs = new TauriFileSystem(folder);
+    syncProvider = mode === "encrypted-file"
+      ? new EncryptedFileSyncProvider(fs)
+      : mode === "open-folder"
+        ? new OpenFolderSyncProvider(fs)
+        : new FolderSyncProvider(fs);
+    syncProviderKey = key;
     return syncProvider;
+  }
+
+  function syncFolderReadyMessage(): string {
+    if (syncMode === "open-folder") return "Folder ready. Choose Sync now.";
+    return "Folder ready. Enter your passphrase and choose Sync now.";
+  }
+
+  function syncCreatedMessage(count: number): string {
+    if (syncMode === "open-folder") {
+      return `Set up the open folder. ${count} project(s) synced.`;
+    }
+    if (syncMode === "encrypted-file") {
+      return `Created an encrypted sync file. ${count} project(s) synced.`;
+    }
+    return `Created an encrypted vault in this folder. ${count} project(s) synced.`;
+  }
+
+  function setSyncMode(next: SyncMode) {
+    if (syncBusy || next === syncMode) return;
+    syncMode = next;
+    syncProvider = undefined;
+    syncProviderKey = "";
+    syncPassphrase = "";
+    const state = loadSyncState();
+    if (syncFolder) {
+      saveSyncState({
+        folder: syncFolder,
+        mode: next,
+        lastSynced: state?.folder === syncFolder && state.mode === next
+          ? state.lastSynced
+          : {}
+      });
+      syncStatus = "Sync method changed. Use a folder already set up for this method, or an empty folder.";
+    } else {
+      syncStatus = "";
+    }
   }
 
   async function chooseSyncFolder() {
@@ -1578,17 +1705,25 @@
       const picked = await open({ directory: true, multiple: false, title: "Choose a sync folder" });
       if (typeof picked !== "string" || !picked) return;
       const previous = loadSyncState();
-      if (previous?.folder !== picked) syncPassphrase = "";
+      const same = previous?.folder === picked && previous.mode === syncMode;
+      if (!same) syncPassphrase = "";
       syncFolder = picked;
       syncProvider = undefined;
-      syncProviderFolder = "";
+      syncProviderKey = "";
       saveSyncState({
         folder: picked,
-        lastSynced: previous?.folder === picked ? previous.lastSynced : {}
+        mode: syncMode,
+        lastSynced: same ? previous.lastSynced : {}
       });
-      syncStatus = previous?.folder === picked
-        ? "Folder ready. Enter your passphrase and choose Sync now."
-        : "Folder saved. The first sync creates an encrypted vault inside it.";
+      if (same) {
+        syncStatus = syncFolderReadyMessage();
+      } else if (syncMode === "open-folder") {
+        syncStatus = "Folder saved. The first sync writes plain Markdown and JSON files.";
+      } else if (syncMode === "encrypted-file") {
+        syncStatus = "Folder saved. The first sync creates one encrypted sync file.";
+      } else {
+        syncStatus = "Folder saved. The first sync creates an encrypted vault inside it.";
+      }
     } catch (error) {
       console.error("Could not choose a sync folder.", error);
       syncStatus = "Could not open the folder picker.";
@@ -1600,14 +1735,15 @@
     clearSyncState();
     syncFolder = "";
     syncProvider = undefined;
-    syncProviderFolder = "";
+    syncProviderKey = "";
     syncPassphrase = "";
     syncStatus = "Sync folder forgotten. Files in the folder were left untouched.";
   }
 
   async function runSync() {
     if (!syncFolder || syncBusy) return;
-    if (syncPassphrase.length < 8) {
+    const encrypted = syncMode !== "open-folder";
+    if (encrypted && syncPassphrase.length < 8) {
       syncStatus = "Use a sync passphrase of at least 8 characters.";
       return;
     }
@@ -1616,9 +1752,11 @@
     try {
       if (saveTimer) clearTimeout(saveTimer);
       persistNow();
-      const provider = await getSyncProvider(syncFolder);
+      const provider = await getSyncProvider(syncFolder, syncMode);
       const state = loadSyncState();
-      const lastSynced = state?.folder === syncFolder ? state.lastSynced : {};
+      const lastSynced = state?.folder === syncFolder && state.mode === syncMode
+        ? state.lastSynced
+        : {};
       const result = await provider.sync(
         syncPassphrase,
         readStoredProjectRecords(),
@@ -1626,7 +1764,11 @@
         Date.now(),
         currentDeviceId()
       );
-      saveSyncState({ folder: syncFolder, lastSynced: result.lastSynced });
+      saveSyncState({
+        folder: syncFolder,
+        mode: syncMode,
+        lastSynced: result.lastSynced
+      });
       const nextActiveId = result.projects.some((project) => project.id === activeProjectId)
         ? activeProjectId
         : (result.projects[0]?.id ?? "");
@@ -1648,7 +1790,7 @@
           : ""
       ].filter(Boolean).join(", ");
       syncStatus = result.created
-        ? `Created an encrypted vault in this folder. ${result.projects.length} project(s) synced.`
+        ? syncCreatedMessage(result.projects.length)
         : `Synced ${result.projects.length} project(s)${details ? ` (${details})` : ""}.`;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Sync failed.";
@@ -3392,7 +3534,9 @@
   });
 
   onMount(() => {
-    syncFolder = loadSyncState()?.folder ?? "";
+    const savedSync = loadSyncState();
+    syncFolder = savedSync?.folder ?? "";
+    syncMode = savedSync?.mode ?? "encrypted-file";
     void import("@tauri-apps/api/core")
       .then(({ isTauri }) => {
         desktopRuntime = isTauri();
@@ -3413,6 +3557,7 @@
         const settingsUnlisten = await listen("prosecraft:open-settings", openSettings);
         const projectSettingsUnlisten = await listen("prosecraft:open-project-settings", openProjectSettings);
         const newProjectUnlisten = await listen("prosecraft:new-project", createProject);
+        const importEpubUnlisten = await listen("prosecraft:import-epub", triggerEpubImport);
         const switchProjectUnlisten = await listen<string>("prosecraft:switch-project", (event) => switchProject(event.payload));
         const exportUnlisten = await listen("prosecraft:export-document", exportDocument);
         const newSceneUnlisten = await listen("prosecraft:new-scene", createDocument);
@@ -3430,6 +3575,7 @@
           settingsUnlisten();
           projectSettingsUnlisten();
           newProjectUnlisten();
+          importEpubUnlisten();
           switchProjectUnlisten();
           exportUnlisten();
           newSceneUnlisten();
@@ -3442,6 +3588,7 @@
             settingsUnlisten,
             projectSettingsUnlisten,
             newProjectUnlisten,
+            importEpubUnlisten,
             switchProjectUnlisten,
             exportUnlisten,
             newSceneUnlisten,
@@ -3490,6 +3637,12 @@
       </select>
       <div class="project-identity-actions">
         <button aria-label="Project settings" title="Project settings" onclick={openProjectSettings}>⚙</button>
+        <button
+          aria-label="Import EPUB"
+          title="Import EPUB…"
+          disabled={epubImportBusy}
+          onclick={triggerEpubImport}
+        >⤓</button>
         <button aria-label="Create project" title="Create project" onclick={createProject}>+</button>
       </div>
       <span class="author-name">{authorName ? `by ${authorName}` : "Add author name"}</span>
@@ -4414,26 +4567,98 @@
           <button type="button" class="data-button" onclick={triggerEncryptedImport}>Import encrypted</button>
         </div>
       </div>
+      <div class="data-group">
+        <span class="data-group-label">Import a manuscript</span>
+        <div class="data-actions">
+          <button
+            type="button"
+            class="data-button"
+            onclick={triggerEpubImport}
+            disabled={epubImportBusy}
+          >{epubImportBusy ? "Importing…" : "Import EPUB…"}</button>
+        </div>
+        <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
+      </div>
       {#if desktopRuntime}
         <div class="data-group">
           <span class="data-group-label">Device sync</span>
-          <p class="data-help">Keep this device in sync through a folder your devices already share, such as a Nextcloud folder. Projects are encrypted with your passphrase before they are written.</p>
+          <p class="data-help">Keep this device in sync through a folder your devices already share, such as a Nextcloud folder.</p>
+          <div class="sync-mode-options" role="radiogroup" aria-label="Sync method">
+            <label class="sync-mode-option" class:selected={syncMode === "encrypted-file"}>
+              <input
+                type="radio"
+                name="sync-method"
+                value="encrypted-file"
+                checked={syncMode === "encrypted-file"}
+                onchange={() => setSyncMode("encrypted-file")}
+                disabled={syncBusy}
+              />
+              <span class="sync-mode-copy">
+                <strong>Single encrypted file</strong>
+                <span>All projects in one passphrase-protected file. Best for cloud folders and WebDAV.</span>
+              </span>
+            </label>
+            <label class="sync-mode-option" class:selected={syncMode === "open-folder"}>
+              <input
+                type="radio"
+                name="sync-method"
+                value="open-folder"
+                checked={syncMode === "open-folder"}
+                onchange={() => setSyncMode("open-folder")}
+                disabled={syncBusy}
+              />
+              <span class="sync-mode-copy">
+                <strong>Open folder</strong>
+                <span>Plain Markdown and JSON, one folder per project. Not encrypted.</span>
+              </span>
+            </label>
+            {#if syncMode === "encrypted-folder"}
+              <label class="sync-mode-option selected">
+                <input
+                  type="radio"
+                  name="sync-method"
+                  value="encrypted-folder"
+                  checked
+                  onchange={() => setSyncMode("encrypted-folder")}
+                  disabled={syncBusy}
+                />
+                <span class="sync-mode-copy">
+                  <strong>Encrypted folder (existing layout)</strong>
+                  <span>One encrypted file per project record. Keeps existing sync folders working.</span>
+                </span>
+              </label>
+            {/if}
+          </div>
+          {#if syncMode === "open-folder"}
+            <p class="data-warning">This folder is not encrypted. Anyone with access to it can read and edit your writing. Delete scenes in ProseCraft rather than removing their files.</p>
+          {:else if syncMode === "encrypted-file"}
+            <p class="data-help">Writes one <code>prosecraft-sync.prosecraft</code> file. Projects are encrypted with your passphrase before they are written.</p>
+          {:else}
+            <p class="data-help">Writes <code>vault.json</code> and one encrypted file per project record.</p>
+          {/if}
           <div class="sync-folder-row">
             <span class="sync-folder-path" title={syncFolder}>{syncFolder || "No folder chosen"}</span>
             <button type="button" class="data-button" onclick={chooseSyncFolder} disabled={syncBusy}>Choose folder…</button>
           </div>
           {#if syncFolder}
-            <input
-              class="preference-select passphrase-input"
-              type="password"
-              aria-label="Sync passphrase"
-              placeholder="Sync passphrase"
-              autocomplete="current-password"
-              bind:value={syncPassphrase}
-              disabled={syncBusy}
-            />
+            {#if syncMode !== "open-folder"}
+              <input
+                class="preference-select passphrase-input"
+                type="password"
+                aria-label="Sync passphrase"
+                placeholder="Sync passphrase"
+                autocomplete="current-password"
+                bind:value={syncPassphrase}
+                disabled={syncBusy}
+              />
+            {/if}
             <div class="data-actions">
-              <button type="button" class="data-button" onclick={runSync} disabled={syncBusy || syncPassphrase.length < 8}>
+              <button
+                type="button"
+                class="data-button"
+                onclick={runSync}
+                disabled={syncBusy || (syncMode !== "open-folder" && syncPassphrase.length < 8)}
+              >
                 {syncBusy ? "Syncing…" : "Sync now"}
               </button>
               <button type="button" class="data-button" onclick={forgetSyncFolder} disabled={syncBusy}>Forget folder</button>
@@ -4473,6 +4698,14 @@
         accept=".prosecraft,application/json"
         bind:this={encryptedImportInput}
         onchange={handleEncryptedImportFile}
+      />
+      <input
+        id="epub-import-input"
+        class="data-file-input"
+        type="file"
+        accept=".epub,application/epub+zip"
+        bind:this={epubImportInput}
+        onchange={handleEpubImport}
       />
       {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
     </section>
@@ -4835,6 +5068,8 @@
   .project-identity-actions { display: flex; align-items: center; gap: 2px; }
   .project-identity-actions button { display: grid; width: 25px; height: 25px; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 14px; }
   .project-identity-actions button:hover { background: var(--hover-bg); color: var(--text-primary); }
+  .project-identity-actions button:disabled { opacity: .35; cursor: default; }
+  .project-identity-actions button:disabled:hover { background: transparent; color: var(--text-muted); }
   .author-name { overflow: hidden; max-width: 100%; color: var(--text-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .project-identity .author-name { grid-column: 1; grid-row: 2; padding-top: 2px; }
   .nav-label { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
@@ -5155,6 +5390,14 @@
   .data-button:disabled { opacity: 0.5; cursor: default; }
   .data-button:disabled:hover { border-color: var(--border-control); color: var(--text-primary); }
   .sync-folder-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .sync-mode-options { display: grid; gap: 6px; margin-bottom: 9px; }
+  .sync-mode-option { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-control); border-radius: 6px; cursor: pointer; }
+  .sync-mode-option.selected { border-color: var(--accent); background: var(--control-bg); }
+  .sync-mode-option input { margin: 2px 0 0; accent-color: var(--accent); }
+  .sync-mode-copy { display: grid; gap: 2px; }
+  .sync-mode-copy strong { color: var(--text-heading); font-size: 11px; font-weight: 600; }
+  .sync-mode-copy span { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+  .data-warning { margin: 0 0 8px; color: var(--danger); font-size: 10px; line-height: 1.5; }
   .sync-folder-path { flex: 1; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
   .passphrase-input { margin-bottom: 8px; }
   .passphrase-input:last-of-type { margin-bottom: 0; }

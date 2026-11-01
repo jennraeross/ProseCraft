@@ -181,6 +181,19 @@ export class WebDavFileSystem implements SyncFileSystem {
     if (!response.ok) throw new Error(`WebDAV PROPFIND failed: ${response.status} ${response.statusText}`);
     return true;
   }
+
+  async rename(from: string, to: string): Promise<void> {
+    const destination = new URL(this.resolve(to), this.baseUrl + "/").href;
+    const response = await this.request("MOVE", this.resolve(from), {
+      headers: {
+        Destination: destination,
+        Overwrite: "T"
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`WebDAV MOVE failed: ${response.status} ${response.statusText}`);
+    }
+  }
 }
 
 /**

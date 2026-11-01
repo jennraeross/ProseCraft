@@ -66,6 +66,39 @@ export class MemoryFileSystem implements SyncFileSystem {
     return [...this.files.keys()].some((full) => full.startsWith(prefix));
   }
 
+  async rename(from: string, to: string): Promise<void> {
+    const source = normalize(from);
+    const target = normalize(to);
+    const value = this.files.get(source);
+    if (value !== undefined) {
+      this.files.delete(source);
+      this.files.set(target, value);
+      this.createAncestors(target);
+      return;
+    }
+    if (this.dirs.has(source)) {
+      const moved = this.allPaths()
+        .filter((full) => full === source || full.startsWith(`${source}/`))
+        .map((full) => ({
+          oldPath: full,
+          newPath: `${target}${full.slice(source.length)}`,
+          value: this.files.get(full),
+          directory: this.dirs.has(full)
+        }));
+      for (const entry of moved) {
+        this.files.delete(entry.oldPath);
+        this.dirs.delete(entry.oldPath);
+      }
+      for (const entry of moved) {
+        if (entry.value !== undefined) this.files.set(entry.newPath, entry.value);
+        if (entry.directory) this.dirs.add(entry.newPath);
+      }
+      this.createAncestors(target);
+      return;
+    }
+    throw new Error(`Missing file: ${from}`);
+  }
+
   /** Test helper: every path currently stored. */
   paths(): string[] {
     return [...this.files.keys()].sort();

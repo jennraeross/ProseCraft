@@ -58,4 +58,11 @@ export class TauriFileSystem implements SyncFileSystem {
   async exists(path: string): Promise<boolean> {
     return invoke<boolean>("sync_exists", { path: this.resolve(path) });
   }
+
+  async rename(from: string, to: string): Promise<void> {
+    await invoke("sync_rename", {
+      from: this.resolve(from),
+      to: this.resolve(to)
+    });
+  }
 }

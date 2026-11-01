@@ -36,6 +36,8 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Typewriter mode
 - [x] Focus mode
 - [x] Zen mode
+- [ ] Mathcad
+- [ ] Mermaid
 
 #### Publishing
 - [x] Basic export (PDF, DOCX, Epub, Markdown, HTML, Plain Text)
@@ -52,8 +54,11 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Unencrypted backup
 - [x] Encrypted backup
 - [x] Sync via external folder
+- [x] Sync as a single encrypted file
+- [x] Open Markdown + JSON folder sync
 - [x] Basic conflict resolution
 - [ ] More advanced syncing (such as for mobile)
+- [x] Human legible folder
 
 #### Application
 - [x] Font selection
@@ -61,6 +66,7 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Colorscheme selection
 - [x] Custom fonts
 - [ ] Custom colorschemes
+- [x] Import Epub as Project
 
 #### Mobile
 - [ ] Fully responsive interface (partial)

@@ -1,11 +1,18 @@
-import type { SyncStamp } from "./types";
+import type { SyncMode, SyncStamp } from "./types";
 
 export const SYNC_STATE_KEY = "prosecraft-sync-state";
 
 export type PersistedSyncState = {
   folder: string;
+  mode: SyncMode;
   lastSynced: Record<string, SyncStamp>;
 };
+
+const SYNC_MODES: SyncMode[] = ["encrypted-file", "open-folder", "encrypted-folder"];
+
+function isSyncMode(value: unknown): value is SyncMode {
+  return typeof value === "string" && (SYNC_MODES as string[]).includes(value);
+}
 
 /** Device-local sync configuration. Contains no project content or keys. */
 export function loadSyncState(): PersistedSyncState | null {
@@ -15,6 +22,9 @@ export function loadSyncState(): PersistedSyncState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PersistedSyncState>;
     if (typeof parsed.folder !== "string" || !parsed.folder) return null;
+    // State written before sync modes existed always used the encrypted folder
+    // layout, so keep those installs working without a migration step.
+    const mode: SyncMode = isSyncMode(parsed.mode) ? parsed.mode : "encrypted-folder";
     const lastSynced: Record<string, SyncStamp> = {};
     if (typeof parsed.lastSynced === "object" && parsed.lastSynced !== null) {
       for (const [id, stamp] of Object.entries(parsed.lastSynced)) {
@@ -28,7 +38,7 @@ export function loadSyncState(): PersistedSyncState | null {
         }
       }
     }
-    return { folder: parsed.folder, lastSynced };
+    return { folder: parsed.folder, mode, lastSynced };
   } catch {
     return null;
   }

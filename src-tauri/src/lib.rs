@@ -70,8 +70,8 @@ fn update_project_menu(
             _ => return Err("File menu has an invalid type".to_string()),
         };
 
-        while submenu.items().map_err(|error| error.to_string())?.len() > 7 {
-            submenu.remove_at(7).map_err(|error| error.to_string())?;
+        while submenu.items().map_err(|error| error.to_string())?.len() > 8 {
+            submenu.remove_at(8).map_err(|error| error.to_string())?;
         }
 
         for project in projects {
@@ -262,7 +262,45 @@ fn sync_exists(path: String) -> Result<bool, String> {
     Ok(std::path::Path::new(&path).exists())
 }
 
+/// Renames a file, replacing the destination when it already exists. Used to
+/// swap the single encrypted sync file into place after a complete write.
+#[tauri::command]
+fn sync_rename(from: String, to: String) -> Result<(), String> {
+    let source = std::path::Path::new(&from);
+    let target = std::path::Path::new(&to);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    if !source.exists() {
+        return Err(format!("Missing file: {from}"));
+    }
+    // std::fs::rename replaces the destination atomically on Unix. Windows
+    // refuses to replace an existing file, so remove it first there.
+    #[cfg(windows)]
+    if target.exists() {
+        std::fs::remove_file(target).map_err(|error| error.to_string())?;
+    }
+    std::fs::rename(source, target).map_err(|error| error.to_string())
+}
+
 const MAX_RESEARCH_FILE_BYTES: u64 = 200 * 1024 * 1024;
+const MAX_IMPORT_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Reads a user-selected EPUB into memory for the frontend importer. The dialog
+/// plugin supplies the path, so no directory-wide read scope is required.
+#[tauri::command]
+fn read_import_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let source = PathBuf::from(&path);
+    if !source.is_file() {
+        return Err("The selected file could not be read.".to_string());
+    }
+    let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_IMPORT_FILE_BYTES {
+        return Err("EPUB files must be 100 MB or smaller.".to_string());
+    }
+    let bytes = std::fs::read(&source).map_err(|error| error.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
 
 fn research_root(root: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(root);
@@ -409,6 +447,8 @@ pub fn run() {
                     MenuItem::with_id(app, "new-scene", "New Scene", true, Some("CmdOrCtrl+N"))?;
                 let new_project =
                     MenuItem::with_id(app, "new-project", "New Project…", true, None::<&str>)?;
+                let import_epub =
+                    MenuItem::with_id(app, "import-epub", "Import EPUB…", true, None::<&str>)?;
                 let project_settings = MenuItem::with_id(
                     app,
                     "project-settings",
@@ -434,6 +474,7 @@ pub fn run() {
                 let file_separator = PredefinedMenuItem::separator(app)?;
                 file_menu.append(&new_scene)?;
                 file_menu.append(&new_project)?;
+                file_menu.append(&import_epub)?;
                 file_menu.append(&project_settings)?;
                 file_menu.append(&export)?;
                 file_menu.append(&publish)?;
@@ -495,6 +536,7 @@ pub fn run() {
             "export-document" => Some("prosecraft:export-document"),
             "publish-manuscript" => Some("prosecraft:open-publish"),
             "new-project" => Some("prosecraft:new-project"),
+            "import-epub" => Some("prosecraft:import-epub"),
             "typewriter-mode" => Some("prosecraft:toggle-typewriter"),
             "fade-other-paragraphs" => Some("prosecraft:toggle-fade-paragraphs"),
             "zen-mode" => Some("prosecraft:toggle-zen-mode"),
@@ -515,6 +557,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             update_project_menu,
+            read_import_file,
             set_typewriter_menu_checked,
             set_fade_paragraphs_menu_checked,
             set_zen_mode_menu_checked,
@@ -525,6 +568,7 @@ pub fn run() {
             sync_create_dir,
             sync_remove,
             sync_exists,
+            sync_rename,
             research_prepare_project_folder,
             research_import_file,
             research_file_path,
@@ -584,5 +628,33 @@ mod tests {
         assert!(sync_list_dir(path.clone()).unwrap().is_empty());
         assert!(!sync_exists(path.clone()).unwrap());
         sync_remove(path.clone()).unwrap();
+    }
+
+    #[test]
+    fn sync_rename_replaces_the_destination() {
+        let dir = temp_dir("rename");
+        let source = dir.join("bundle.tmp").to_string_lossy().to_string();
+        let target = dir.join("bundle.prosecraft").to_string_lossy().to_string();
+
+        sync_write_text(source.clone(), "new contents".into()).unwrap();
+        sync_write_text(target.clone(), "old contents".into()).unwrap();
+        sync_rename(source.clone(), target.clone()).unwrap();
+
+        assert!(!sync_exists(source).unwrap());
+        assert_eq!(sync_read_text(target).unwrap(), "new contents");
+        sync_remove(dir.to_string_lossy().to_string()).unwrap();
+    }
+
+    #[test]
+    fn read_import_file_validates_the_selected_path() {
+        let missing = temp_dir("import-missing").join("book.epub");
+        assert!(read_import_file(missing.to_string_lossy().to_string()).is_err());
+
+        let dir = temp_dir("import-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let book = dir.join("book.epub");
+        std::fs::write(&book, b"epub bytes").unwrap();
+        assert!(read_import_file(book.to_string_lossy().to_string()).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
