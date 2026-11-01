@@ -9,6 +9,8 @@ export type InlineStyle = {
 export type InlineRun = InlineStyle & {
   text: string;
   lineBreak?: boolean;
+  /** Inline equation/diagram image. Text is empty when this is present. */
+  image?: { src: string; alt: string; width?: number; height?: number };
 };
 
 export type BlockKind = "paragraph" | "heading" | "quote" | "list" | "image";
@@ -38,6 +40,25 @@ function collectInline(node: Node, style: InlineStyle, output: InlineRun[]) {
     return;
   }
 
+  if (node.tagName === "IMG") {
+    const src = node.getAttribute("src") ?? "";
+    if (/^data:image\/(?:png|jpeg|webp);base64,/.test(src)) {
+      const width = Number(node.getAttribute("width") ?? node.getAttribute("data-display-width"));
+      const height = Number(node.getAttribute("height") ?? node.getAttribute("data-display-height"));
+      output.push({
+        text: "",
+        ...style,
+        image: {
+          src,
+          alt: node.getAttribute("alt") ?? "",
+          ...(Number.isFinite(width) && width > 0 ? { width } : {}),
+          ...(Number.isFinite(height) && height > 0 ? { height } : {})
+        }
+      });
+    }
+    return;
+  }
+
   const next: InlineStyle = { ...style };
   if (node.tagName === "STRONG" || node.tagName === "B") next.bold = true;
   if (node.tagName === "EM" || node.tagName === "I") next.italic = true;
@@ -52,16 +73,19 @@ function collectInline(node: Node, style: InlineStyle, output: InlineRun[]) {
 }
 
 export function trimRuns(runs: InlineRun[]): InlineRun[] {
+  const visible = (run: InlineRun) => run.lineBreak || Boolean(run.image) || run.text.trim().length > 0;
   const result = runs
     .map((run) => ({ ...run }))
-    .filter((run) => run.lineBreak || run.text.length > 0);
-  const first = result.findIndex((run) => run.lineBreak || run.text.trim().length > 0);
+    .filter((run) => run.lineBreak || Boolean(run.image) || run.text.length > 0);
+  const first = result.findIndex(visible);
   if (first < 0) return [];
-  const last = result.length - 1 - [...result].reverse()
-    .findIndex((run) => run.lineBreak || run.text.trim().length > 0);
+  const last = result.length - 1 - [...result].reverse().findIndex(visible);
   const trimmed = result.slice(first, last + 1);
-  if (trimmed.length > 0 && !trimmed[0].lineBreak) trimmed[0].text = trimmed[0].text.trimStart();
-  if (trimmed.length > 0 && !trimmed[trimmed.length - 1].lineBreak) {
+  if (trimmed.length > 0 && !trimmed[0].lineBreak && !trimmed[0].image) {
+    trimmed[0].text = trimmed[0].text.trimStart();
+  }
+  if (trimmed.length > 0 && !trimmed[trimmed.length - 1].lineBreak
+    && !trimmed[trimmed.length - 1].image) {
     trimmed[trimmed.length - 1].text = trimmed[trimmed.length - 1].text.trimEnd();
   }
   return trimmed;
@@ -81,7 +105,8 @@ function splitAroundImages(node: Node): Node[] {
   let current = node.cloneNode(false) as HTMLElement;
   for (const child of Array.from(node.childNodes)) {
     for (const part of splitAroundImages(child)) {
-      if (part instanceof HTMLElement && part.tagName === "IMG") {
+      if (part instanceof HTMLElement && part.tagName === "IMG"
+        && part.getAttribute("data-inline") !== "true") {
         if (current.hasChildNodes()) parts.push(current);
         parts.push(part);
         current = node.cloneNode(false) as HTMLElement;
@@ -108,9 +133,10 @@ export function blocksFromHtml(html: string): Block[] {
       return;
     }
     if (!(node instanceof HTMLElement)) return;
-    if (node.querySelector("img")) {
+    if (node.querySelector('img:not([data-inline="true"])')) {
       for (const part of splitAroundImages(node)) {
-        if (part instanceof HTMLElement && part.tagName === "IMG") {
+        if (part instanceof HTMLElement && part.tagName === "IMG"
+          && part.getAttribute("data-inline") !== "true") {
           const src = part.getAttribute("src") ?? "";
           if (!/^data:image\/(?:png|jpeg|webp);base64,/.test(src)) continue;
           const width = Number(part.getAttribute("width"));

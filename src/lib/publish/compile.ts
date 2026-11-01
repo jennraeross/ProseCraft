@@ -1,4 +1,5 @@
 import { sanitizeHtml } from "../sanitize";
+import { hasRichPlaceholders } from "../rich/model";
 import { chapterLabel } from "./chapters";
 import { countWords, hasVisibleText, htmlToPlainText } from "./content";
 import type { MatterPage } from "./matter";
@@ -48,10 +49,14 @@ export function compileBook(input: CompileInput): CompiledBook {
       if (document.space || document.chapterId !== chapter.id || document.trashed) continue;
       const html = sanitizeHtml(document.content ?? "");
       const text = htmlToPlainText(html);
-      if (!hasVisibleText(text) && !/<img\b[^>]*\bsrc=["']data:image\/(?:png|jpeg|webp);base64,/i.test(html)) continue;
+      const richContent = hasRichPlaceholders(html);
+      if (!hasVisibleText(text) && !richContent
+        && !/<img\b[^>]*\bsrc=["']data:image\/(?:png|jpeg|webp);base64,/i.test(html)) continue;
       // List markers are useful in the plain-text export, but they are not
       // words in the manuscript, so leave them out of the displayed count.
-      const countableText = text.replace(/^(?:•|\d+\.)\s+/gm, "");
+      // Math and diagram source are prose tooling, not manuscript words.
+      const countableText = htmlToPlainText(html, { rich: "omit" })
+        .replace(/^(?:•|\d+\.)\s+/gm, "");
       scenes.push({
         id: document.id,
         sourceId: document.id,

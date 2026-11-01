@@ -36,8 +36,10 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Typewriter mode
 - [x] Focus mode
 - [x] Zen mode
-- [ ] Mathcad
-- [ ] Mermaid
+- [x] LaTeX math (MathJax)
+- [x] Mermaid
+- [ ] MathCAD
+- [ ] Wiki previews
 
 #### Publishing
 - [x] Basic export (PDF, DOCX, Epub, Markdown, HTML, Plain Text)

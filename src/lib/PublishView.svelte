@@ -37,11 +37,14 @@
   import { saveExport } from "./publish/save";
   import { listManuscriptSections } from "./publish/sections";
   import StyleEditorDialog from "./publish/StyleEditorDialog.svelte";
+  import { hasRichPlaceholders } from "./rich/model";
+  import { prepareBookSectionRichContent } from "./rich/prepare";
   import {
     FORMAT_INFO,
     FORMAT_ORDER,
     slugifyFilename,
     type ChapterData,
+    type CompiledBook,
     type CompiledCover,
     type CoverMode,
     type DocumentData,
@@ -134,6 +137,9 @@
   });
   let previewStyle = $derived(resolveStyleTokens(previewOptions.style, previewOptions.customStyles));
   let previewBook = $derived(coverAsset ? { ...compiled, cover: coverAsset } : compiled);
+  let preparedPreviewBook = $state<CompiledBook | null>(null);
+  let richPreparing = $state(false);
+  let richPreviewRequest = 0;
   let coverDesign = $derived(
     COVER_DESIGNS.find((design) => design.id === options.cover.design) ?? COVER_DESIGNS[0]
   );
@@ -178,7 +184,7 @@
     || compiled.backMatter.length > 0
   );
   let paginatedPreview = $derived(options.format === "pdf" || options.format === "docx");
-  let previewHtml = $derived(buildPreviewHtml(previewBook, previewOptions, {
+  let previewHtml = $derived(buildPreviewHtml(preparedPreviewBook ?? previewBook, previewOptions, {
     dark: theme === "dark",
     paginated: paginatedPreview,
     palette: previewPalette,
@@ -246,6 +252,44 @@
     return () => {
       cancelled = true;
     };
+  });
+
+  $effect(() => {
+    const book = previewBook;
+    const section = activePreviewSection;
+    const style = previewStyle;
+    const palette = previewPalette;
+    const request = ++richPreviewRequest;
+    const needsRich = book.chapters.some((chapter) =>
+      chapter.scenes.some((scene) => hasRichPlaceholders(scene.html))
+    );
+    if (!needsRich) {
+      preparedPreviewBook = book;
+      richPreparing = false;
+      return;
+    }
+
+    richPreparing = true;
+    const timer = setTimeout(() => {
+      prepareBookSectionRichContent(book, section, {
+        mode: "svg",
+        bodySizePt: style.bodySizePt,
+        color: palette.ink
+      })
+        .then((prepared) => {
+          if (request !== richPreviewRequest) return;
+          preparedPreviewBook = prepared;
+        })
+        .catch((error) => {
+          console.error("Could not render equations or diagrams for the preview.", error);
+          if (request === richPreviewRequest) preparedPreviewBook = book;
+        })
+        .finally(() => {
+          if (request === richPreviewRequest) richPreparing = false;
+        });
+    }, 140);
+
+    return () => clearTimeout(timer);
   });
 
   $effect(() => {
@@ -1058,6 +1102,7 @@
             Previewing {activePreviewSection.label}.
           {/if}
           Section {previewSectionIndex + 1} of {previewSections.length}.
+          {#if richPreparing}Rendering equations and diagrams…{/if}
           {#if pageEstimate !== null}Estimated {pageEstimate} {pageEstimate === 1 ? "page" : "pages"} for the full book.{/if}
         </p>
       {/if}

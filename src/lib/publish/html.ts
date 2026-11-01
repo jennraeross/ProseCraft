@@ -344,6 +344,46 @@ function manuscriptCss(
       object-fit: contain;
       text-indent: 0;
     }
+    .scene .math-inline {
+      display: inline;
+      text-indent: 0;
+      white-space: nowrap;
+    }
+    .scene .math-inline svg, .scene .math-inline img {
+      display: inline-block;
+      max-width: none;
+      max-height: 1.6em;
+      width: auto;
+      height: auto;
+      margin: 0 0.08em;
+      vertical-align: middle;
+      text-indent: 0;
+    }
+    .scene .math-block, .scene .mermaid-diagram {
+      display: block;
+      max-width: 100%;
+      margin: 0.85em auto;
+      text-align: center;
+      text-indent: 0;
+    }
+    .scene .math-block svg, .scene .math-block img,
+    .scene .mermaid-diagram svg, .scene .mermaid-diagram img {
+      display: block;
+      max-width: 100%;
+      max-height: min(4.5in, calc(var(--page-height) - var(--page-margin-top) - var(--page-margin-bottom) - 2em));
+      width: auto;
+      height: auto;
+      margin: 0 auto;
+      object-fit: contain;
+    }
+    .scene .rich-render-error {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85em;
+      white-space: pre-wrap;
+    }
+    .scene .math-inline:empty::before { content: attr(data-tex); font-family: ui-monospace, monospace; }
+    .scene .math-block:empty::before { content: attr(data-tex); display: block; font-family: ui-monospace, monospace; white-space: pre-wrap; }
+    .scene .mermaid-diagram:empty::before { content: attr(data-source); display: block; font-family: ui-monospace, monospace; white-space: pre-wrap; text-align: left; }
     .scene .eyebrow {
       margin: 0 0 0.6em;
       color: var(--muted);

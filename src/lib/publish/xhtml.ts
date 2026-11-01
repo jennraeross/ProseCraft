@@ -23,6 +23,11 @@ function serializeNode(node: Node, resolveImage?: (src: string) => string): stri
     const classes = ["eyebrow", "drop-cap"].filter((name) => node.classList.contains(name));
     if (classes.length > 0) attributes.push(`class="${classes.join(" ")}"`);
   }
+  if (node.tagName === "SPAN" || node.tagName === "DIV") {
+    const classes = ["math-inline", "math-block", "mermaid-diagram"]
+      .filter((name) => node.classList.contains(name));
+    if (classes.length > 0) attributes.push(`class="${classes.join(" ")}"`);
+  }
   if (node.tagName === "A") {
     const href = node.getAttribute("href");
     if (href) attributes.push(`href="${escapeXmlAttribute(href)}"`);

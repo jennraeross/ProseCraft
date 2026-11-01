@@ -34,6 +34,16 @@
     type SystemFontFamily
   } from "$lib/editor-fonts";
   import { sanitizeHtml as cleanHtml } from "$lib/sanitize";
+  import { countWords, htmlToPlainText } from "$lib/publish/content";
+  import {
+    createRichPlaceholder,
+    MAX_DIAGRAM_SOURCE_LENGTH,
+    MAX_MATH_SOURCE_LENGTH,
+    readRichPlaceholder,
+    richKindOf
+  } from "$lib/rich/model";
+  import { renderRichWidgets } from "$lib/rich/dom";
+  import { renderRich } from "$lib/rich/render";
   import {
     chapterLabel as formatChapterLabel,
     isAutomaticallyNumberedChapter as isAutoNumberedChapter
@@ -296,6 +306,19 @@
   let imageInsertError = $state("");
   let pendingImageRange: Range | null = null;
   let pendingMarkdownImagePosition: number | null = null;
+  type RichDialogKind = "math" | "diagram";
+  let richDialog: HTMLDialogElement;
+  let richDialogOpen = $state(false);
+  let richDialogKind = $state<RichDialogKind>("math");
+  let richSource = $state("");
+  let richDisplay = $state<"inline" | "block">("inline");
+  let richPreviewSvg = $state("");
+  let richPreviewError = $state("");
+  let richPreviewBusy = $state(false);
+  let richDialogError = $state("");
+  let richEditTarget = $state<HTMLElement | null>(null);
+  let savedRichRange: Range | null = null;
+  let richPreviewRequest = 0;
   let preferencesSaved = $state(true);
   let projectSettingsSaved = $state(true);
   let projectName = $state("Untitled Project");
@@ -801,12 +824,12 @@
       activeDocumentId = active.id;
       title = active.title;
       clearRichTextFade();
-      editor.innerHTML = active.content;
+      setEditorContent(active.content);
       setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
     } else {
       activeDocumentId = "";
       title = "";
-      editor.innerHTML = "<p><br></p>";
+      setEditorContent("<p><br></p>");
       setMarkdownSource("");
     }
     refreshCounts();
@@ -1914,7 +1937,7 @@
     if (!markdownEditorMode) return;
     if (saveTimer) clearTimeout(saveTimer);
     const html = cleanHtml(markdownToHtml(markdownSource));
-    editor.innerHTML = html;
+    setEditorContent(html);
     documents = documents.map((doc) => doc.id === activeDocumentId
       ? { ...doc, content: html, markdownSource }
       : doc);
@@ -1937,8 +1960,8 @@
     documents = documents.map((doc) => doc.id === activeDocumentId
       ? { ...doc, content: html, markdownSource }
       : doc);
-    const text = new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
-    wordCount = text.trim().match(/\S+/g)?.length ?? 0;
+    const text = htmlToPlainText(html, { rich: "omit" });
+    wordCount = countWords(text);
     characterCount = text.replace(/\n/g, "").length;
     trackActivity(wordCount - previousWordCount);
     lastEditorWordCount = wordCount;
@@ -2076,6 +2099,15 @@
 
   function handleEditorClick(event: MouseEvent) {
     const target = event.target;
+    const rich = target instanceof Element
+      ? target.closest<HTMLElement>(".math-inline, .math-block, .mermaid-diagram")
+      : null;
+    if (rich && editor.contains(rich)) {
+      event.preventDefault();
+      selectEditorImage(null);
+      openRichDialog(rich.classList.contains("mermaid-diagram") ? "diagram" : "math", rich);
+      return;
+    }
     const image = target instanceof Element ? target.closest("img") : null;
     selectEditorImage(image instanceof HTMLImageElement ? image : null);
   }
@@ -2205,16 +2237,222 @@
     }
   }
 
+  function setEditorContent(html: string) {
+    if (!editor) return;
+    editor.innerHTML = html;
+    void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
+  }
+
+  function captureEditorSelection() {
+    const selection = window.getSelection();
+    if (!editor || !selection || selection.rangeCount === 0) {
+      savedRichRange = null;
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    savedRichRange = editor.contains(range.commonAncestorContainer)
+      ? range.cloneRange()
+      : null;
+  }
+
+  function openRichDialog(kind: RichDialogKind, target: HTMLElement | null = null) {
+    captureEditorSelection();
+    richDialogKind = kind;
+    richEditTarget = target;
+    if (target) {
+      const placeholder = readRichPlaceholder(target);
+      richSource = placeholder?.source ?? "";
+      richDisplay = target.classList.contains("math-block") ? "block" : "inline";
+    } else {
+      richSource = "";
+      richDisplay = "inline";
+    }
+    richDialogError = "";
+    richPreviewError = "";
+    richPreviewSvg = "";
+    richDialogOpen = true;
+    if (richDialog && !richDialog.open) richDialog.showModal();
+  }
+
+  function closeRichDialog() {
+    richDialogOpen = false;
+    if (richDialog?.open) richDialog.close();
+    richEditTarget = null;
+    richDialogError = "";
+    richPreviewSvg = "";
+    richPreviewError = "";
+  }
+
+  function placeCaretIn(node: Node) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    savedRichRange = range.cloneRange();
+  }
+
+  function insertRichPlaceholder(kind: "math-inline" | "math-block" | "diagram", source: string) {
+    if (!editor) return;
+    const placeholder = createRichPlaceholder(kind, source, document);
+    placeholder.setAttribute("contenteditable", "false");
+    editor.focus();
+
+    let range = savedRichRange && editor.contains(savedRichRange.commonAncestorContainer)
+      ? savedRichRange
+      : null;
+    if (!range) {
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0
+        && editor.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+        range = selection.getRangeAt(0).cloneRange();
+      } else {
+        range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+      }
+    }
+
+    if (kind === "math-inline") {
+      range.deleteContents();
+      range.insertNode(placeholder);
+      const space = document.createTextNode(" ");
+      placeholder.after(space);
+      const after = document.createRange();
+      after.setStartAfter(space);
+      after.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(after);
+      savedRichRange = after.cloneRange();
+    } else {
+      const start = range.startContainer instanceof Element
+        ? range.startContainer
+        : range.startContainer.parentElement;
+      const block = start?.closest("p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre") ?? null;
+      const host = block && block !== editor && editor.contains(block) ? block : null;
+      if (host && !host.textContent?.trim()
+        && !host.querySelector("img, .math-inline, .math-block, .mermaid-diagram")) {
+        host.replaceWith(placeholder);
+        const after = document.createElement("p");
+        after.append(document.createElement("br"));
+        placeholder.after(after);
+        placeCaretIn(after);
+      } else if (host) {
+        const after = document.createElement("p");
+        after.append(document.createElement("br"));
+        host.after(placeholder);
+        placeholder.after(after);
+        placeCaretIn(after);
+      } else {
+        editor.append(placeholder);
+        const after = document.createElement("p");
+        after.append(document.createElement("br"));
+        editor.append(after);
+        placeCaretIn(after);
+      }
+    }
+
+    void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
+    handleInput();
+  }
+
+  function saveRichDialog() {
+    const source = richSource.trim();
+    if (!source) {
+      richDialogError = richDialogKind === "diagram"
+        ? "Add a Mermaid definition first."
+        : "Add some LaTeX first.";
+      return;
+    }
+    const kind = richDialogKind === "diagram"
+      ? "diagram"
+      : richDisplay === "block"
+        ? "math-block"
+        : "math-inline";
+    const sourceLimit = kind === "diagram"
+      ? MAX_DIAGRAM_SOURCE_LENGTH
+      : MAX_MATH_SOURCE_LENGTH;
+    if (source.length > sourceLimit) {
+      richDialogError = `Keep the source to ${sourceLimit.toLocaleString()} characters or fewer.`;
+      return;
+    }
+    richDialogError = "";
+
+    if (richEditTarget) {
+      const placeholder = createRichPlaceholder(kind, source, document);
+      placeholder.setAttribute("contenteditable", "false");
+      richEditTarget.replaceWith(placeholder);
+      richEditTarget = null;
+      closeRichDialog();
+      void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
+      handleInput();
+      return;
+    }
+
+    insertRichPlaceholder(kind, source);
+    closeRichDialog();
+  }
+
+  function removeRichTarget() {
+    const target = richEditTarget;
+    if (!target) return;
+    target.remove();
+    richEditTarget = null;
+    if (editor && !editor.textContent?.trim()
+      && !editor.querySelector("img, .math-inline, .math-block, .mermaid-diagram")) {
+      setEditorContent("<p><br></p>");
+    }
+    closeRichDialog();
+    handleInput();
+  }
+
+  $effect(() => {
+    const source = richSource.trim();
+    const kind = richDialogKind;
+    const display = richDisplay;
+    if (!richDialogOpen || !source) {
+      richPreviewSvg = "";
+      richPreviewError = "";
+      richPreviewBusy = false;
+      return;
+    }
+    const request = ++richPreviewRequest;
+    richPreviewBusy = true;
+    const timer = setTimeout(() => {
+      const richKind = kind === "diagram"
+        ? "diagram"
+        : display === "block"
+          ? "math-block"
+          : "math-inline";
+      renderRich(richKind, source, { mode: "svg", bodySizePt: 12 })
+        .then((rendered) => {
+          if (request !== richPreviewRequest) return;
+          richPreviewSvg = rendered.svg ?? "";
+          richPreviewError = "";
+        })
+        .catch((error) => {
+          if (request !== richPreviewRequest) return;
+          richPreviewSvg = "";
+          richPreviewError = error instanceof Error ? error.message : "Could not render that content.";
+        })
+        .finally(() => {
+          if (request === richPreviewRequest) richPreviewBusy = false;
+        });
+    }, 220);
+    return () => clearTimeout(timer);
+  });
+
   function refreshCounts() {
-    const text = editor?.innerText ?? "";
-    const words = text.trim().match(/\S+/g) ?? [];
-    wordCount = words.length;
+    const html = cleanHtml(editor?.innerHTML ?? "");
+    const text = htmlToPlainText(html, { rich: "omit" });
+    wordCount = countWords(text);
     characterCount = text.replace(/\n/g, "").length;
   }
 
   function countHtmlWords(html: string) {
-    const parsed = new DOMParser().parseFromString(html, "text/html");
-    return parsed.body.textContent?.trim().match(/\S+/g)?.length ?? 0;
+    return countWords(htmlToPlainText(cleanHtml(html), { rich: "omit" }));
   }
 
   function dateKey(date: Date) {
@@ -2306,7 +2544,7 @@
     activeDocumentId = next.id;
     title = next.title;
     clearRichTextFade();
-    editor.innerHTML = cleanHtml(next.content);
+    setEditorContent(cleanHtml(next.content));
     setMarkdownSource(next.markdownSource ?? htmlToMarkdown(next.content));
     refreshCounts();
     lastEditorWordCount = wordCount;
@@ -2334,7 +2572,7 @@
     activeDocumentId = next.id;
     title = next.title;
     clearRichTextFade();
-    editor.innerHTML = next.content;
+    setEditorContent(next.content);
     setMarkdownSource("");
     refreshCounts();
     lastEditorWordCount = wordCount;
@@ -2670,7 +2908,7 @@
     activeDocumentId = next.id;
     title = next.title;
     clearRichTextFade();
-    editor.innerHTML = next.content;
+    setEditorContent(next.content);
     setMarkdownSource("");
     refreshCounts();
     lastEditorWordCount = wordCount;
@@ -3236,7 +3474,7 @@
       } else {
         activeDocumentId = "";
         title = "";
-        editor.innerHTML = "<p><br></p>";
+        setEditorContent("<p><br></p>");
         setMarkdownSource("");
         refreshCounts();
       }
@@ -3259,7 +3497,7 @@
       } else {
         activeDocumentId = "";
         title = "";
-        editor.innerHTML = "<p><br></p>";
+        setEditorContent("<p><br></p>");
         setMarkdownSource("");
         refreshCounts();
       }
@@ -3490,12 +3728,12 @@
       if (active) {
         activeDocumentId = active.id;
         title = active.title;
-        editor.innerHTML = active.content;
+        setEditorContent(active.content);
         setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
       } else {
         activeDocumentId = "";
         title = "";
-        editor.innerHTML = "<p><br></p>";
+        setEditorContent("<p><br></p>");
         setMarkdownSource("");
       }
       activeProjectId = crypto.randomUUID();
@@ -3506,7 +3744,7 @@
       saveState = "Could not load saved document";
       chapters = [{ id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" }];
       documents = [{ id: "welcome", title, content: starterContent, chapterId: chapters[0].id }];
-      editor.innerHTML = starterContent;
+      setEditorContent(starterContent);
       setMarkdownSource(htmlToMarkdown(starterContent));
     }
     refreshCounts();
@@ -4104,6 +4342,8 @@
           <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <span class="toolbar-divider"></span>
           <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.3" width="14.4" height="13.4" rx="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.4" r="1.4" stroke="currentColor" stroke-width="1.2"/><path d="m4.2 14.8 4-4 2.5 2.5 2-2 3.1 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><span aria-hidden="true" class="math-tool-mark">Σ</span></button>
+          <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.2" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="11.6" y="12.6" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M8.4 5.3h1.8a2 2 0 0 1 2 2v5.3m0 0-1.8-1.8m1.8 1.8 1.8-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
         {/if}
 
@@ -4847,6 +5087,77 @@
   </form>
 </dialog>
 
+<dialog class="settings-dialog rich-dialog" bind:this={richDialog} onclick={(event) => {
+  if (event.target === richDialog) closeRichDialog();
+}} onclose={() => { richDialogOpen = false; }}>
+  <form onsubmit={(event) => { event.preventDefault(); saveRichDialog(); }}>
+    <div class="settings-header">
+      <div>
+        <span class="settings-kicker">{richDialogKind === "diagram" ? "DIAGRAM" : "EQUATION"}</span>
+        <h2>{richEditTarget ? "Edit" : "Insert"} {richDialogKind === "diagram" ? "diagram" : "equation"}</h2>
+      </div>
+      <button class="close-settings" aria-label="Close equation and diagram editor" type="button" onclick={closeRichDialog}>×</button>
+    </div>
+    <div class="settings-body rich-dialog-body">
+      {#if richDialogKind === "math"}
+        <div class="rich-kind-toggle" role="group" aria-label="Equation layout">
+          <button type="button" class:active={richDisplay === "inline"} onclick={() => (richDisplay = "inline")}>Inline</button>
+          <button type="button" class:active={richDisplay === "block"} onclick={() => (richDisplay = "block")}>Block</button>
+        </div>
+        <label class="preference-label" for="rich-math-source">LaTeX</label>
+        <textarea
+          id="rich-math-source"
+          class="preference-select rich-source"
+          rows="5"
+          maxlength={MAX_MATH_SOURCE_LENGTH}
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder="E = mc^2"
+          bind:value={richSource}
+        ></textarea>
+        <p class="rich-help">Inline equations sit in a sentence; block equations centre on their own line.</p>
+      {:else}
+        <label class="preference-label" for="rich-diagram-source">Mermaid</label>
+        <textarea
+          id="rich-diagram-source"
+          class="preference-select rich-source"
+          rows="9"
+          maxlength={MAX_DIAGRAM_SOURCE_LENGTH}
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder={"graph TD\n  A[Start] --> B[Finish]"}
+          bind:value={richSource}
+        ></textarea>
+        <p class="rich-help">Use any Mermaid diagram type, such as flowchart, sequence, class, state, or gantt.</p>
+      {/if}
+      <div class="rich-preview-frame" aria-live="polite">
+        {#if richPreviewBusy}
+          <span class="rich-preview-status">Rendering…</span>
+        {:else if richPreviewError}
+          <p class="preference-error rich-preview-error">{richPreviewError}</p>
+        {:else if richPreviewSvg}
+          <div class="rich-preview">{@html richPreviewSvg}</div>
+        {:else}
+          <span class="rich-preview-status">Preview appears here.</span>
+        {/if}
+      </div>
+      {#if richDialogError}<p class="preference-error" role="alert">{richDialogError}</p>{/if}
+    </div>
+    <div class="settings-footer">
+      <span>Saved as editable source.</span>
+      <div class="rich-dialog-actions">
+        {#if richEditTarget}
+          <button type="button" class="rich-remove" onclick={removeRichTarget}>Remove</button>
+        {/if}
+        <button type="button" class="rich-cancel" onclick={closeRichDialog}>Cancel</button>
+        <button type="submit" class="done-button">{richEditTarget ? "Update" : "Insert"}</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
 <input
   class="data-file-input"
   type="file"
@@ -5252,6 +5563,7 @@
   .image-insert-button { margin-left: auto; }
   .document-meta .markdown-mode-toggle + .image-insert-button { margin-left: 0; }
   .image-tool-button { font-size: 17px; }
+  .math-tool-mark { font-family: Georgia, serif; font-size: 16px; line-height: 1; }
   .image-insert-error { margin: 8px 0 0; color: var(--danger, #b42318); font-size: 11px; }
   .image-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 12px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
   .image-edit-label { margin: 0 4px; color: var(--text-muted); font-size: 10px; }
@@ -5283,6 +5595,11 @@
   .editor-content :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
   .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
+  .editor-content :global(.math-inline) { display: inline; white-space: nowrap; }
+  .editor-content :global(.math-inline svg) { display: inline-block; max-width: 100%; max-height: 1.6em; width: auto; height: auto; vertical-align: middle; }
+  .editor-content :global(.math-block), .editor-content :global(.mermaid-diagram) { display: block; max-width: 100%; margin: .85em auto; text-align: center; }
+  .editor-content :global(.math-block svg), .editor-content :global(.mermaid-diagram svg) { display: block; max-width: 100%; max-height: 60vh; width: auto; height: auto; margin: 0 auto; }
+  .editor-content :global(.rich-render-error) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; white-space: pre-wrap; }
   .editor-content :global(pre) { overflow-x: auto; padding: 12px 14px; border-radius: 5px; background: var(--surface-raised); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; line-height: 1.55; }
   .editor-content :global(code) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
   .editor-content :global(table) { width: 100%; border-collapse: collapse; font-size: .9em; }
@@ -5374,6 +5691,26 @@
   .preference-select { width: 100%; height: 35px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
   .research-link-label { margin-top: 14px; }
   .research-link-description { height: auto; min-height: 68px; padding: 8px 9px; resize: vertical; font-family: inherit; line-height: 1.45; }
+  .rich-dialog form { margin: 0; }
+  .rich-dialog-body { padding-bottom: 18px; }
+  .rich-kind-toggle { display: inline-flex; margin-bottom: 14px; border: 1px solid var(--border-control); border-radius: 6px; overflow: hidden; }
+  .rich-kind-toggle button { height: 27px; padding: 0 14px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 10px; }
+  .rich-kind-toggle button + button { border-left: 1px solid var(--border-control); }
+  .rich-kind-toggle button.active { background: var(--selected-bg); color: var(--selected-text); }
+  .rich-kind-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .rich-source { height: auto; min-height: 96px; padding: 8px 9px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; }
+  .rich-help { margin: 7px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+  .rich-preview-frame { display: grid; min-height: 96px; margin-top: 14px; padding: 12px; place-items: center; overflow: auto; border: 1px dashed var(--border-control); border-radius: 7px; background: var(--control-bg); }
+  .rich-preview { display: flex; width: 100%; align-items: center; justify-content: center; color: var(--text-heading); }
+  .rich-preview :global(svg) { max-width: 100%; height: auto; max-height: 240px; }
+  .rich-preview-status { color: var(--text-muted); font-size: 10px; }
+  .rich-preview-error { margin: 0; text-align: center; }
+  .rich-dialog-actions { display: flex; align-items: center; gap: 8px; }
+  .rich-cancel, .rich-remove { height: 30px; padding: 0 12px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
+  .rich-cancel:hover { border-color: var(--accent); color: var(--text-heading); }
+  .rich-remove { border-color: transparent; background: transparent; color: var(--danger); }
+  .rich-remove:hover { background: var(--hover-bg); }
+  .rich-cancel:focus-visible, .rich-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .project-author-label { margin-top: 16px; }
   .preference-select:focus-visible, .close-settings:focus-visible, .done-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .preference-error { margin: 12px 0 0; color: var(--danger); font-size: 10px; }

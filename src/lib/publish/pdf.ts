@@ -18,6 +18,7 @@ type TextToken = {
   isSpace: boolean;
   lineBreak?: boolean;
   run: InlineRun;
+  image?: { src: string; fileType: string; width: number; height: number };
 };
 
 type WrappedLine = {
@@ -174,6 +175,26 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
         tokens.push({ text: "", width: 0, isSpace: false, lineBreak: true, run });
         continue;
       }
+      if (run.image) {
+        const properties = doc.getImageProperties(run.image.src);
+        const naturalWidth = run.image.width ?? properties.width;
+        const naturalHeight = run.image.height ?? properties.height;
+        const height = size * 1.15;
+        const width = Math.max(1, height * (naturalWidth / naturalHeight));
+        tokens.push({
+          text: "",
+          width,
+          isSpace: false,
+          run,
+          image: {
+            src: run.image.src,
+            fileType: properties.fileType,
+            width,
+            height
+          }
+        });
+        continue;
+      }
       const parts = run.text.split(/(\s+)/).filter((part) => part.length > 0);
       for (const part of parts) {
         const isSpace = /^\s+$/.test(part);
@@ -241,6 +262,26 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
         pushLine();
         continue;
       }
+      if (token.image) {
+        if (lineWidth + token.width > available && current.some((item) => !item.isSpace)) {
+          pushLine();
+        }
+        if (token.width > available) {
+          const scale = available / token.width;
+          token = {
+            ...token,
+            width: available,
+            image: {
+              ...token.image,
+              width: available,
+              height: token.image.height * scale
+            }
+          };
+        }
+        current.push(token);
+        lineWidth += token.width;
+        continue;
+      }
       if (token.isSpace) {
         if (current.length === 0) continue;
         if (lineWidth + token.width > available) {
@@ -287,6 +328,20 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     let cursor = x;
     doc.setDrawColor(INK[0], INK[1], INK[2]);
     for (const token of line.tokens) {
+      if (token.image) {
+        doc.addImage(
+          token.image.src,
+          token.image.fileType,
+          cursor,
+          baseline - token.image.height * 0.82,
+          token.image.width,
+          token.image.height,
+          undefined,
+          "FAST"
+        );
+        cursor += token.width;
+        continue;
+      }
       setFont(fontStyle(token.run, forceBold, forceItalic), size);
       doc.text(token.text, cursor, baseline);
       if (token.run.underline) {

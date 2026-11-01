@@ -25,7 +25,7 @@ import {
 } from "docx";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens } from "./presets";
-import { decodeEmbeddedImage } from "./embedded-image";
+import { decodeEmbeddedImage, type EmbeddedImageAsset } from "./embedded-image";
 import { blocksFromHtml, trimRuns, type Block, type InlineRun } from "./rich-text";
 import {
   FORMAT_INFO,
@@ -57,9 +57,27 @@ function linesToTextRuns(text: string, textOptions: Omit<IRunOptions, "text" | "
   ]);
 }
 
-function inlineToChildren(runs: InlineRun[]): ParagraphChild[] {
+function inlineToChildren(
+  runs: InlineRun[],
+  images: Map<string, EmbeddedImageAsset>,
+  bodySizePt: number
+): ParagraphChild[] {
   return runs.map((run) => {
     if (run.lineBreak) return new TextRun({ break: 1 });
+    if (run.image) {
+      const image = images.get(run.image.src);
+      if (!image) return new TextRun({ text: run.image.alt || "[image]" });
+      const targetHeight = bodySizePt * 96 / 72 * 1.15;
+      const aspect = (run.image.width ?? image.width) / (run.image.height ?? image.height);
+      const height = Math.max(1, Math.round(targetHeight));
+      const width = Math.max(1, Math.round(height * aspect));
+      return new ImageRun({
+        data: image.bytes,
+        type: image.extension,
+        transformation: { width, height },
+        altText: { name: run.image.alt || "Equation", description: run.image.alt ?? "" }
+      });
+    }
     if (run.link) {
       return new ExternalHyperlink({
         link: run.link,
@@ -74,19 +92,23 @@ function blockToParagraph(block: Block, options: {
   firstInScene: boolean;
   dropCap: boolean;
   bodyStyle: string;
+  inlineImages: Map<string, EmbeddedImageAsset>;
+  bodySizePt: number;
 }): Paragraph[] {
+  const children = (runs: InlineRun[]) =>
+    inlineToChildren(runs, options.inlineImages, options.bodySizePt);
   if (block.kind === "image") return [];
   if (block.kind === "heading") {
     return [new Paragraph({
       style: block.level === 1 ? "SceneHeading1" : block.level === 2 ? "SceneHeading2" : "SceneHeading3",
-      children: inlineToChildren(block.runs)
+      children: children(block.runs)
     })];
   }
 
   if (block.kind === "quote") {
     return [new Paragraph({
       style: "Quote",
-      children: inlineToChildren(block.runs)
+      children: children(block.runs)
     })];
   }
 
@@ -94,14 +116,14 @@ function blockToParagraph(block: Block, options: {
     const marker = new TextRun({ text: `${block.marker} `, ...runOptions({ text: "" }) });
     return [new Paragraph({
       style: "ListParagraph",
-      children: [marker, ...inlineToChildren(block.runs)]
+      children: [marker, ...children(block.runs)]
     })];
   }
 
   if (block.eyebrow) {
     return [new Paragraph({
       style: "Eyebrow",
-      children: inlineToChildren(block.runs)
+      children: children(block.runs)
     })];
   }
 
@@ -142,7 +164,7 @@ function blockToParagraph(block: Block, options: {
   paragraphs.push(new Paragraph({
     style: options.bodyStyle,
     indent: options.firstInScene || options.dropCap ? { firstLine: 0 } : undefined,
-    children: inlineToChildren(runs)
+    children: children(runs)
   }));
   return paragraphs;
 }
@@ -345,6 +367,14 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
         }));
       }
       const blocks = blocksFromHtml(scene.html);
+      const inlineImages = new Map<string, EmbeddedImageAsset>();
+      for (const block of blocks) {
+        for (const run of block.runs) {
+          if (run.image && !inlineImages.has(run.image.src)) {
+            inlineImages.set(run.image.src, await decodeEmbeddedImage(run.image.src));
+          }
+        }
+      }
       const dropCapIndex = options.dropCaps && tokens.dropCap && sceneIndex === 0
         ? blocks.findIndex((block) => block.kind === "paragraph" && !block.eyebrow)
         : -1;
@@ -356,7 +386,9 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
         body.push(...blockToParagraph(block, {
           firstInScene: blockIndex === 0,
           dropCap: blockIndex === dropCapIndex,
-          bodyStyle: "BodyText"
+          bodyStyle: "BodyText",
+          inlineImages,
+          bodySizePt: tokens.bodySizePt
         }));
       }
       if (sceneIndex < chapter.scenes.length - 1) {

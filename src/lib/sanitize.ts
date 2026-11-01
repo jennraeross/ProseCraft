@@ -1,3 +1,5 @@
+import { normalizedRichPlaceholder, richKindOf } from "./rich/model";
+
 const safeTags = new Set([
   "A", "B", "BLOCKQUOTE", "BR", "CODE", "DEL", "DIV", "EM", "H1", "H2", "H3", "HR", "I",
   "IMG", "LI", "OL", "P", "PRE", "S", "STRIKE", "STRONG", "TABLE", "TBODY", "TD", "TH",
@@ -17,6 +19,12 @@ export function isEmbeddedImageSrc(src: string): boolean {
 function cleanNode(node: Node): Node | null {
   if (node.nodeType === Node.TEXT_NODE) return node.cloneNode();
   if (!(node instanceof HTMLElement)) return null;
+
+  if (richKindOf(node)) {
+    // Equations and diagrams persist as source only. Any rendered SVG or
+    // pasted markup inside the widget is discarded here.
+    return normalizedRichPlaceholder(node);
+  }
 
   if (!safeTags.has(node.tagName)) {
     const fragment = document.createDocumentFragment();

@@ -222,6 +222,11 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
 .scene li { text-indent: 0; }
 .scene a { color: inherit; text-decoration-color: #b9bdb5; text-underline-offset: 2px; }
 .scene img { display: block; max-width: 100%; max-height: min(4in, 60vh); height: auto; margin: 0.75em auto; object-fit: contain; }
+.scene .math-inline { display: inline; text-indent: 0; white-space: nowrap; }
+.scene .math-inline img { display: inline-block; max-width: none; max-height: 1.6em; width: auto; height: auto; margin: 0 0.08em; vertical-align: middle; }
+.scene .math-block, .scene .mermaid-diagram { display: block; max-width: 100%; margin: 0.85em auto; text-align: center; text-indent: 0; }
+.scene .math-block img, .scene .mermaid-diagram img { display: block; max-width: 100%; max-height: 60vh; width: auto; height: auto; margin: 0 auto; object-fit: contain; }
+.scene .rich-render-error { font-family: monospace; font-size: 0.85em; white-space: pre-wrap; }
 .scene .eyebrow {
   margin: 0 0 0.6em;
   color: #777;
