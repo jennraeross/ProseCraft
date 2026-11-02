@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate tag and app versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { execFileSync } from "node:child_process";
+
+          const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
+          const lockVersion = JSON.parse(readFileSync("package-lock.json", "utf8")).packages[""].version;
+          const tauriVersion = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+          const cargoMetadata = JSON.parse(execFileSync(
+            "cargo",
+            ["metadata", "--locked", "--format-version", "1", "--no-deps"],
+            { cwd: "src-tauri", encoding: "utf8" },
+          ));
+          const cargoVersion = cargoMetadata.packages.find((pkg) => pkg.name === "prosecraft")?.version;
+          const versions = {
+            "package.json": packageVersion,
+            "package-lock.json": lockVersion,
+            "src-tauri/tauri.conf.json": tauriVersion,
+            "src-tauri/Cargo.toml and Cargo.lock": cargoVersion,
+          };
+          const expectedVersion = process.env.RELEASE_TAG.startsWith("v")
+            ? process.env.RELEASE_TAG.slice(1)
+            : "";
+
+          for (const [file, version] of Object.entries(versions)) {
+            if (!version || version !== expectedVersion) {
+              throw new Error(
+                `${file} has version ${version ?? "missing"}; expected ${expectedVersion || "a v-prefixed tag version"}`,
+              );
+            }
+          }
+          NODE
+
+  build:
+    needs: validate-version
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-24.04
+            rust-target: ""
+            args: ""
+          - platform: windows-latest
+            rust-target: ""
+            args: ""
+          - platform: macos-latest
+            rust-target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - platform: macos-latest
+            rust-target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ProseCraft ${{ github.ref_name }}
+          releaseBody: Installers for ProseCraft ${{ github.ref_name }}.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          release_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false \
+            -F prerelease=false

@@ -10,6 +10,22 @@ This application is built with AI, on a base of Tauri, Typescript, and Svelte.
 
 To build it yourself, clone the repo, enter it's directory and run `npm install && npm run tauri build`
 
+### Creating a release
+
+Commit and push the GitHub Actions release workflow before the first release. With a clean
+working tree on the branch you want to release, run one of:
+
+```sh
+npm run release -- patch
+npm run release -- minor
+npm run release -- major
+```
+
+The command increments the version in the frontend and Tauri manifests, creates a release
+commit and `vX.Y.Z` tag, and pushes both to `origin`. The tag triggers the installer builds
+and GitHub Release publication. Add `--dry-run` to check the proposed version without
+changing files or pushing.
+
 ![Outlining](<Screenshots/1.27.03 PM.png>)
 ![Storyboarding](<Screenshots/1.27.36 PM.png>)
 ![Publishing](<Screenshots/1.27.58 PM.png>)
@@ -23,7 +39,6 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 - [x] Basic storyboard diagrams (lines, arrows, boxes, and adjustable-size text) with pan tool
 - [x] Full timeline support
 - [ ] Image support
-- [ ] Plot grid
 
 #### Writing
 - [x] Rich text editor
