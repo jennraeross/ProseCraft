@@ -64,10 +64,16 @@ function projectFixture(id = "project-1", name = "Test Novel"): ProjectData {
         id: "card-1",
         sourceId: "chapter-1",
         rowId: "row-1",
+        x: 40,
+        y: 40,
         kind: "chapter",
         title: "Opening",
         note: "It begins."
       }
+    ],
+    storyboardDrawings: [
+      { id: "drawing-1", type: "box", x: 120, y: 80, width: 180, height: 100 },
+      { id: "drawing-2", type: "text", x: 140, y: 100, width: 140, height: 48, text: "Opening", fontSize: 20 }
     ],
     timelineNodes: [
       { id: "timeline-1", title: "Day One", date: "2026-01-01", time: "", description: "Start" }
@@ -168,11 +174,21 @@ describe("open-folder sync", () => {
       .toBe("Protagonist");
     expect(project.project.storyboardRows?.map((row) => row.id)).toEqual(["row-1", "row-2"]);
     expect(project.project.storyboardCards?.[0].note).toBe("It begins.");
+    expect(project.project.storyboardCards?.[0]).toMatchObject({ x: 40, y: 40 });
+    expect(project.project.storyboardDrawings).toEqual([
+      { id: "drawing-1", type: "box", x: 120, y: 80, width: 180, height: 100 },
+      { id: "drawing-2", type: "text", x: 140, y: 100, width: 140, height: 48, text: "Opening", fontSize: 20 }
+    ]);
     expect(project.project.timelineNodes?.[0].title).toBe("Day One");
     expect(project.project.noteFolders?.[0].title).toBe("Notes");
     expect(project.project.documents[0].markdownSource).toContain("# Chapter One");
     expect(project.project.documents[0].content).toContain("<strong>dark</strong>");
     expect(projectsHaveSameContent(first.projects[0].project, project.project)).toBe(true);
+    expect(projectsHaveSameContent(project.project, {
+      ...project.project,
+      storyboardDrawings: project.project.storyboardDrawings?.map((drawing) =>
+        drawing.type === "text" ? { ...drawing, text: "Changed" } : drawing)
+    })).toBe(false);
 
     const second = await new OpenFolderSyncProvider(fs)
       .sync("", [first.projects[0]], first.lastSynced, 1_100, "device-a");

@@ -118,6 +118,7 @@ export function projectContentKey(project: ProjectData): string {
     activity: project.activity,
     storyboardCards: project.storyboardCards ?? [],
     storyboardRows: project.storyboardRows ?? [],
+    storyboardDrawings: project.storyboardDrawings ?? [],
     timelineNodes: project.timelineNodes ?? [],
     noteFolders: project.noteFolders ?? [],
     researchFolderName: project.researchFolderName ?? "",

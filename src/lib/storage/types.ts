@@ -15,10 +15,47 @@ export type StoryboardCard = {
   id: string;
   sourceId: string;
   rowId: string;
+  x: number;
+  y: number;
   kind: StoryboardKind;
   title: string;
   note: string;
 };
+export type StoryboardDrawing =
+  | {
+      id: string;
+      type: "line";
+      startX: number;
+      startY: number;
+      endX: number;
+      endY: number;
+    }
+  | {
+      id: string;
+      type: "arrow";
+      startX: number;
+      startY: number;
+      endX: number;
+      endY: number;
+    }
+  | {
+      id: string;
+      type: "box";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }
+  | {
+      id: string;
+      type: "text";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      text: string;
+      fontSize: number;
+    };
 export type TimelineNode = {
   id: string;
   title: string;
@@ -43,6 +80,7 @@ export type ProjectData = {
   activity: Record<string, ActivityRecord>;
   storyboardCards?: StoryboardCard[];
   storyboardRows?: StoryboardRow[];
+  storyboardDrawings?: StoryboardDrawing[];
   timelineNodes?: TimelineNode[];
   noteFolders?: NoteFolder[];
   researchFolderName?: string;

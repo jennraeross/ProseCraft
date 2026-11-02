@@ -103,11 +103,22 @@
   } from "$lib/storage/repository";
   import { readEncryptedBundleHint } from "$lib/storage/encrypted-bundle";
   import { clearSyncState, loadSyncState, saveSyncState } from "$lib/storage/sync/state";
+  import {
+    boardPointAtViewportCenter,
+    boardPointFromClient,
+    drawingBoundsFromPoints,
+    moveStoryboardDrawing,
+    normalizeStoryboardDrawings,
+    positionStoryboardCards,
+    resizeStoryboardDrawing,
+    type BoardPoint
+  } from "$lib/storyboard-layout";
   import type { SyncMode, SyncProvider } from "$lib/storage/sync/types";
   import type {
     ActivityRecord,
     ProjectData,
     StoryboardCard,
+    StoryboardDrawing,
     StoryboardKind,
     StoryboardRow,
     TimelineNode
@@ -231,7 +242,31 @@
     pointerId: number;
     kind: StoryboardKind | "board-card";
     sourceId: string;
+    offsetX: number;
+    offsetY: number;
   };
+  type BoardPanDrag = {
+    pointerId: number | "touch";
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  };
+  type StoryboardDrawingTool = "select" | "pan" | "line" | "arrow" | "box" | "text";
+  type StoryboardDrawingInteraction = {
+    pointerId: number;
+    mode: "create" | "move" | "resize";
+    start: BoardPoint;
+    original: StoryboardDrawing;
+  };
+  const storyboardDrawingTools: { tool: StoryboardDrawingTool; label: string; glyph: string }[] = [
+    { tool: "select", label: "Select", glyph: "↖" },
+    { tool: "pan", label: "Pan", glyph: "✋" },
+    { tool: "line", label: "Line", glyph: "／" },
+    { tool: "arrow", label: "Arrow", glyph: "➜" },
+    { tool: "box", label: "Box", glyph: "□" },
+    { tool: "text", label: "Text", glyph: "T" }
+  ];
   type NoteTreeItem =
     | { kind: "folder"; folder: NoteFolder; depth: number }
     | { kind: "document"; document: DocumentData; depth: number };
@@ -363,8 +398,19 @@
   let draggedChapterId = $state<string | null>(null);
   let chapterDragPointerId = $state<number | null>(null);
   let boardDragSource = $state<BoardDragSource | null>(null);
-  let boardDropTarget = $state<{ rowId: string; index: number } | null>(null);
+  let boardDropPosition = $state<BoardPoint | null>(null);
+  let boardViewport = $state<HTMLDivElement>();
+  let boardPan = $state<BoardPoint>({ x: 0, y: 0 });
+  let boardPanDrag = $state<BoardPanDrag | null>(null);
+  let boardTouchPoints = $state<Map<number, BoardPoint>>(new Map());
+  let boardSpacePan = $state(false);
   let storyboardCards = $state<StoryboardCard[]>([]);
+  let storyboardDrawings = $state<StoryboardDrawing[]>([]);
+  let activeDrawingTool = $state<StoryboardDrawingTool>("select");
+  let defaultStoryboardTextFontSize = $state(14);
+  let selectedDrawingId = $state<string | null>(null);
+  let editingDrawingId = $state<string | null>(null);
+  let drawingInteraction = $state<StoryboardDrawingInteraction | null>(null);
   let storyboardRows = $state<StoryboardRow[]>([]);
   let timelineNodes = $state<TimelineNode[]>([]);
   let workspaceView = $state<WorkspaceView>("writing");
@@ -692,6 +738,7 @@
       activity,
       storyboardCards,
       storyboardRows,
+      storyboardDrawings,
       timelineNodes,
       noteFolders,
       researchFolderName,
@@ -741,6 +788,7 @@
 
   function loadProject(project: ProjectData) {
     activeProjectId = project.id;
+    boardPan = { x: 0, y: 0 };
     projectName = project.name;
     authorName = project.author;
     noteFolders = normalizeNoteFolders(project.noteFolders);
@@ -796,10 +844,14 @@
         && typeof card.title === "string"
         && typeof card.note === "string")
       : [];
-    storyboardCards = savedCards.map((card) => ({
+    storyboardCards = positionStoryboardCards(savedCards.map((card) => ({
       ...card,
       rowId: typeof card.rowId === "string" && rowIds.has(card.rowId) ? card.rowId : defaultRowId
-    }));
+    })), storyboardRows);
+    storyboardDrawings = normalizeStoryboardDrawings(project.storyboardDrawings);
+    selectedDrawingId = null;
+    editingDrawingId = null;
+    drawingInteraction = null;
     // Older projects kept chapter notes only on Storyboard cards. Promote the
     // first non-empty note to the chapter summary, then make every chapter card
     // mirror that canonical summary.
@@ -2685,38 +2737,354 @@
     chapterDragPointerId = null;
     dropTargetChapterId = null;
     boardDragSource = null;
-    boardDropTarget = null;
+    boardDropPosition = null;
+    boardPanDrag = null;
+    boardTouchPoints = new Map();
+    cancelStoryboardDrawingInteraction();
   }
 
   function startStoryboardDrag(event: PointerEvent, kind: BoardDragSource["kind"], sourceId: string) {
     if (event.button !== 0) return;
     event.preventDefault();
-    boardDragSource = { pointerId: event.pointerId, kind, sourceId };
-    boardDropTarget = null;
-  }
-
-  function updateStoryboardDropTarget(event: PointerEvent) {
-    if (boardDragSource?.pointerId !== event.pointerId) return;
-    const target = document.elementFromPoint(event.clientX, event.clientY)
-      ?.closest<HTMLElement>("[data-board-row-id][data-board-drop-index]");
-    boardDropTarget = target
-      ? { rowId: target.dataset.boardRowId ?? "", index: Number(target.dataset.boardDropIndex) }
+    const handle = event.currentTarget as HTMLElement;
+    const card = kind === "board-card"
+      ? handle.closest<HTMLElement>("[data-board-card-id]")
       : null;
+    const rect = card?.getBoundingClientRect();
+    boardDragSource = {
+      pointerId: event.pointerId,
+      kind,
+      sourceId,
+      offsetX: rect ? event.clientX - rect.left : 110,
+      offsetY: rect ? event.clientY - rect.top : 80
+    };
+    boardDropPosition = null;
+    handle.setPointerCapture(event.pointerId);
   }
 
-  function orderedStoryboardCards(cards: StoryboardCard[]) {
-    return storyboardRows.flatMap((row) => cards.filter((card) => card.rowId === row.id));
+  function boardPositionForPointer(event: PointerEvent, drag: BoardDragSource): BoardPoint | null {
+    const viewport = boardViewport;
+    if (!viewport) return null;
+    const rect = viewport.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right
+      || event.clientY < rect.top || event.clientY > rect.bottom) {
+      return null;
+    }
+    const point = boardPointFromClient(event.clientX, event.clientY, rect, boardPan);
+    return { x: point.x - drag.offsetX, y: point.y - drag.offsetY };
   }
 
-  function insertStoryboardCard(card: StoryboardCard, rowId: string, index: number) {
-    const destination = storyboardCards.filter((item) => item.rowId === rowId && item.id !== card.id);
-    destination.splice(Math.max(0, Math.min(index, destination.length)), 0, { ...card, rowId });
-    const next = [...storyboardCards.filter((item) => item.rowId !== rowId && item.id !== card.id), ...destination];
-    storyboardCards = orderedStoryboardCards(next);
+  function updateStoryboardDrag(event: PointerEvent) {
+    const drag = boardDragSource;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    boardDropPosition = boardPositionForPointer(event, drag);
+  }
+
+  function startStoryboardPan(event: PointerEvent) {
+    if (event.pointerType === "touch") {
+      const points = new Map(boardTouchPoints);
+      points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      boardTouchPoints = points;
+      if (points.size >= 2 && !boardPanDrag) {
+        cancelStoryboardDrawingInteraction();
+        const [first, second] = [...points.values()];
+        boardPanDrag = {
+          pointerId: "touch",
+          startX: (first.x + second.x) / 2,
+          startY: (first.y + second.y) / 2,
+          originX: boardPan.x,
+          originY: boardPan.y
+        };
+      }
+      return;
+    }
+    if (event.button !== 1
+      && !(event.button === 0 && (boardSpacePan || activeDrawingTool === "pan"))) return;
+    event.preventDefault();
+    boardViewport?.focus({ preventScroll: true });
+    boardPanDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: boardPan.x,
+      originY: boardPan.y
+    };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function updateStoryboardPan(event: PointerEvent) {
+    if (event.pointerType === "touch" && boardTouchPoints.has(event.pointerId)) {
+      const points = new Map(boardTouchPoints);
+      points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      boardTouchPoints = points;
+      if (boardPanDrag?.pointerId === "touch") {
+        const [first, second] = [...points.values()];
+        boardPan = {
+          x: boardPanDrag.originX - ((first.x + second.x) / 2 - boardPanDrag.startX),
+          y: boardPanDrag.originY - ((first.y + second.y) / 2 - boardPanDrag.startY)
+        };
+      }
+      return;
+    }
+    const drag = boardPanDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    boardPan = {
+      x: drag.originX - (event.clientX - drag.startX),
+      y: drag.originY - (event.clientY - drag.startY)
+    };
+  }
+
+  function finishStoryboardPan(event: PointerEvent) {
+    if (boardTouchPoints.has(event.pointerId)) {
+      const points = new Map(boardTouchPoints);
+      points.delete(event.pointerId);
+      boardTouchPoints = points;
+      if (boardPanDrag?.pointerId === "touch") {
+        if (points.size < 2) {
+          boardPanDrag = null;
+        } else {
+          const [first, second] = [...points.values()];
+          boardPanDrag = {
+            pointerId: "touch",
+            startX: (first.x + second.x) / 2,
+            startY: (first.y + second.y) / 2,
+            originX: boardPan.x,
+            originY: boardPan.y
+          };
+        }
+      }
+    } else if (boardPanDrag?.pointerId === event.pointerId) {
+      boardPanDrag = null;
+    }
+  }
+
+  function storyboardDrawingPoint(event: PointerEvent): BoardPoint | null {
+    if (!boardViewport) return null;
+    return boardPointFromClient(
+      event.clientX,
+      event.clientY,
+      boardViewport.getBoundingClientRect(),
+      boardPan
+    );
+  }
+
+  function replaceStoryboardDrawing(drawing: StoryboardDrawing) {
+    storyboardDrawings = storyboardDrawings.map((item) => item.id === drawing.id ? drawing : item);
+  }
+
+  function startStoryboardDrawing(event: PointerEvent) {
+    if (event.pointerType === "touch") return;
+    if (event.button !== 0 || boardSpacePan) return;
+    const target = event.target;
+    if (target instanceof Element
+      && (target.closest(".storyboard-card") || target.closest(".storyboard-text-editor"))) return;
+
+    if (activeDrawingTool === "select") {
+      if (target === event.currentTarget || target instanceof Element && target.classList.contains("storyboard-pan-surface")) {
+        selectedDrawingId = null;
+      }
+      return;
+    }
+    const point = storyboardDrawingPoint(event);
+    if (!point) return;
+    event.preventDefault();
+
+    if (activeDrawingTool === "text") {
+      const drawing: StoryboardDrawing = {
+        id: crypto.randomUUID(),
+        type: "text",
+        x: Math.round(point.x),
+        y: Math.round(point.y),
+        width: 180,
+        height: 56,
+        text: "",
+        fontSize: defaultStoryboardTextFontSize
+      };
+      storyboardDrawings = [...storyboardDrawings, drawing];
+      selectedDrawingId = drawing.id;
+      editingDrawingId = drawing.id;
+      persist();
+      void tick().then(() => document.getElementById(`storyboard-drawing-text-${drawing.id}`)?.focus());
+      return;
+    }
+
+    const drawing: StoryboardDrawing = activeDrawingTool === "line" || activeDrawingTool === "arrow"
+      ? {
+          id: crypto.randomUUID(),
+          type: activeDrawingTool,
+          startX: Math.round(point.x),
+          startY: Math.round(point.y),
+          endX: Math.round(point.x),
+          endY: Math.round(point.y)
+        }
+      : {
+          id: crypto.randomUUID(),
+          type: "box",
+          ...drawingBoundsFromPoints(point, point)
+        };
+    storyboardDrawings = [...storyboardDrawings, drawing];
+    selectedDrawingId = drawing.id;
+    drawingInteraction = { pointerId: event.pointerId, mode: "create", start: point, original: drawing };
+    boardViewport?.setPointerCapture(event.pointerId);
+  }
+
+  function startStoryboardCanvasInteraction(event: PointerEvent) {
+    if (event.pointerType === "touch") return;
+    if (activeDrawingTool === "pan") {
+      const target = event.target;
+      if (target instanceof Element && target.closest("button, input, textarea, select")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      startStoryboardPan(event);
+      return;
+    }
+    startStoryboardDrawing(event);
+  }
+
+  function startStoryboardDrawingMove(event: PointerEvent, drawing: StoryboardDrawing) {
+    if (activeDrawingTool !== "select" || event.button !== 0) return;
+    const point = storyboardDrawingPoint(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectedDrawingId = drawing.id;
+    drawingInteraction = { pointerId: event.pointerId, mode: "move", start: point, original: drawing };
+    boardViewport?.setPointerCapture(event.pointerId);
+  }
+
+  function startStoryboardDrawingResize(event: PointerEvent, drawing: StoryboardDrawing) {
+    if (activeDrawingTool !== "select" || event.button !== 0
+      || (drawing.type !== "box" && drawing.type !== "text")) return;
+    const point = storyboardDrawingPoint(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectedDrawingId = drawing.id;
+    drawingInteraction = { pointerId: event.pointerId, mode: "resize", start: point, original: drawing };
+    boardViewport?.setPointerCapture(event.pointerId);
+  }
+
+  function updateStoryboardDrawing(event: PointerEvent) {
+    const interaction = drawingInteraction;
+    if (!interaction || interaction.pointerId !== event.pointerId) return;
+    const point = storyboardDrawingPoint(event);
+    if (!point) return;
+    const { original, mode, start } = interaction;
+    if (mode === "create") {
+      replaceStoryboardDrawing(original.type === "line" || original.type === "arrow"
+        ? { ...original, endX: Math.round(point.x), endY: Math.round(point.y) }
+        : { ...original, ...drawingBoundsFromPoints(start, point) });
+      return;
+    }
+
+    const delta = { x: point.x - start.x, y: point.y - start.y };
+    if (mode === "move") {
+      replaceStoryboardDrawing(moveStoryboardDrawing(original, delta));
+      return;
+    }
+    if (original.type === "box" || original.type === "text") {
+      const minWidth = original.type === "text" ? 100 : 24;
+      const minHeight = original.type === "text" ? 40 : 24;
+      replaceStoryboardDrawing(resizeStoryboardDrawing(original, delta, minWidth, minHeight));
+    }
+  }
+
+  function cancelStoryboardDrawingInteraction() {
+    const interaction = drawingInteraction;
+    if (!interaction) return;
+    if (interaction.mode === "create") {
+      storyboardDrawings = storyboardDrawings.filter((drawing) => drawing.id !== interaction.original.id);
+      selectedDrawingId = null;
+    } else {
+      replaceStoryboardDrawing(interaction.original);
+    }
+    drawingInteraction = null;
+  }
+
+  function finishStoryboardDrawing(event: PointerEvent) {
+    const interaction = drawingInteraction;
+    if (!interaction || interaction.pointerId !== event.pointerId) return;
+    if (interaction.mode === "create") {
+      const point = storyboardDrawingPoint(event) ?? interaction.start;
+      const distance = Math.hypot(point.x - interaction.start.x, point.y - interaction.start.y);
+      if (distance < 3) {
+        storyboardDrawings = storyboardDrawings.filter((drawing) => drawing.id !== interaction.original.id);
+        selectedDrawingId = null;
+      } else {
+        persist();
+      }
+    } else {
+      persist();
+    }
+    drawingInteraction = null;
+  }
+
+  function nudgeStoryboardDrawing(drawing: StoryboardDrawing, key: string) {
+    const distance = 12;
+    const delta = key === "ArrowLeft" ? { x: -distance, y: 0 }
+      : key === "ArrowRight" ? { x: distance, y: 0 }
+        : key === "ArrowUp" ? { x: 0, y: -distance }
+          : key === "ArrowDown" ? { x: 0, y: distance }
+            : null;
+    if (!delta) return;
+    replaceStoryboardDrawing(moveStoryboardDrawing(drawing, delta));
     persist();
   }
 
-  function createStoryboardCard(kind: StoryboardKind, sourceId: string): Omit<StoryboardCard, "rowId"> | null {
+  function handleStoryboardDrawingKeydown(event: KeyboardEvent, drawing: StoryboardDrawing) {
+    selectedDrawingId = drawing.id;
+    if (event.key.startsWith("Arrow")) {
+      event.preventDefault();
+      nudgeStoryboardDrawing(drawing, event.key);
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+    }
+  }
+
+  function selectedStoryboardTextDrawing(): Extract<StoryboardDrawing, { type: "text" }> | null {
+    const drawing = storyboardDrawings.find((item) => item.id === selectedDrawingId);
+    return drawing?.type === "text" ? drawing : null;
+  }
+
+  function updateStoryboardTextFontSize(value: string) {
+    const fontSize = Number(value);
+    if (!Number.isFinite(fontSize)) return;
+    defaultStoryboardTextFontSize = fontSize;
+    const drawing = selectedStoryboardTextDrawing();
+    if (!drawing) return;
+    replaceStoryboardDrawing({ ...drawing, fontSize });
+    persist();
+  }
+
+  function updateStoryboardDrawingText(id: string, text: string) {
+    const drawing = storyboardDrawings.find((item) => item.id === id);
+    if (!drawing || drawing.type !== "text") return;
+    replaceStoryboardDrawing({ ...drawing, text });
+    persist();
+  }
+
+  function finishStoryboardTextEdit(id: string) {
+    if (editingDrawingId !== id) return;
+    editingDrawingId = null;
+    const drawing = storyboardDrawings.find((item) => item.id === id);
+    if (drawing?.type === "text" && !drawing.text.trim()) {
+      storyboardDrawings = storyboardDrawings.filter((item) => item.id !== id);
+      selectedDrawingId = null;
+    }
+    persist();
+  }
+
+  function removeStoryboardDrawing(id: string) {
+    storyboardDrawings = storyboardDrawings.filter((drawing) => drawing.id !== id);
+    if (selectedDrawingId === id) selectedDrawingId = null;
+    if (editingDrawingId === id) editingDrawingId = null;
+    persist();
+  }
+
+  function createStoryboardCard(
+    kind: StoryboardKind,
+    sourceId: string
+  ): Omit<StoryboardCard, "rowId" | "x" | "y"> | null {
     if (kind === "blank") {
       return {
         id: crypto.randomUUID(),
@@ -2742,44 +3110,50 @@
     };
   }
 
-  function addStoryboardCard(kind: StoryboardKind, sourceId: string, rowId = storyboardRows.at(-1)?.id) {
-    if (!rowId || !storyboardRows.some((row) => row.id === rowId)) return;
+  function addStoryboardCard(kind: StoryboardKind, sourceId: string) {
     const card = createStoryboardCard(kind, sourceId);
     if (!card) return;
-    insertStoryboardCard({ ...card, rowId }, rowId, storyboardCards.filter((item) => item.rowId === rowId).length);
+    const rowId = storyboardRows[0]?.id ?? "";
+    const offset = (storyboardCards.length % 8) * 24;
+    const position = boardPointAtViewportCenter(
+      boardViewport?.clientWidth ?? 700,
+      boardViewport?.clientHeight ?? 600,
+      boardPan,
+      offset
+    );
+    storyboardCards = [...storyboardCards, { ...card, rowId, ...position }];
+    persist();
   }
 
   function finishStoryboardDrag(event: PointerEvent) {
     const drag = boardDragSource;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const target = boardDropTarget;
-    if (target && storyboardRows.some((row) => row.id === target.rowId)) {
+    const position = boardPositionForPointer(event, drag);
+    if (position) {
       if (drag.kind === "board-card") {
-        const card = storyboardCards.find((item) => item.id === drag.sourceId);
-        if (card) {
-          const sourceIndex = storyboardCards.filter((item) => item.rowId === target.rowId)
-            .findIndex((item) => item.id === card.id);
-          const targetIndex = sourceIndex >= 0 && sourceIndex < target.index
-            ? target.index - 1
-            : target.index;
-          insertStoryboardCard(card, target.rowId, targetIndex);
-        }
+        storyboardCards = storyboardCards.map((card) =>
+          card.id === drag.sourceId ? { ...card, ...position } : card
+        );
       } else {
         const card = createStoryboardCard(drag.kind, drag.sourceId);
         if (card) {
-          const before = storyboardCards.filter((item) => item.rowId === target.rowId);
-          const index = target.index < before.length ? target.index : before.length;
-          insertStoryboardCard({ ...card, rowId: target.rowId }, target.rowId, index);
+          storyboardCards = [
+            ...storyboardCards,
+            { ...card, rowId: storyboardRows[0]?.id ?? "", ...position }
+          ];
         }
       }
+      persist();
     }
     boardDragSource = null;
-    boardDropTarget = null;
+    boardDropPosition = null;
   }
 
   function finishPointerInteractions(event: PointerEvent) {
     finishChapterDrag(event);
+    finishStoryboardDrawing(event);
     finishStoryboardDrag(event);
+    finishStoryboardPan(event);
   }
 
   function updatePointerInteractions(event: PointerEvent) {
@@ -2791,7 +3165,9 @@
     }
     handleSidebarPointerMove(event);
     updateChapterDropTarget(event);
-    updateStoryboardDropTarget(event);
+    updateStoryboardDrawing(event);
+    updateStoryboardDrag(event);
+    updateStoryboardPan(event);
   }
 
   function updateStoryboardCard(id: string, field: "title" | "note", value: string) {
@@ -2810,48 +3186,35 @@
     persist();
   }
 
-  function moveStoryboardCard(id: string, offset: number) {
-    const card = storyboardCards.find((item) => item.id === id);
-    if (!card) return;
-    const rowCards = storyboardCards.filter((item) => item.rowId === card.rowId);
-    const index = rowCards.findIndex((item) => item.id === id);
-    const targetIndex = index + offset;
-    if (targetIndex < 0 || targetIndex >= rowCards.length) return;
-    insertStoryboardCard(card, card.rowId, targetIndex);
-  }
-
-  function moveStoryboardCardToRow(id: string, rowId: string) {
-    const card = storyboardCards.find((item) => item.id === id);
-    if (!card || card.rowId === rowId || !storyboardRows.some((row) => row.id === rowId)) return;
-    insertStoryboardCard(card, rowId, storyboardCards.filter((item) => item.rowId === rowId).length);
-  }
-
-  function addStoryboardRow() {
-    const row = { id: crypto.randomUUID(), title: `Timeline row ${storyboardRows.length + 1}` };
-    storyboardRows = [...storyboardRows, row];
+  function nudgeStoryboardCard(id: string, key: string) {
+    const delta = key === "ArrowLeft" ? { x: -24, y: 0 }
+      : key === "ArrowRight" ? { x: 24, y: 0 }
+        : key === "ArrowUp" ? { x: 0, y: -24 }
+          : key === "ArrowDown" ? { x: 0, y: 24 }
+            : null;
+    if (!delta) return;
+    storyboardCards = storyboardCards.map((card) =>
+      card.id === id ? { ...card, x: card.x + delta.x, y: card.y + delta.y } : card
+    );
     persist();
   }
 
-  function updateStoryboardRow(id: string, titleValue: string) {
-    storyboardRows = storyboardRows.map((row) => row.id === id ? { ...row, title: titleValue } : row);
-    persist();
+  function handleStoryboardCardKeydown(event: KeyboardEvent, id: string) {
+    if (!event.key.startsWith("Arrow")) return;
+    event.preventDefault();
+    nudgeStoryboardCard(id, event.key);
   }
 
-  function removeStoryboardRow(id: string) {
-    if (storyboardRows.length <= 1 || storyboardCards.some((card) => card.rowId === id)) return;
-    storyboardRows = storyboardRows.filter((row) => row.id !== id);
-    persist();
+  function handleStoryboardPanKeydown(event: KeyboardEvent) {
+    if (workspaceView === "storyboard" && event.code === "Space"
+      && event.target === boardViewport) {
+      event.preventDefault();
+      boardSpacePan = true;
+    }
   }
 
-  function moveStoryboardRow(id: string, offset: number) {
-    const index = storyboardRows.findIndex((row) => row.id === id);
-    const targetIndex = index + offset;
-    if (index < 0 || targetIndex < 0 || targetIndex >= storyboardRows.length) return;
-    const reordered = [...storyboardRows];
-    [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
-    storyboardRows = reordered;
-    storyboardCards = orderedStoryboardCards(storyboardCards);
-    persist();
+  function handleStoryboardPanKeyup(event: KeyboardEvent) {
+    if (event.code === "Space") boardSpacePan = false;
   }
 
   function persistChapters() {
@@ -3513,6 +3876,16 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    handleStoryboardPanKeydown(event);
+    if (workspaceView === "storyboard" && (event.key === "Delete" || event.key === "Backspace")
+      && selectedDrawingId) {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLElement && target.isContentEditable)) {
+        event.preventDefault();
+        removeStoryboardDrawing(selectedDrawingId);
+      }
+    }
     if (event.key === "Escape") showZenInterface();
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
       event.preventDefault();
@@ -3849,6 +4222,8 @@
 
 <svelte:window
   onkeydown={handleKeydown}
+  onkeyup={handleStoryboardPanKeyup}
+  onblur={() => { boardSpacePan = false; }}
   onpointermove={updatePointerInteractions}
   onpointerup={finishPointerInteractions}
   onpointercancel={endChapterDrag}
@@ -4420,24 +4795,24 @@
           <aside class="storyboard-sources" aria-label="Story elements to add">
             <div class="board-sources-heading">
               <span class="board-eyebrow">STORY ELEMENTS</span>
-              <h2>Add to timeline</h2>
-              <p>Drag an element into a row, or add it to the last row.</p>
+              <h2>Add to storyboard</h2>
+              <p>Drag an element onto the canvas, or use + to place it near the center.</p>
             </div>
             <section class="board-source-group">
               <h3>Cards</h3>
               <div class="board-source">
-                <button class="source-drag-handle" aria-label="Drag a blank card into a timeline row" title="Drag into a row" onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}>⠿</button>
+                <button class="source-drag-handle" aria-label="Drag a blank card onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}>⠿</button>
                 <span class="source-icon">▢</span><span class="source-name">Blank card</span>
-                <button class="source-add" aria-label="Add a blank card to the last row" title="Add to last row" onclick={() => addStoryboardCard("blank", "")}>+</button>
+                <button class="source-add" aria-label="Add a blank card near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("blank", "")}>+</button>
               </div>
             </section>
             <section class="board-source-group">
               <h3>Chapters</h3>
               {#each chapters as chapter (chapter.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} into a timeline row" title="Drag into a row" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}>⠿</button>
+                  <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}>⠿</button>
                   <span class="source-icon">▱</span><span class="source-name">{chapterLabel(chapter)}</span>
-                  <button class="source-add" aria-label="Add {chapterLabel(chapter)} to the last row" title="Add to last row" onclick={() => addStoryboardCard("chapter", chapter.id)}>+</button>
+                  <button class="source-add" aria-label="Add {chapterLabel(chapter)} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("chapter", chapter.id)}>+</button>
                 </div>
               {:else}
                 <p class="board-source-empty">No chapters yet</p>
@@ -4447,9 +4822,9 @@
               <h3>Scenes</h3>
               {#each documents.filter((doc) => doc.chapterId && !doc.trashed) as doc (doc.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled scene'} into a timeline row" title="Drag into a row" onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}>⠿</button>
+                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled scene'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}>⠿</button>
                   <span class="source-icon">¶</span><span class="source-name">{doc.title || "Untitled scene"}</span>
-                  <button class="source-add" aria-label="Add {doc.title || 'Untitled scene'} to the last row" title="Add to last row" onclick={() => addStoryboardCard("scene", doc.id)}>+</button>
+                  <button class="source-add" aria-label="Add {doc.title || 'Untitled scene'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("scene", doc.id)}>+</button>
                 </div>
               {:else}
                 <p class="board-source-empty">No scenes yet</p>
@@ -4460,10 +4835,10 @@
                 <h3>{space}</h3>
                 {#each documents.filter((doc) => doc.space === space && !doc.trashed) as doc (doc.id)}
                   <div class="board-source">
-                    <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} into a timeline row" title="Drag into a row" onpointerdown={(event) => startStoryboardDrag(event, space, doc.id)}>⠿</button>
+                    <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, space, doc.id)}>⠿</button>
                     <span class="source-icon">{space === "Characters" ? "◉" : space === "Places" ? "⌖" : space === "Research" ? "⌕" : "▤"}</span>
                     <span class="source-name">{doc.title || "Untitled"}</span>
-                    <button class="source-add" aria-label="Add {doc.title || 'Untitled'} to the last row" title="Add to last row" onclick={() => addStoryboardCard(space, doc.id)}>+</button>
+                    <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard(space, doc.id)}>+</button>
                   </div>
                 {:else}
                   <p class="board-source-empty">No {space.toLowerCase()} yet</p>
@@ -4471,65 +4846,182 @@
               </section>
             {/each}
           </aside>
-          <section class="storyboard-canvas" aria-label="Storyboard timeline">
+          <section class="storyboard-canvas" aria-label="Freeform storyboard">
             <header class="storyboard-header">
               <div><span class="board-eyebrow">PLAN YOUR STORY</span><h1>Storyboard</h1></div>
               <div class="storyboard-header-actions">
-                <span class="board-card-count">{storyboardRows.length} {storyboardRows.length === 1 ? "row" : "rows"} · {storyboardCards.length} {storyboardCards.length === 1 ? "card" : "cards"}</span>
-                <button class="add-timeline-row" onclick={addStoryboardRow}>+ Add row</button>
+                <span class="board-card-count">{storyboardCards.length} {storyboardCards.length === 1 ? "card" : "cards"}</span>
+                <button class="add-timeline-row" onclick={() => addStoryboardCard("blank", "")}>+ Add blank card</button>
               </div>
             </header>
-            <div class="storyboard-timeline">
-              {#each storyboardRows as row, rowIndex (row.id)}
-                {@const rowCards = storyboardCards.filter((card) => card.rowId === row.id)}
-                <section class="timeline-row">
-                  <header class="timeline-row-header">
-                    <span class="timeline-marker">{String(rowIndex + 1).padStart(2, "0")}</span>
-                    <input class="timeline-row-title" aria-label="Timeline row name" value={row.title} maxlength="80" oninput={(event) => updateStoryboardRow(row.id, (event.currentTarget as HTMLInputElement).value)} />
-                    <div class="timeline-row-actions">
-                      <button class="card-order" aria-label="Move row earlier" title="Move row earlier" disabled={rowIndex === 0} onclick={() => moveStoryboardRow(row.id, -1)}>↑</button>
-                      <button class="card-order" aria-label="Move row later" title="Move row later" disabled={rowIndex === storyboardRows.length - 1} onclick={() => moveStoryboardRow(row.id, 1)}>↓</button>
-                      <button class="remove-board-card" aria-label="Remove empty row {row.title}" title="Remove empty row" disabled={rowCards.length > 0 || storyboardRows.length <= 1} onclick={() => removeStoryboardRow(row.id)}>×</button>
-                    </div>
-                  </header>
-                  <div class="timeline-row-cards">
-                    {#each rowCards as card, index (card.id)}
-                      <article class="storyboard-card" class:blank-card={card.kind === "blank"} class:drop-target={boardDropTarget?.rowId === row.id && boardDropTarget.index === index} data-board-row-id={row.id} data-board-drop-index={index}>
-                        <div class="storyboard-card-top">
-                          <button class="card-drag-handle" aria-label="Drag {card.title} to another position or row" title="Drag to reorder or move rows" onpointerdown={(event) => startStoryboardDrag(event, "board-card", card.id)}>⠿</button>
-                          <span class="card-kind">{card.kind === "blank" ? "blank" : card.kind}</span>
-                          <span class="card-position">{String(index + 1).padStart(2, "0")}</span>
-                          <select class="card-row-select" aria-label="Move {card.title} to timeline row" value={row.id} onchange={(event) => moveStoryboardCardToRow(card.id, (event.currentTarget as HTMLSelectElement).value)}>
-                            {#each storyboardRows as optionRow (optionRow.id)}
-                              <option value={optionRow.id}>{optionRow.title || "Untitled row"}</option>
-                            {/each}
-                          </select>
-                          <button class="card-order" aria-label="Move {card.title} earlier" title="Move earlier" disabled={index === 0} onclick={() => moveStoryboardCard(card.id, -1)}>↑</button>
-                          <button class="card-order" aria-label="Move {card.title} later" title="Move later" disabled={index === rowCards.length - 1} onclick={() => moveStoryboardCard(card.id, 1)}>↓</button>
-                          <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}>×</button>
-                        </div>
-                        <input class="board-card-title" aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
-                        <textarea
-                          class="board-card-note"
-                          aria-label={card.kind === "chapter" ? `Chapter summary for ${card.title}` : `Planning notes for ${card.title}`}
-                          placeholder={card.kind === "chapter" ? "Chapter summary — synced with Outline" : "Write a note about this story element…"}
-                          value={card.note}
-                          maxlength={card.kind === "chapter" ? 4000 : undefined}
-                          use:autoResize={card.note}
-                          oninput={(event) => updateStoryboardCard(card.id, "note", (event.currentTarget as HTMLTextAreaElement).value)}
-                        ></textarea>
-                      </article>
-                    {/each}
-                    <div class="storyboard-row-drop" class:drop-target={boardDropTarget?.rowId === row.id && boardDropTarget.index === rowCards.length} data-board-row-id={row.id} data-board-drop-index={rowCards.length}>
-                      {#if rowCards.length === 0}<span>Drop cards here, or add them from Story Elements</span>{:else}<span>Drop here to add or move a card</span>{/if}
-                    </div>
-                  </div>
-                </section>
+            <div class="storyboard-drawing-toolbar" role="toolbar" aria-label="Diagram drawing tools">
+              {#each storyboardDrawingTools as item (item.tool)}
+                <button
+                  class="drawing-tool"
+                  class:active={activeDrawingTool === item.tool}
+                  aria-label={`${item.label} tool`}
+                  aria-pressed={activeDrawingTool === item.tool}
+                  title={`${item.label} tool`}
+                  onclick={() => { activeDrawingTool = item.tool; }}
+                ><span class="drawing-tool-glyph">{item.glyph}</span><span>{item.label}</span></button>
               {/each}
-              {#if storyboardCards.length === 0}
-                <p class="storyboard-empty-hint">Arrange cards in a row to show events happening at the same point in the story.</p>
+              {#if activeDrawingTool === "text" || selectedStoryboardTextDrawing()}
+                <label class="drawing-font-size">
+                  <span>Text size</span>
+                  <input
+                    type="range"
+                    min="8"
+                    max="72"
+                    step="1"
+                    aria-label="Diagram text font size"
+                    value={selectedStoryboardTextDrawing()?.fontSize ?? defaultStoryboardTextFontSize}
+                    oninput={(event) => updateStoryboardTextFontSize((event.currentTarget as HTMLInputElement).value)}
+                  />
+                  <output>{selectedStoryboardTextDrawing()?.fontSize ?? defaultStoryboardTextFontSize}px</output>
+                </label>
+              {/if}
+              <button
+                class="drawing-delete"
+                aria-label="Delete selected diagram element"
+                title="Delete selected element"
+                disabled={!selectedDrawingId}
+                onclick={() => { if (selectedDrawingId) removeStoryboardDrawing(selectedDrawingId); }}
+              >Delete</button>
+            </div>
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <div
+              class="storyboard-viewport"
+              class:board-panning={boardPanDrag !== null}
+              bind:this={boardViewport}
+              role="application"
+              tabindex="0"
+              onpointerdown={startStoryboardCanvasInteraction}
+              class:board-pan-tool={activeDrawingTool === "pan"}
+              style:background-position={`${8 - (boardPan.x % 24)}px ${8 - (boardPan.y % 24)}px`}
+              aria-label="Freeform storyboard canvas. Select a diagram tool to draw. Hold Space while dragging to pan, or use two fingers on touch screens."
+            >
+              <div class="storyboard-pan-surface" aria-hidden="true" onpointerdown={startStoryboardPan}></div>
+              <div
+                class="storyboard-world"
+                style:transform={`translate3d(${-boardPan.x}px, ${-boardPan.y}px, 0)`}
+              >
+                <svg class="storyboard-drawing-layer" role="group" aria-label="Diagram shapes">
+                  <defs>
+                    <marker id="storyboard-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                      <path d="M 0 0 L 8 4 L 0 8 z" />
+                    </marker>
+                  </defs>
+                  {#each storyboardDrawings.filter((drawing) => drawing.type !== "text") as drawing (drawing.id)}
+                    <g
+                      class="storyboard-vector"
+                      class:selected={selectedDrawingId === drawing.id}
+                      data-drawing-id={drawing.id}
+                      role="button"
+                      tabindex="0"
+                      aria-label={`Select ${drawing.type} diagram element`}
+                      aria-pressed={selectedDrawingId === drawing.id}
+                      onfocus={() => { selectedDrawingId = drawing.id; }}
+                      onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}
+                      onkeydown={(event) => handleStoryboardDrawingKeydown(event, drawing)}
+                    >
+                      {#if drawing.type === "line" || drawing.type === "arrow"}
+                        <line class="drawing-hit-line" x1={drawing.startX} y1={drawing.startY} x2={drawing.endX} y2={drawing.endY} />
+                        <line
+                          class="drawing-visible-line"
+                          x1={drawing.startX}
+                          y1={drawing.startY}
+                          x2={drawing.endX}
+                          y2={drawing.endY}
+                          marker-end={drawing.type === "arrow" ? "url(#storyboard-arrowhead)" : undefined}
+                        />
+                      {:else}
+                        <rect x={drawing.x} y={drawing.y} width={drawing.width} height={drawing.height} />
+                      {/if}
+                    </g>
+                  {/each}
+                </svg>
+                {#each storyboardDrawings as drawing (drawing.id)}
+                  {#if drawing.type === "text"}
+                    <div
+                      class="storyboard-text-drawing"
+                      class:selected={selectedDrawingId === drawing.id}
+                      style:left={`${drawing.x}px`}
+                      style:top={`${drawing.y}px`}
+                      style:width={`${drawing.width}px`}
+                      style:height={`${drawing.height}px`}
+                    >
+                      <textarea
+                        id={`storyboard-drawing-text-${drawing.id}`}
+                        class="storyboard-text-editor"
+                        style:font-size={`${drawing.fontSize}px`}
+                        aria-label="Diagram text"
+                        placeholder="Type a label…"
+                        maxlength="2000"
+                        value={drawing.text}
+                        onfocus={() => { selectedDrawingId = drawing.id; }}
+                        onpointerdown={(event) => { event.stopPropagation(); selectedDrawingId = drawing.id; }}
+                        oninput={(event) => updateStoryboardDrawingText(drawing.id, (event.currentTarget as HTMLTextAreaElement).value)}
+                        onblur={() => finishStoryboardTextEdit(drawing.id)}
+                      ></textarea>
+                      {#if selectedDrawingId === drawing.id}
+                        <button class="drawing-move-handle" aria-label="Move text label" title="Drag to move" onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}>⠿</button>
+                        <button class="drawing-resize-handle" aria-label="Resize text area" title="Drag to resize" onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
+                      {/if}
+                    </div>
+                  {:else if drawing.type === "box" && selectedDrawingId === drawing.id}
+                    <div
+                      class="storyboard-drawing-selection"
+                      style:left={`${drawing.x}px`}
+                      style:top={`${drawing.y}px`}
+                      style:width={`${drawing.width}px`}
+                      style:height={`${drawing.height}px`}
+                    >
+                      <button class="drawing-resize-handle" aria-label="Resize box" title="Drag to resize" onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
+                    </div>
+                  {/if}
+                {/each}
+                {#each storyboardCards as card (card.id)}
+                  {@const dragged = boardDragSource?.kind === "board-card" && boardDragSource.sourceId === card.id}
+                  <article
+                    class="storyboard-card"
+                    class:blank-card={card.kind === "blank"}
+                    class:dragging={dragged}
+                    data-board-card-id={card.id}
+                    style:left={`${dragged && boardDropPosition ? boardDropPosition.x : card.x}px`}
+                    style:top={`${dragged && boardDropPosition ? boardDropPosition.y : card.y}px`}
+                  >
+                    <div class="storyboard-card-top">
+                      <button
+                        class="card-drag-handle"
+                        aria-label="Move {card.title}. Use arrow keys to nudge the card, or drag to position it."
+                        title="Drag to move; arrow keys to nudge"
+                        onpointerdown={(event) => startStoryboardDrag(event, "board-card", card.id)}
+                        onkeydown={(event) => handleStoryboardCardKeydown(event, card.id)}
+                      >⠿</button>
+                      <span class="card-kind">{card.kind === "blank" ? "blank" : card.kind}</span>
+                      <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}>×</button>
+                    </div>
+                    <input class="board-card-title" aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
+                    <textarea
+                      class="board-card-note"
+                      aria-label={card.kind === "chapter" ? `Chapter summary for ${card.title}` : `Planning notes for ${card.title}`}
+                      placeholder={card.kind === "chapter" ? "Chapter summary — synced with Outline" : "Write a note about this story element…"}
+                      value={card.note}
+                      maxlength={card.kind === "chapter" ? 4000 : undefined}
+                      use:autoResize={card.note}
+                      oninput={(event) => updateStoryboardCard(card.id, "note", (event.currentTarget as HTMLTextAreaElement).value)}
+                    ></textarea>
+                  </article>
+                {/each}
+                {#if boardDragSource && boardDragSource.kind !== "board-card" && boardDropPosition}
+                  <div class="storyboard-drop-preview" style:left={`${boardDropPosition.x}px`} style:top={`${boardDropPosition.y}px`}>Drop to add card</div>
+                {/if}
+              </div>
+              {#if storyboardCards.length === 0 && storyboardDrawings.length === 0}
+                <p class="storyboard-empty-hint">Add a card or choose a diagram tool to start planning on the canvas.</p>
               {/if}
             </div>
+            <p class="storyboard-pan-hint">Draw with the toolbar · Pan tool, Space + drag, or middle mouse · Two fingers on empty canvas</p>
           </section>
         </div>
         {#if workspaceView === "timeline"}
@@ -5629,42 +6121,65 @@
   .source-name { overflow: hidden; min-width: 0; flex: 1; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
   .source-icon { width: 14px; flex: 0 0 auto; color: var(--eyebrow); font-family: Georgia, serif; text-align: center; }
   .board-source-empty { margin: 5px 3px; color: var(--text-muted); font-size: 9px; }
-  .storyboard-canvas { min-width: 0; padding: 18px 20px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .storyboard-canvas { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; padding: 18px 20px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
   .storyboard-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid var(--border-soft); }
   .storyboard-header h1 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 25px; font-weight: 500; }
   .storyboard-header-actions { display: flex; align-items: center; gap: 10px; }
   .board-card-count { padding-bottom: 3px; color: var(--text-muted); font-size: 9px; }
   .add-timeline-row { height: 28px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
   .add-timeline-row:hover { background: var(--control-hover); color: var(--selected-text); }
-  .storyboard-timeline { position: relative; display: flex; flex-direction: column; gap: 12px; }
-  .timeline-row { position: relative; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
-  .timeline-row-header { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; }
-  .timeline-marker { display: grid; width: 23px; height: 23px; flex: 0 0 auto; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--eyebrow); font-size: 8px; font-variant-numeric: tabular-nums; }
-  .timeline-row-title { min-width: 0; flex: 1; padding: 3px 0; border: 0; border-bottom: 1px solid transparent; outline: none; background: transparent; color: var(--text-heading); font-size: 11px; font-weight: 600; }
-  .timeline-row-title:focus { border-color: var(--accent); }
-  .timeline-row-actions { display: flex; align-items: center; gap: 2px; }
-  .timeline-row-actions .remove-board-card:disabled { opacity: .25; cursor: default; }
-  .timeline-row-cards { display: flex; min-width: 0; align-items: stretch; gap: 10px; overflow-x: auto; padding: 1px 1px 8px; scrollbar-width: thin; }
-  .storyboard-card { width: min(100%, 240px); min-width: 200px; flex: 0 0 220px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-card); transition: border-color .12s, box-shadow .12s, transform .12s; }
-  .storyboard-card.drop-target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); transform: translateY(2px); }
+  .storyboard-drawing-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: -7px 0 10px; }
+  .drawing-tool, .drawing-delete { display: inline-flex; min-height: 28px; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
+  .drawing-tool { min-width: 54px; }
+  .drawing-tool.active { border-color: var(--accent); background: var(--selected-bg); color: var(--selected-text); }
+  .drawing-tool-glyph { font-size: 13px; font-weight: 600; }
+  .drawing-font-size { display: inline-flex; min-height: 28px; align-items: center; gap: 6px; padding: 0 7px; color: var(--text-muted); font-size: 9px; }
+  .drawing-font-size input { width: 90px; accent-color: var(--accent); }
+  .drawing-font-size output { min-width: 24px; color: var(--text-nav); font-variant-numeric: tabular-nums; }
+  .drawing-delete { margin-left: auto; }
+  .drawing-delete:disabled { opacity: .45; cursor: default; }
+  .drawing-tool:focus-visible, .drawing-delete:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .storyboard-viewport { position: relative; min-height: 0; flex: 1 1 480px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background-color: var(--surface-raised); background-image: radial-gradient(var(--border-control) .7px, transparent .7px); background-position: 8px 8px; background-size: 24px 24px; outline: none; }
+  .storyboard-viewport:focus-visible { box-shadow: 0 0 0 2px var(--accent-ring); }
+  .storyboard-viewport.board-pan-tool { cursor: grab; }
+  .storyboard-viewport.board-pan-tool.board-panning { cursor: grabbing; }
+  .storyboard-pan-surface { position: absolute; z-index: 0; inset: 0; cursor: grab; touch-action: none; }
+  .storyboard-viewport.board-panning .storyboard-pan-surface { cursor: grabbing; }
+  .storyboard-world { position: absolute; z-index: 1; inset: 0; pointer-events: none; will-change: transform; }
+  .storyboard-drawing-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  .storyboard-drawing-layer marker path { fill: var(--accent); }
+  .storyboard-vector { pointer-events: visiblePainted; cursor: move; }
+  .storyboard-vector .drawing-hit-line { stroke: transparent; stroke-width: 14; }
+  .storyboard-vector .drawing-visible-line { stroke: var(--accent); stroke-width: 2.5; }
+  .storyboard-vector rect { fill: var(--selected-bg); fill-opacity: .18; stroke: var(--accent); stroke-width: 2; }
+  .storyboard-vector.selected .drawing-visible-line, .storyboard-vector.selected rect { stroke: var(--selected-text); }
+  .storyboard-text-drawing { position: absolute; pointer-events: auto; border: 1px dashed var(--border-control); background: var(--surface); }
+  .storyboard-text-drawing.selected { z-index: 3; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-ring); }
+  .storyboard-text-editor { display: block; width: 100%; height: 100%; padding: 8px; resize: none; border: 0; outline: none; background: transparent; color: var(--text-primary); font-family: var(--interface-font); font-size: 12px; line-height: 1.4; }
+  .storyboard-text-editor::placeholder { color: var(--text-muted); }
+  .drawing-move-handle { position: absolute; top: -12px; right: 12px; display: grid; width: 22px; height: 20px; place-items: center; padding: 0; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-muted); cursor: grab; font-size: 13px; touch-action: none; }
+  .drawing-resize-handle { position: absolute; right: -5px; bottom: -5px; width: 11px; height: 11px; padding: 0; border: 1px solid var(--surface); border-radius: 2px; background: var(--accent); cursor: nwse-resize; touch-action: none; }
+  .storyboard-drawing-selection { position: absolute; z-index: 2; border: 1px dashed var(--accent); pointer-events: none; }
+  .storyboard-drawing-selection .drawing-resize-handle { pointer-events: auto; }
+  .storyboard-text-drawing .drawing-resize-handle { z-index: 1; }
+  .storyboard-card { position: absolute; width: 220px; min-width: 200px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-card); pointer-events: auto; transition: border-color .12s, box-shadow .12s, opacity .12s; }
+  .storyboard-card.dragging { z-index: 2; opacity: .78; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring), var(--shadow-card); }
   .storyboard-card.blank-card { border-style: dashed; }
   .storyboard-card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 9px; }
-  .card-drag-handle, .card-order, .remove-board-card { display: grid; width: 21px; height: 22px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .card-drag-handle, .remove-board-card { display: grid; width: 21px; height: 22px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
   .card-drag-handle { cursor: grab; font-size: 15px; touch-action: none; }
   .card-drag-handle:active { cursor: grabbing; }
-  .card-order, .remove-board-card { font-size: 12px; }
-  .card-order:disabled { opacity: .3; cursor: default; }
-  .card-drag-handle:hover, .card-order:hover:not(:disabled), .remove-board-card:hover { background: var(--control-hover); color: var(--text-primary); }
-  .card-row-select { width: 55px; height: 21px; padding: 0 2px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-muted); font-size: 8px; }
+  .remove-board-card { font-size: 12px; }
+  .card-drag-handle:hover, .remove-board-card:hover { background: var(--control-hover); color: var(--text-primary); }
+  .card-drag-handle:focus-visible, .remove-board-card:focus-visible, .add-timeline-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .card-kind { overflow: hidden; min-width: 0; flex: 1; color: var(--eyebrow); font-size: 8px; font-weight: 700; letter-spacing: .7px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
-  .card-position { color: var(--text-muted); font-size: 8px; font-variant-numeric: tabular-nums; }
   .board-card-title { width: 100%; padding: 2px 0 7px; border: 0; border-bottom: 1px solid var(--border-soft); outline: none; background: transparent; color: var(--text-heading); font-family: var(--interface-font); font-size: 15px; font-weight: 500; }
   .board-card-title:focus { border-color: var(--accent); }
   .board-card-note { display: block; width: 100%; min-height: 106px; margin-top: 8px; padding: 4px 0; resize: none; overflow-y: hidden; border: 0; outline: none; background: transparent; color: var(--text-body); font-family: var(--interface-font); font-size: 12px; line-height: 1.6; }
   .board-card-note::placeholder { color: var(--text-muted); font-family: Inter, ui-sans-serif, sans-serif; font-size: 9px; }
-  .storyboard-row-drop { display: grid; min-width: 82px; min-height: 80px; flex: 1 0 82px; place-items: center; padding: 8px; border: 1px dashed var(--border-control); border-radius: 7px; color: var(--text-muted); font-size: 8px; text-align: center; transition: background .12s, border-color .12s; }
-  .storyboard-row-drop.drop-target { border-color: var(--accent); background: var(--selected-bg); color: var(--selected-text); }
-  .storyboard-empty-hint { margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+  .storyboard-drop-preview { position: absolute; width: 220px; height: 110px; display: grid; place-items: center; border: 1px dashed var(--accent); border-radius: 8px; background: var(--selected-bg); color: var(--selected-text); font-size: 9px; pointer-events: none; }
+  .storyboard-empty-hint { position: absolute; top: 50%; left: 50%; width: min(300px, calc(100% - 32px)); margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; text-align: center; transform: translate(-50%, -50%); pointer-events: none; }
+  .storyboard-pan-hint { margin: 8px 0 0; color: var(--text-muted); font-size: 8px; text-align: right; }
 
   .settings-dialog { width: min(440px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 32px)); padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-dialog); }
   .project-settings-dialog form { margin: 0; }
