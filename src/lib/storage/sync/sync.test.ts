@@ -147,6 +147,26 @@ describe("encrypted single-file sync", () => {
 });
 
 describe("open-folder sync", () => {
+  it("round-trips recoverable project, chapter, and scene trash state", async () => {
+    const fs = new MemoryFileSystem();
+    const project = storedProject();
+    project.project.trashed = true;
+    project.project.chapters[0] = { ...project.project.chapters[0], trashed: true };
+    project.project.documents[0] = {
+      ...project.project.documents[0],
+      trashed: true,
+      trashedWithChapterId: "chapter-1"
+    };
+
+    await new OpenFolderSyncProvider(fs).sync("", [project], {}, 1_000, "device-a");
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+
+    expect(reopened.projects[0].project.trashed).toBe(true);
+    expect(reopened.projects[0].project.chapters[0].trashed).toBe(true);
+    expect(reopened.projects[0].project.documents.find((doc) => doc.id === "doc-1"))
+      .toMatchObject({ trashed: true, trashedWithChapterId: "chapter-1" });
+  });
+
   it("round-trips projects as Markdown and JSON", async () => {
     const fs = new MemoryFileSystem();
     const provider = new OpenFolderSyncProvider(fs);

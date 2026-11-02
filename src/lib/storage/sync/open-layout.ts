@@ -167,6 +167,7 @@ function documentPayload(fields: Record<string, unknown>): Record<string, unknow
     space: fields.space,
     folderId: fields.folderId,
     trashed: fields.trashed,
+    trashedWithChapterId: fields.trashedWithChapterId,
     updatedAt: fields.updatedAt,
     revision: fields.revision,
     updatedBy: fields.updatedBy,
@@ -184,6 +185,7 @@ function documentFields(document: DocumentData, meta: EntityMeta): Record<string
     space: document.space,
     folderId: document.folderId,
     trashed: document.trashed,
+    trashedWithChapterId: document.trashedWithChapterId,
     updatedAt: meta.updatedAt,
     revision: meta.revision,
     updatedBy: meta.updatedBy,
@@ -255,6 +257,9 @@ function decodeDocument(
   if (typeof fields.space === "string") record.space = fields.space as DocumentData["space"];
   if (typeof fields.folderId === "string") record.folderId = fields.folderId;
   if (fields.trashed === true) record.trashed = true;
+  if (typeof fields.trashedWithChapterId === "string") {
+    record.trashedWithChapterId = fields.trashedWithChapterId;
+  }
   if (isObject(fields.character)) record.character = fields.character as DocumentData["character"];
   if (isObject(fields.place)) record.place = fields.place as DocumentData["place"];
 
@@ -295,7 +300,8 @@ function decodeChapter(
       id: record.id,
       title: record.title,
       expanded: record.expanded === true,
-      ...(typeof record.summary === "string" ? { summary: record.summary } : {})
+      ...(typeof record.summary === "string" ? { summary: record.summary } : {}),
+      ...(record.trashed === true ? { trashed: true } : {})
     },
     meta: finalMeta,
     external,
@@ -773,7 +779,8 @@ export async function writeOpenProject(
       id: chapter.id,
       title: chapter.title,
       expanded: chapter.expanded,
-      ...(typeof chapter.summary === "string" ? { summary: chapter.summary } : {})
+      ...(typeof chapter.summary === "string" ? { summary: chapter.summary } : {}),
+      ...(chapter.trashed ? { trashed: true } : {})
     };
     const content = `${JSON.stringify({ record, meta, hash: hashJson({ record, meta }) }, null, 2)}\n`;
     await writeIfChanged(fs, path, content);

@@ -87,6 +87,7 @@
   import {
     deleteBrowserResearchFile,
     openBrowserResearchFile,
+    readBrowserResearchFile,
     saveBrowserResearchFile
   } from "$lib/research-files";
   import { createTimelineNode, normalizeTimelineNodes } from "$lib/timeline";
@@ -279,6 +280,9 @@
 
   let editor: HTMLDivElement;
   let settingsDialog: HTMLDialogElement;
+  let researchMarkdownDialog: HTMLDialogElement;
+  let researchMarkdownTitle = $state("");
+  let researchMarkdownHtml = $state("");
   let projectSettingsDialog: HTMLDialogElement;
   let chapterNameInput = $state<HTMLInputElement>();
   let dataImportInput = $state<HTMLInputElement>();
@@ -361,6 +365,7 @@
   let projectNameDraft = $state("Untitled Project");
   let authorNameDraft = $state("");
   let projects = $state<ProjectData[]>([]);
+  let liveProjects = $derived(projects.filter((project) => !project.trashed));
   let activeProjectId = $state("");
   let wordCount = $state(0);
   let characterCount = $state(0);
@@ -427,6 +432,13 @@
   let viewedMonth = $state(new Date());
   let documents = $state<DocumentData[]>([]);
   let chapters = $state<ChapterData[]>([]);
+  let liveChapters = $derived(chapters.filter((chapter) => !chapter.trashed));
+  let trashCount = $derived(
+    documents.filter((doc) => doc.trashed
+      && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)).length
+      + chapters.filter((chapter) => chapter.trashed).length
+      + projects.filter((project) => project.trashed).length
+  );
   let noteFolders = $state<NoteFolder[]>([]);
   let expandedNoteFolders = $state<Record<string, boolean>>({});
   let expandedSpaces = $state<Record<SpaceName | "Trash", boolean>>({
@@ -689,7 +701,7 @@
     .filter((doc) => doc.chapterId && !doc.trashed)
     .reduce((total, doc) => total + countHtmlWords(doc.content), 0));
   let chapterWordCounts = $derived.by(() => Object.fromEntries(
-    chapters.map((chapter) => [
+    liveChapters.map((chapter) => [
       chapter.id,
       documents
         .filter((doc) => doc.chapterId === chapter.id && !doc.space && !doc.trashed)
@@ -697,7 +709,7 @@
     ])
   ));
   let chapterSceneCounts = $derived.by(() => Object.fromEntries(
-    chapters.map((chapter) => [
+    liveChapters.map((chapter) => [
       chapter.id,
       documents.filter((doc) => doc.chapterId === chapter.id && !doc.space && !doc.trashed).length
     ])
@@ -764,7 +776,7 @@
       const { invoke, isTauri } = await import("@tauri-apps/api/core");
       if (!isTauri()) return;
       await invoke("update_project_menu", {
-        projects: projects.map(({ id, name }) => ({ id, name })),
+        projects: liveProjects.map(({ id, name }) => ({ id, name })),
         activeProjectId
       });
     } catch (error) {
@@ -1417,7 +1429,7 @@
     showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
-    const next = projects.find((project) => project.id === id);
+    const next = liveProjects.find((project) => project.id === id);
     if (!next) return;
     loadProject(next);
     persistProjectCollection();
@@ -1427,7 +1439,7 @@
     showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
-    const number = projects.length + 1;
+    const number = liveProjects.length + 1;
     const next: ProjectData = {
       id: crypto.randomUUID(),
       name: number === 1 ? "Untitled Project" : `Untitled Project ${number}`,
@@ -1537,7 +1549,35 @@
   }
 
   function triggerImportData() {
+    if (desktopRuntime) {
+      void pickDesktopBackup(false);
+      return;
+    }
     dataImportInput?.click();
+  }
+
+  async function pickDesktopBackup(encrypted: boolean) {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: false,
+        directory: false,
+        title: encrypted ? "Import encrypted backup" : "Import backup",
+        filters: [{ name: "ProseCraft backups", extensions: ["prosecraft", "json"] }]
+      });
+      if (typeof picked !== "string" || !picked) return;
+      const { invoke } = await import("@tauri-apps/api/core");
+      const bytes = await invoke<ArrayBuffer>("read_import_file", { path: picked });
+      const text = new TextDecoder().decode(new Uint8Array(bytes));
+      if (encrypted) {
+        openEncryptedImport(text);
+      } else {
+        importBackupText(text);
+      }
+    } catch (error) {
+      console.error("Could not import a backup.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not import that backup.";
+    }
   }
 
   function triggerEpubImport() {
@@ -1620,7 +1660,16 @@
     input.value = "";
     if (!file) return;
     try {
-      const result = importBundleText(await file.text());
+      importBackupText(await file.text());
+    } catch (error) {
+      console.error("Could not read a backup.", error);
+      dataStatus = "Could not read that backup.";
+    }
+  }
+
+  function importBackupText(text: string) {
+    try {
+      const result = importBundleText(text);
       dataStatus = `Imported ${result.imported} of ${result.total} project(s). Reloading…`;
       setTimeout(() => location.reload(), 400);
     } catch (error) {
@@ -1639,6 +1688,10 @@
   }
 
   function triggerEncryptedImport() {
+    if (desktopRuntime) {
+      void pickDesktopBackup(true);
+      return;
+    }
     encryptedImportInput?.click();
   }
 
@@ -1648,11 +1701,14 @@
     input.value = "";
     if (!file) return;
     try {
-      pendingEncryptedImport = await file.text();
+      openEncryptedImport(await file.text());
     } catch {
       dataStatus = "Could not read that file.";
-      return;
     }
+  }
+
+  function openEncryptedImport(text: string) {
+    pendingEncryptedImport = text;
     passphraseMode = "import";
     passphraseDraft = "";
     passphraseConfirm = "";
@@ -2634,7 +2690,7 @@
   }
 
   function createChapter(options: { focusEditor?: boolean } = {}) {
-    const chapterNumber = chapters.filter(isAutomaticallyNumberedChapter).length + 1;
+    const chapterNumber = liveChapters.filter(isAutomaticallyNumberedChapter).length + 1;
     const chapter: ChapterData = {
       id: crypto.randomUUID(),
       title: `Chapter ${chapterNumber}`,
@@ -2651,7 +2707,8 @@
   }
 
   function chapterLabel(chapter: ChapterData) {
-    return formatChapterLabel(chapter, chapters);
+    if (chapter.trashed && isAutomaticallyNumberedChapter(chapter)) return chapter.title;
+    return formatChapterLabel(chapter, liveChapters);
   }
 
   async function startChapterRename(chapter: ChapterData) {
@@ -2678,25 +2735,28 @@
   }
 
   function moveChapter(id: string, offset: number) {
-    const index = chapters.findIndex((chapter) => chapter.id === id);
+    const live = [...liveChapters];
+    const index = live.findIndex((chapter) => chapter.id === id);
     const targetIndex = index + offset;
-    if (index < 0 || targetIndex < 0 || targetIndex >= chapters.length) return;
-    const reordered = [...chapters];
+    if (index < 0 || targetIndex < 0 || targetIndex >= live.length) return;
+    const reordered = [...live];
     [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
-    chapters = reordered;
+    let nextLiveIndex = 0;
+    chapters = chapters.map((chapter) => chapter.trashed ? chapter : reordered[nextLiveIndex++]);
     persistChapters();
   }
 
   function reorderChapter(sourceId: string, targetId: string, afterTarget: boolean) {
     if (sourceId === targetId) return;
-    const reordered = [...chapters];
+    const reordered = [...liveChapters];
     const sourceIndex = reordered.findIndex((chapter) => chapter.id === sourceId);
     if (sourceIndex < 0 || !reordered.some((chapter) => chapter.id === targetId)) return;
     const [source] = reordered.splice(sourceIndex, 1);
     const targetIndex = reordered.findIndex((chapter) => chapter.id === targetId);
     reordered.splice(targetIndex + (afterTarget ? 1 : 0), 0, source);
-    if (reordered.every((chapter, index) => chapter.id === chapters[index]?.id)) return;
-    chapters = reordered;
+    if (reordered.every((chapter, index) => chapter.id === liveChapters[index]?.id)) return;
+    let nextLiveIndex = 0;
+    chapters = chapters.map((chapter) => chapter.trashed ? chapter : reordered[nextLiveIndex++]);
     persistChapters();
   }
 
@@ -3682,6 +3742,26 @@
   async function openResearchFile(item: ResearchFile) {
     researchStatus = "";
     try {
+      if (/\.(?:md|markdown)$/i.test(item.fileName)) {
+        let markdownSource: string;
+        if (!desktopRuntime) {
+          markdownSource = await readBrowserResearchFile(activeProjectId, item.storageKey);
+        } else {
+          const root = await ensureResearchRoot();
+          if (!root) return;
+          const projectFolder = ensureResearchFolderName();
+          const { invoke } = await import("@tauri-apps/api/core");
+          markdownSource = await invoke<string>("research_read_markdown", {
+            root,
+            projectFolder,
+            storageKey: item.storageKey
+          });
+        }
+        researchMarkdownTitle = researchItemTitle(item);
+        researchMarkdownHtml = cleanHtml(markdownToHtml(markdownSource));
+        researchMarkdownDialog.showModal();
+        return;
+      }
       if (!desktopRuntime) {
         await openBrowserResearchFile(activeProjectId, item.storageKey, item.fileName, item.mimeType);
         researchStatus = "";
@@ -3846,6 +3926,14 @@
   }
 
   function restoreDocument(id: string) {
+    const document = documents.find((doc) => doc.id === id);
+    const deletedChapter = document?.chapterId
+      ? chapters.find((chapter) => chapter.id === document.chapterId && chapter.trashed)
+      : undefined;
+    if (deletedChapter) {
+      restoreChapter(deletedChapter.id, id);
+      return;
+    }
     documents = documents.map((doc) => doc.id === id ? { ...doc, trashed: false } : doc);
     persist();
   }
@@ -3868,9 +3956,115 @@
     persist();
   }
 
+  function trashChapter(id: string) {
+    const chapter = chapters.find((item) => item.id === id && !item.trashed);
+    if (!chapter) return;
+    const sceneCount = documents.filter((doc) => doc.chapterId === id && !doc.space && !doc.trashed).length;
+    const sceneLabel = sceneCount === 1 ? "scene" : "scenes";
+    if (!window.confirm(`Move “${chapterLabel(chapter)}” and its ${sceneCount} ${sceneLabel} to Trash? You can restore them later.`)) {
+      return;
+    }
+
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const chapterDocumentIds = new Set(
+      documents.filter((doc) => doc.chapterId === id && !doc.space && !doc.trashed).map((doc) => doc.id)
+    );
+    documents = documents.map((doc) => chapterDocumentIds.has(doc.id)
+      ? { ...doc, trashed: true, trashedWithChapterId: id }
+      : doc);
+    chapters = chapters.map((item) => item.id === id ? { ...item, trashed: true } : item);
+    if (chapterDocumentIds.has(activeDocumentId)) {
+      activeDocumentId = "";
+      const next = documents.find((doc) => !doc.trashed);
+      if (next) {
+        openDocument(next.id);
+      } else {
+        title = "";
+        setEditorContent("<p><br></p>");
+        setMarkdownSource("");
+        refreshCounts();
+      }
+    }
+    persist();
+  }
+
+  function restoreChapter(id: string, restoreDocumentId?: string) {
+    chapters = chapters.map((chapter) => chapter.id === id ? { ...chapter, trashed: false } : chapter);
+    documents = documents.map((doc) => {
+      if (doc.chapterId !== id || (doc.trashedWithChapterId !== id && doc.id !== restoreDocumentId)) return doc;
+      const { trashedWithChapterId: _trashedWithChapterId, ...restored } = doc;
+      return { ...restored, trashed: false };
+    });
+    persist();
+  }
+
+  function permanentlyDeleteChapter(id: string) {
+    const chapter = chapters.find((item) => item.id === id && item.trashed);
+    if (!chapter) return;
+    const chapterDocuments = documents.filter((doc) => doc.chapterId === id);
+    if (!window.confirm(`Permanently delete “${chapterLabel(chapter)}” and its ${chapterDocuments.length} scene(s)? This cannot be undone.`)) {
+      return;
+    }
+
+    const chapterDocumentIds = new Set(chapterDocuments.map((doc) => doc.id));
+    chapters = chapters.filter((item) => item.id !== id);
+    documents = documents.filter((doc) => !chapterDocumentIds.has(doc.id));
+    storyboardCards = storyboardCards.filter((card) =>
+      !(card.kind === "chapter" && card.sourceId === id)
+      && !(card.kind === "scene" && chapterDocumentIds.has(card.sourceId))
+    );
+    const { [id]: _deletedGoal, ...remainingGoals } = chapterGoals;
+    chapterGoals = remainingGoals;
+    if (chapterDocumentIds.has(activeDocumentId)) {
+      activeDocumentId = "";
+      const next = documents.find((doc) => !doc.trashed);
+      if (next) {
+        openDocument(next.id);
+      } else {
+        title = "";
+        setEditorContent("<p><br></p>");
+        setMarkdownSource("");
+        refreshCounts();
+      }
+    }
+    persist();
+  }
+
+  function trashActiveProject() {
+    if (liveProjects.length <= 1) return;
+    const project = projects.find((item) => item.id === activeProjectId && !item.trashed);
+    if (!project) return;
+    if (!window.confirm(`Move “${project.name}” to Trash? You can restore it later.`)) return;
+
+    const next = liveProjects.find((item) => item.id !== project.id);
+    if (!next) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    projects = projects.map((item) => item.id === project.id
+      ? { ...currentProjectData(), trashed: true }
+      : item);
+    loadProject(next);
+    persistProjectCollection();
+  }
+
+  function restoreProject(id: string) {
+    projects = projects.map((project) => project.id === id ? { ...project, trashed: false } : project);
+    persistProjectCollection();
+  }
+
+  function permanentlyDeleteProject(id: string) {
+    const project = projects.find((item) => item.id === id && item.trashed);
+    if (!project) return;
+    if (!window.confirm(`Permanently delete “${project.name}” and all its contents? This cannot be undone.`)) return;
+    projects = projects.filter((item) => item.id !== id);
+    saveVault(projects, activeProjectId);
+    void syncNativeProjectMenu();
+  }
+
   function createDocument() {
     showZenInterface();
-    const chapter = chapters[0];
+    const chapter = liveChapters[0];
     if (chapter) createScene(chapter.id);
     else createChapter();
   }
@@ -4027,7 +4221,9 @@
       const vault = loadVault();
       if (vault && vault.projects.length > 0) {
         projects = vault.projects;
-        const selectedProject = projects.find((project) => project.id === vault.activeProjectId) ?? projects[0];
+        const selectedProject = projects.find((project) =>
+          project.id === vault.activeProjectId && !project.trashed
+        ) ?? projects.find((project) => !project.trashed);
         if (selectedProject) {
           loadProject(selectedProject);
           loadedProject = true;
@@ -4244,12 +4440,18 @@
   >
     <div class="project-identity">
       <select aria-label="Switch project" value={activeProjectId} onchange={(event) => switchProject((event.currentTarget as HTMLSelectElement).value)}>
-        {#each projects as project (project.id)}
+        {#each liveProjects as project (project.id)}
           <option value={project.id}>{project.name}</option>
         {/each}
       </select>
       <div class="project-identity-actions">
         <button aria-label="Project settings" title="Project settings" onclick={openProjectSettings}>⚙</button>
+        <button
+          aria-label="Move current project to Trash"
+          title={liveProjects.length > 1 ? "Move project to Trash" : "The last project cannot be moved to Trash"}
+          disabled={liveProjects.length <= 1}
+          onclick={trashActiveProject}
+        >×</button>
         <button
           aria-label="Import EPUB"
           title="Import EPUB…"
@@ -4267,7 +4469,7 @@
         <button class="tree-add" aria-label="Add chapter" title="Add chapter" onclick={() => createChapter()}>+</button>
       </div>
       <div class="chapter-list">
-        {#each chapters as chapter (chapter.id)}
+        {#each liveChapters as chapter (chapter.id)}
           <div
             class="chapter-group"
             class:dragging={draggedChapterId === chapter.id}
@@ -4307,8 +4509,9 @@
               {/if}
               <div class="chapter-actions">
                 <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}>✎</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={chapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}>↑</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={chapters.indexOf(chapter) === chapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}>↓</button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}>↑</button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}>↓</button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} to Trash" title="Move chapter and scenes to Trash" onclick={() => trashChapter(chapter.id)}>×</button>
                 <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}>+</button>
               </div>
             </div>
@@ -4330,7 +4533,7 @@
             {/if}
           </div>
         {/each}
-        {#if chapters.length === 0}
+        {#if liveChapters.length === 0}
           <button class="empty-action" onclick={() => createChapter()}>+ Add your first chapter</button>
         {/if}
       </div>
@@ -4571,12 +4774,32 @@
             <span class:rotated={expandedSpaces.Trash} class="chevron">›</span>
             <span class="space-icon" aria-hidden="true">⌫</span>
             <span class="tree-name">Trash</span>
-            <span class="trash-count">{documents.filter((doc) => doc.trashed).length || ""}</span>
+            <span class="trash-count">{trashCount || ""}</span>
           </button>
         </div>
         {#if expandedSpaces.Trash}
           <div class="space-items">
-            {#each documents.filter((doc) => doc.trashed) as doc (doc.id)}
+            {#each chapters.filter((chapter) => chapter.trashed) as chapter (chapter.id)}
+              <div class="document-row">
+                <span class="document-select trashed-document">
+                  <span class="scene-mark">▱</span>
+                  <span class="tree-name">{chapterLabel(chapter)}</span>
+                </span>
+                <button class="row-action restore-action" aria-label="Restore {chapterLabel(chapter)} and its scenes" title="Restore chapter and scenes" onclick={() => restoreChapter(chapter.id)}>↶</button>
+                <button class="row-action delete-action" aria-label="Permanently delete {chapterLabel(chapter)} and its scenes" title="Delete chapter and scenes permanently" onclick={() => permanentlyDeleteChapter(chapter.id)}>×</button>
+              </div>
+            {/each}
+            {#each projects.filter((project) => project.trashed) as project (project.id)}
+              <div class="document-row">
+                <span class="document-select trashed-document">
+                  <span class="scene-mark">▣</span>
+                  <span class="tree-name">{project.name}</span>
+                </span>
+                <button class="row-action restore-action" aria-label="Restore project {project.name}" title="Restore project" onclick={() => restoreProject(project.id)}>↶</button>
+                <button class="row-action delete-action" aria-label="Permanently delete project {project.name}" title="Delete project permanently" onclick={() => permanentlyDeleteProject(project.id)}>×</button>
+              </div>
+            {/each}
+            {#each documents.filter((doc) => doc.trashed && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)) as doc (doc.id)}
               <div class="document-row">
                 <span class="document-select trashed-document">
                   <span class="scene-mark">¶</span>
@@ -4586,7 +4809,7 @@
                 <button class="row-action delete-action" aria-label="Permanently delete {doc.title}" title="Delete permanently" onclick={() => permanentlyDelete(doc.id)}>×</button>
               </div>
             {/each}
-            {#if !documents.some((doc) => doc.trashed)}
+            {#if trashCount === 0}
               <span class="empty-tree">Trash is empty</span>
             {/if}
           </div>
@@ -4784,7 +5007,7 @@
       </div>
         {#if workspaceView === "outline"}
           <OutlineView
-            {chapters}
+            chapters={liveChapters}
             {chapterWordCounts}
             {chapterSceneCounts}
             onAddChapter={addOutlineChapter}
@@ -4808,7 +5031,7 @@
             </section>
             <section class="board-source-group">
               <h3>Chapters</h3>
-              {#each chapters as chapter (chapter.id)}
+              {#each liveChapters as chapter (chapter.id)}
                 <div class="board-source">
                   <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}>⠿</button>
                   <span class="source-icon">▱</span><span class="source-name">{chapterLabel(chapter)}</span>
@@ -5036,7 +5259,7 @@
         {/if}
         {#if workspaceView === "publish"}
           <PublishView
-            {chapters}
+            chapters={liveChapters}
             {documents}
             projectName={projectName}
             authorName={authorName}
@@ -5087,10 +5310,10 @@
       </section>
 
       <section class="progress-section chapters-progress">
-        <div class="section-title"><strong>Chapter goals</strong><span>{chapters.length}</span></div>
-        {#if chapters.length > 0}
+        <div class="section-title"><strong>Chapter goals</strong><span>{liveChapters.length}</span></div>
+        {#if liveChapters.length > 0}
           <div class="chapter-goal-list">
-            {#each chapters as chapter (chapter.id)}
+            {#each liveChapters as chapter (chapter.id)}
               {@const count = chapterWordCounts[chapter.id] ?? 0}
               {@const goal = chapterGoals[chapter.id] ?? 0}
               <div class="chapter-goal">
@@ -5164,6 +5387,16 @@
       </section>
     </aside>
 </div>
+
+<dialog class="settings-dialog research-markdown-dialog" bind:this={researchMarkdownDialog} onclick={(event) => {
+  if (event.target === researchMarkdownDialog) researchMarkdownDialog.close();
+}}>
+  <div class="settings-header">
+    <div><span class="settings-kicker">RESEARCH FILE</span><h2>{researchMarkdownTitle}</h2></div>
+    <button class="close-settings" aria-label="Close Markdown preview" onclick={() => researchMarkdownDialog.close()}>×</button>
+  </div>
+  <article class="research-markdown-content">{@html researchMarkdownHtml}</article>
+</dialog>
 
 <dialog class="settings-dialog" bind:this={settingsDialog} onclick={(event) => {
   if (event.target === settingsDialog) settingsDialog.close();
@@ -6021,7 +6254,19 @@
   .export-button { display: flex; height: 30px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 11px; }
   .export-button:hover { background: var(--control-hover); }
   .writing-area { display: flex; flex: 1; flex-direction: column; align-items: center; padding: 15px 32px 44px; }
-  .workspace-controls { display: flex; width: min(100%, 1120px); align-items: center; justify-content: space-between; margin-bottom: 22px; }
+  .workspace-controls {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    display: flex;
+    width: min(100%, 1120px);
+    align-items: center;
+    justify-content: space-between;
+    margin-top: -15px;
+    margin-bottom: 14px;
+    padding: 15px 0 8px;
+    background: var(--page-bg);
+  }
   .workspace-modes, .panel-toggles { display: flex; align-items: center; gap: 5px; }
   .workspace-modes { padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
   .workspace-mode { height: 26px; padding: 0 11px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
@@ -6041,7 +6286,7 @@
   .meta-divider { height: 12px; border-left: 1px solid var(--border); }
   .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--writing-font, var(--interface-font)); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
   .title-input::placeholder { color: var(--text-faint); }
-  .toolbar { display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
+  .toolbar { position: sticky; top: 58px; z-index: 5; display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
   .style-select { width: 112px; height: 28px; padding: 0 6px; border: 0; outline: 0; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
@@ -6182,6 +6427,20 @@
   .storyboard-pan-hint { margin: 8px 0 0; color: var(--text-muted); font-size: 8px; text-align: right; }
 
   .settings-dialog { width: min(440px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 32px)); padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-dialog); }
+  .research-markdown-dialog { width: min(820px, calc(100vw - 32px)); max-height: min(860px, calc(100vh - 32px)); }
+  .research-markdown-content { overflow: auto; padding: 24px 32px 36px; color: var(--text-body); font-family: var(--writing-font, Georgia, serif); font-size: 15px; line-height: 1.8; overflow-wrap: anywhere; }
+  .research-markdown-content :global(h1), .research-markdown-content :global(h2), .research-markdown-content :global(h3) { margin: 1.5em 0 .55em; color: var(--text-heading); font-family: var(--interface-font); line-height: 1.25; }
+  .research-markdown-content :global(h1) { margin-top: 0; font-size: 1.8em; }
+  .research-markdown-content :global(h2) { font-size: 1.45em; }
+  .research-markdown-content :global(p), .research-markdown-content :global(ul), .research-markdown-content :global(ol), .research-markdown-content :global(blockquote), .research-markdown-content :global(pre) { margin: 0 0 1em; }
+  .research-markdown-content :global(a) { color: var(--link); text-decoration: underline; text-underline-offset: 3px; }
+  .research-markdown-content :global(blockquote) { margin-left: 0; padding-left: 16px; border-left: 2px solid var(--accent); color: var(--text-secondary); }
+  .research-markdown-content :global(code) { padding: .12em .35em; border-radius: 4px; background: var(--control-hover); font-family: ui-monospace, monospace; font-size: .88em; }
+  .research-markdown-content :global(pre) { overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--control-hover); }
+  .research-markdown-content :global(pre code) { padding: 0; background: transparent; }
+  .research-markdown-content :global(table) { width: 100%; margin-bottom: 1em; border-collapse: collapse; }
+  .research-markdown-content :global(th), .research-markdown-content :global(td) { padding: 6px 9px; border: 1px solid var(--border); text-align: left; }
+  .research-markdown-content :global(img) { max-width: 100%; height: auto; }
   .project-settings-dialog form { margin: 0; }
   .research-link-dialog form { margin: 0; }
   .settings-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
@@ -6275,7 +6534,8 @@
     .sidebar { width: 220px; padding-right: 10px; padding-left: 10px; }
     .main-panel { margin-left: 220px; }
     .writing-area { padding: 15px 20px 35px; }
-    .workspace-controls { flex-wrap: wrap; margin-bottom: 20px; }
+    .workspace-controls { flex-wrap: wrap; margin-bottom: 16px; }
+    .toolbar { top: 86px; }
     .panel-toggles { margin-left: auto; }
     .panel-toggle span { display: none; }
     .storyboard-view { grid-template-columns: 1fr; }
@@ -6292,6 +6552,7 @@
     .progress-sidebar { width: min(270px, calc(100vw - 24px)); }
     .writing-area { padding: 12px 12px 28px; }
     .workspace-modes { width: 100%; gap: 0; overflow-x: auto; scrollbar-width: none; }
+    .toolbar { top: 86px; }
     .workspace-modes::-webkit-scrollbar { display: none; }
     .workspace-mode { flex: 1 0 auto; padding: 0 4px; font-size: 9px; white-space: nowrap; }
     .panel-toggle { gap: 3px; padding: 0 4px; }

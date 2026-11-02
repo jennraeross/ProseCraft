@@ -9,6 +9,8 @@ type StoredResearchFile = {
   mimeType: string;
 };
 
+export const MAX_RESEARCH_MARKDOWN_PREVIEW_BYTES = 2 * 1024 * 1024;
+
 function recordKey(projectId: string, storageKey: string): string {
   return `${projectId}:${storageKey}`;
 }
@@ -99,6 +101,26 @@ export async function browserResearchFileExists(
       transaction.objectStore(STORE_NAME).get(recordKey(projectId, storageKey))
     );
     return result !== undefined;
+  } finally {
+    database.close();
+  }
+}
+
+export async function readBrowserResearchFile(
+  projectId: string,
+  storageKey: string
+): Promise<string> {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestResult(
+      transaction.objectStore(STORE_NAME).get(recordKey(projectId, storageKey))
+    ) as StoredResearchFile | undefined;
+    if (!record) throw new Error("That research file is no longer in browser storage.");
+    if (record.blob.size > MAX_RESEARCH_MARKDOWN_PREVIEW_BYTES) {
+      throw new Error("Markdown files must be 2 MB or smaller to preview.");
+    }
+    return await record.blob.text();
   } finally {
     database.close();
   }

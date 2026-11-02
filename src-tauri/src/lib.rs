@@ -285,9 +285,10 @@ fn sync_rename(from: String, to: String) -> Result<(), String> {
 
 const MAX_RESEARCH_FILE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_RESEARCH_MARKDOWN_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Reads a user-selected EPUB into memory for the frontend importer. The dialog
-/// plugin supplies the path, so no directory-wide read scope is required.
+/// Reads a user-selected import file into memory. The dialog plugin supplies
+/// the path, so no directory-wide read scope is required.
 #[tauri::command]
 fn read_import_file(path: String) -> Result<tauri::ipc::Response, String> {
     let source = PathBuf::from(&path);
@@ -296,7 +297,7 @@ fn read_import_file(path: String) -> Result<tauri::ipc::Response, String> {
     }
     let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
     if metadata.len() > MAX_IMPORT_FILE_BYTES {
-        return Err("EPUB files must be 100 MB or smaller.".to_string());
+        return Err("Import files must be 100 MB or smaller.".to_string());
     }
     let bytes = std::fs::read(&source).map_err(|error| error.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
@@ -396,6 +397,31 @@ fn research_file_path(
 }
 
 #[tauri::command]
+fn research_read_markdown(
+    root: String,
+    project_folder: String,
+    storage_key: String,
+) -> Result<String, String> {
+    let destination = research_destination(&root, &project_folder, &storage_key)?;
+    if destination
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("md"))
+    {
+        return Err("Only Markdown research files can be previewed.".to_string());
+    }
+    if !destination.is_file() {
+        return Err("That research file is no longer in the project folder.".to_string());
+    }
+    let metadata = std::fs::metadata(&destination).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_RESEARCH_MARKDOWN_PREVIEW_BYTES {
+        return Err("Markdown files must be 2 MB or smaller to preview.".to_string());
+    }
+    std::fs::read_to_string(destination)
+        .map_err(|error| format!("Could not read that Markdown file as UTF-8: {error}"))
+}
+
+#[tauri::command]
 fn research_open_file(
     root: String,
     project_folder: String,
@@ -431,6 +457,16 @@ fn research_delete_file(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    if (std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some())
+        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+    {
+        // SAFETY: this runs at app startup before Tauri creates any threads.
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -572,6 +608,7 @@ pub fn run() {
             research_prepare_project_folder,
             research_import_file,
             research_file_path,
+            research_read_markdown,
             research_open_file,
             research_delete_file
         ])
@@ -656,5 +693,34 @@ mod tests {
         std::fs::write(&book, b"epub bytes").unwrap();
         assert!(read_import_file(book.to_string_lossy().to_string()).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn research_markdown_preview_reads_only_small_markdown_files() {
+        let root = temp_dir("research-markdown");
+        let folder = root.join("project").join("research").join("docs");
+        std::fs::create_dir_all(&folder).unwrap();
+        let markdown = folder.join("notes.md");
+        std::fs::write(&markdown, "# Notes\n").unwrap();
+
+        assert_eq!(
+            research_read_markdown(
+                root.to_string_lossy().to_string(),
+                "project".into(),
+                "research/docs/notes.md".into()
+            )
+            .unwrap(),
+            "# Notes\n"
+        );
+        assert!(
+            research_read_markdown(
+                root.to_string_lossy().to_string(),
+                "project".into(),
+                "research/docs/notes.txt".into()
+            )
+            .is_err()
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

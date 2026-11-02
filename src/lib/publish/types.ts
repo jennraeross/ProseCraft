@@ -10,7 +10,7 @@ import {
 export const SPACE_NAMES = ["Characters", "Places", "Research", "Notes"] as const;
 export type SpaceName = (typeof SPACE_NAMES)[number];
 
-export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string };
+export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string; trashed?: boolean };
 export type BinderFolder = { id: string; title: string; parentId: string | null };
 export type NoteFolder = BinderFolder;
 export type ResearchFolder = BinderFolder;
@@ -96,6 +96,7 @@ export type DocumentData = {
   space?: SpaceName;
   folderId?: string;
   trashed?: boolean;
+  trashedWithChapterId?: string;
   /** Present on `space: "Characters"` documents; absent on legacy records. */
   character?: CharacterSheet;
   /** Present on `space: "Places"` documents; absent on legacy records. */
