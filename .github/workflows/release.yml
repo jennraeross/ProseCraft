@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z tag to rebuild and publish
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -13,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-node@v4
         with:
@@ -21,8 +32,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Validate tag and app versions
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from "node:fs";
@@ -70,16 +79,18 @@ jobs:
           - platform: windows-latest
             rust-target: ""
             args: ""
-          - platform: macos-latest
+          - platform: macos-15
             rust-target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
-          - platform: macos-latest
+          - platform: macos-15-intel
             rust-target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-node@v4
         with:
@@ -115,9 +126,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: ProseCraft ${{ github.ref_name }}
-          releaseBody: Installers for ProseCraft ${{ github.ref_name }}.
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: ProseCraft ${{ env.RELEASE_TAG }}
+          releaseBody: Installers for ProseCraft ${{ env.RELEASE_TAG }}.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -132,7 +143,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           release_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
           gh api --method PATCH \

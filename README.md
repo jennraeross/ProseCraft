@@ -29,6 +29,16 @@ atomic push command to retry after resolving the Git error. It also verifies tha
 and tag reached `origin`. Add `--dry-run` to check the proposed version without changing
 files or pushing.
 
+If GitHub cancels a build because a hosted runner could not be allocated, retry the tagged
+release from the Actions workflow:
+
+```sh
+gh workflow run release.yml --ref main -f release_tag=vX.Y.Z
+```
+
+Replace `vX.Y.Z` with the existing release tag. This reruns all platform builds and publishes
+the release once they succeed.
+
 ![Outlining](<Screenshots/1.27.03 PM.png>)
 ![Storyboarding](<Screenshots/1.27.36 PM.png>)
 ![Publishing](<Screenshots/1.27.58 PM.png>)

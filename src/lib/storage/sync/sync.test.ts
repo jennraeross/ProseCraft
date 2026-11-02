@@ -33,7 +33,7 @@ function projectFixture(id = "project-1", name = "Test Novel"): ProjectData {
         id: "doc-2",
         title: "Mara",
         content: "<p>Notes about <em>Mara</em>.</p>",
-        space: "Characters",
+        space: "Wiki",
         character: {
           role: "Protagonist",
           age: "32",

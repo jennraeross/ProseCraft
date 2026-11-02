@@ -7,7 +7,7 @@ import {
   type CustomExportStyle
 } from "./presets";
 
-export const SPACE_NAMES = ["Characters", "Places", "Research", "Notes"] as const;
+export const SPACE_NAMES = ["Wiki"] as const;
 export type SpaceName = (typeof SPACE_NAMES)[number];
 
 export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string; trashed?: boolean };
@@ -97,9 +97,12 @@ export type DocumentData = {
   folderId?: string;
   trashed?: boolean;
   trashedWithChapterId?: string;
-  /** Present on `space: "Characters"` documents; absent on legacy records. */
+  /**
+   * Legacy structured profiles from the former Characters and Places spaces.
+   * They are converted into page content by the Wiki migration and are never
+   * written by the current editor.
+   */
   character?: CharacterSheet;
-  /** Present on `space: "Places"` documents; absent on legacy records. */
   place?: PlaceSheet;
 };
 

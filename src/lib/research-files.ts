@@ -116,7 +116,7 @@ export async function readBrowserResearchFile(
     const record = await requestResult(
       transaction.objectStore(STORE_NAME).get(recordKey(projectId, storageKey))
     ) as StoredResearchFile | undefined;
-    if (!record) throw new Error("That research file is no longer in browser storage.");
+    if (!record) throw new Error("That wiki file is no longer in browser storage.");
     if (record.blob.size > MAX_RESEARCH_MARKDOWN_PREVIEW_BYTES) {
       throw new Error("Markdown files must be 2 MB or smaller to preview.");
     }

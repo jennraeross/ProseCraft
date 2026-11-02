@@ -15,7 +15,6 @@
   import { autoResize } from "$lib/auto-resize";
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
-  import EntitySheet, { type SheetSection } from "$lib/EntitySheet.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
@@ -51,19 +50,11 @@
   import { htmlToMarkdown, markdownToHtml } from "$lib/publish/markdown";
   import {
     defaultPublishOptions,
-    emptyCharacterSheet,
-    emptyPlaceSheet,
-    normalizeCharacterSheet,
-    normalizePlaceSheet,
     normalizePublishOptions,
-    SHEET_FIELD_LIMIT,
     SPACE_NAMES,
     type ChapterData,
-    type CharacterSheet,
     type DocumentData,
     type BinderFolder,
-    type NoteFolder,
-    type PlaceSheet,
     type PublishOptions,
     type ResearchFile,
     type ResearchItem,
@@ -91,6 +82,8 @@
     saveBrowserResearchFile
   } from "$lib/research-files";
   import { createTimelineNode, normalizeTimelineNodes } from "$lib/timeline";
+  import { migrateLegacyDocument, migrateProjectToWiki } from "$lib/wiki-migration";
+  import { createWikiMentionMatcher } from "$lib/wiki-mentions";
   import {
     createBundleText,
     createEncryptedBundleText,
@@ -153,91 +146,7 @@
 
   const spaces = SPACE_NAMES;
   type ThemePreference = "system" | "light" | "dark";
-  const spaceNouns: Record<SpaceName, string> = {
-    Characters: "character",
-    Places: "place",
-    Research: "research note",
-    Notes: "note"
-  };
-
-  /**
-   * Structured forms are rendered from config so adding a field is a one-line
-   * change. Single-line inputs suit short facts; multiline fields use the
-   * auto-growing textarea action for longer prose.
-   */
-  const characterSections: SheetSection[] = [
-    {
-      title: "Basics",
-      fields: [
-        { key: "role", label: "Role", placeholder: "Protagonist, antagonist, supporting…" },
-        { key: "age", label: "Age", placeholder: "e.g. 34, or early 40s" },
-        { key: "gender", label: "Gender", placeholder: "e.g. woman, man, non-binary" },
-        { key: "pronouns", label: "Pronouns", placeholder: "she/her, they/them…" },
-        { key: "ethnicity", label: "Ethnicity / heritage", placeholder: "e.g. Irish-American" },
-        { key: "occupation", label: "Occupation", placeholder: "What do they do?" }
-      ]
-    },
-    {
-      title: "Appearance & voice",
-      fields: [
-        { key: "appearance", label: "Appearance", placeholder: "Build, features, clothing, distinguishing marks…", multiline: true },
-        { key: "voice", label: "Voice & mannerisms", placeholder: "How they speak and carry themselves…", multiline: true }
-      ]
-    },
-    {
-      title: "Personality & background",
-      fields: [
-        { key: "personality", label: "Personality", placeholder: "Temperament, habits, the way they treat people…", multiline: true },
-        { key: "background", label: "Background", placeholder: "Where they come from and what shaped them…", multiline: true },
-        { key: "motivations", label: "Motivations & goals", placeholder: "What do they want, and why now?", multiline: true },
-        { key: "flaws", label: "Flaws & fears", placeholder: "What holds them back or trips them up?", multiline: true }
-      ]
-    },
-    {
-      title: "Life & relationships",
-      fields: [
-        { key: "hobbies", label: "Hobbies & interests", placeholder: "What do they love doing off the page?", multiline: true },
-        { key: "relationships", label: "Relationships", placeholder: "Family, friends, rivals, and entanglements…", multiline: true }
-      ]
-    }
-  ];
-
-  const placeSections: SheetSection[] = [
-    {
-      title: "Overview",
-      fields: [
-        { key: "type", label: "Type", placeholder: "City, village, forest, ship, planet…" },
-        { key: "region", label: "Region", placeholder: "Where is it? Coast, mountains, borderlands…" },
-        { key: "climate", label: "Climate & weather", placeholder: "Seasons, light, what the air feels like…" },
-        { key: "population", label: "Population", placeholder: "How many people, or how busy is it?" },
-        { key: "government", label: "Government", placeholder: "Who rules, and how?" },
-        { key: "economy", label: "Economy", placeholder: "What keeps it running?" }
-      ]
-    },
-    {
-      title: "Look & atmosphere",
-      fields: [
-        { key: "appearance", label: "Appearance", placeholder: "Layout, architecture, sights, sounds, smells…", multiline: true },
-        { key: "atmosphere", label: "Atmosphere", placeholder: "What it feels like to arrive and stay…", multiline: true },
-        { key: "landmarks", label: "Landmarks", placeholder: "Places within the place that matter…", multiline: true }
-      ]
-    },
-    {
-      title: "History & culture",
-      fields: [
-        { key: "history", label: "History", placeholder: "Founding, turning points, old wounds…", multiline: true },
-        { key: "culture", label: "Culture & customs", placeholder: "Beliefs, food, language, festivals, taboos…", multiline: true },
-        { key: "inhabitants", label: "Notable inhabitants", placeholder: "Who lives here, and who is worth knowing?", multiline: true }
-      ]
-    },
-    {
-      title: "Story",
-      fields: [
-        { key: "significance", label: "Role in the story", placeholder: "Why this place matters to the plot or characters…", multiline: true },
-        { key: "dangers", label: "Dangers & secrets", placeholder: "Threats, hidden places, what can go wrong here…", multiline: true }
-      ]
-    }
-  ];
+  const WIKI_PAGE_TITLE = "Untitled page";
 
   type BoardDragSource = {
     pointerId: number;
@@ -268,9 +177,6 @@
     { tool: "box", label: "Box", glyph: "□" },
     { tool: "text", label: "Text", glyph: "T" }
   ];
-  type NoteTreeItem =
-    | { kind: "folder"; folder: NoteFolder; depth: number }
-    | { kind: "document"; document: DocumentData; depth: number };
   type ResearchTreeItem =
     | { kind: "folder"; folder: BinderFolder; depth: number }
     | { kind: "document"; document: DocumentData; depth: number }
@@ -279,6 +185,20 @@
   type WorkspaceView = "outline" | "writing" | "storyboard" | "timeline" | "publish";
 
   let editor: HTMLDivElement;
+  type WikiMention = {
+    node: Text;
+    from: number;
+    to: number;
+    article: DocumentData;
+  };
+  let wikiMentions: WikiMention[] = [];
+  let wikiMentionPreview = $state<{
+    article: DocumentData;
+    excerpt: string;
+    left: number;
+    top: number;
+  } | null>(null);
+  const wikiMentionHighlightName = "prosecraft-wiki-mention";
   let settingsDialog: HTMLDialogElement;
   let researchMarkdownDialog: HTMLDialogElement;
   let researchMarkdownTitle = $state("");
@@ -378,9 +298,6 @@
   let rightSidebarHovered = $state(false);
   let editingChapterId = $state<string | null>(null);
   let chapterNameDraft = $state("");
-  let noteFolderInput = $state<HTMLInputElement>();
-  let editingNoteFolderId = $state<string | null>(null);
-  let noteFolderNameDraft = $state("");
   let researchFolderInput = $state<HTMLInputElement>();
   let editingResearchFolderId = $state<string | null>(null);
   let researchFolderNameDraft = $state("");
@@ -439,17 +356,15 @@
       + chapters.filter((chapter) => chapter.trashed).length
       + projects.filter((project) => project.trashed).length
   );
-  let noteFolders = $state<NoteFolder[]>([]);
-  let expandedNoteFolders = $state<Record<string, boolean>>({});
   let expandedSpaces = $state<Record<SpaceName | "Trash", boolean>>({
-    Characters: true,
-    Places: true,
-    Research: true,
-    Notes: true,
+    Wiki: true,
     Trash: true
   });
   let activeDocumentId = $state("welcome");
   let activeDocument = $derived(documents.find((doc) => doc.id === activeDocumentId));
+  $effect(() => {
+    refreshWikiMentionHighlights(documents, activeDocumentId);
+  });
   class EmbeddedImageWidget extends WidgetType {
     toDOM() {
       const element = document.createElement("span");
@@ -618,39 +533,9 @@
       if (markdownCodeEditor === view) markdownCodeEditor = undefined;
     };
   });
-  let noteTreeItems = $derived.by(() => {
-    const items: NoteTreeItem[] = [];
-    const notes = documents.filter((doc) => doc.space === "Notes" && !doc.trashed);
-    items.push(...notes.filter((doc) => !doc.folderId).map((document) => ({
-      kind: "document" as const, document, depth: 0
-    })));
-    const visit = (parentId: string | null, depth: number) => {
-      for (const folder of noteFolders.filter((item) => item.parentId === parentId)) {
-        items.push({ kind: "folder", folder, depth });
-        if (expandedNoteFolders[folder.id] === false) continue;
-        items.push(...notes.filter((doc) => doc.folderId === folder.id).map((document) => ({
-          kind: "document" as const, document, depth: depth + 1
-        })));
-        visit(folder.id, depth + 1);
-      }
-    };
-    visit(null, 0);
-    return items;
-  });
-  let noteFolderChoices = $derived.by(() => {
-    const choices: Array<{ folder: NoteFolder; depth: number }> = [];
-    const visit = (parentId: string | null, depth: number) => {
-      for (const folder of noteFolders.filter((item) => item.parentId === parentId)) {
-        choices.push({ folder, depth });
-        visit(folder.id, depth + 1);
-      }
-    };
-    visit(null, 0);
-    return choices;
-  });
   let researchTreeItems = $derived.by(() => {
     const items: ResearchTreeItem[] = [];
-    const researchDocuments = documents.filter((doc) => doc.space === "Research" && !doc.trashed);
+    const researchDocuments = documents.filter((doc) => doc.space === "Wiki" && !doc.trashed);
     const appendLevel = (parentId: string | null, depth: number) => {
       for (const folder of researchFolders.filter((entry) => entry.parentId === parentId)) {
         items.push({ kind: "folder", folder, depth });
@@ -691,12 +576,8 @@
   let researchEmpty = $derived(
     researchFolders.length === 0
     && researchItems.length === 0
-    && !documents.some((doc) => doc.space === "Research" && !doc.trashed)
+    && !documents.some((doc) => doc.space === "Wiki" && !doc.trashed)
   );
-  let isCharacterDocument = $derived(activeDocument?.space === "Characters");
-  let isPlaceDocument = $derived(activeDocument?.space === "Places");
-  let characterSheet = $derived(normalizeCharacterSheet(activeDocument?.character));
-  let placeSheet = $derived(normalizePlaceSheet(activeDocument?.place));
   let projectWordCount = $derived(documents
     .filter((doc) => doc.chapterId && !doc.trashed)
     .reduce((total, doc) => total + countHtmlWords(doc.content), 0));
@@ -752,7 +633,6 @@
       storyboardRows,
       storyboardDrawings,
       timelineNodes,
-      noteFolders,
       researchFolderName,
       researchFolders,
       researchItems,
@@ -784,50 +664,26 @@
     }
   }
 
-  /**
-   * Normalizes structured sheets on load so partially written or legacy records
-   * always render a complete form without dropping their free-form notes.
-   */
-  function normalizeDocumentSheets(doc: DocumentData): DocumentData {
-    if (doc.space === "Characters") {
-      return { ...doc, character: normalizeCharacterSheet(doc.character) };
-    }
-    if (doc.space === "Places") {
-      return { ...doc, place: normalizePlaceSheet(doc.place) };
-    }
-    return doc;
-  }
-
-  function loadProject(project: ProjectData) {
+  function loadProject(sourceProject: ProjectData) {
+    const project = migrateProjectToWiki(sourceProject);
     activeProjectId = project.id;
     boardPan = { x: 0, y: 0 };
     projectName = project.name;
     authorName = project.author;
-    noteFolders = normalizeNoteFolders(project.noteFolders);
-    researchFolders = normalizeNoteFolders(project.researchFolders);
+    researchFolders = normalizeBinderFolders(project.researchFolders);
     researchFolderName = normalizeResearchFolderName(project.researchFolderName);
-    expandedNoteFolders = {};
     expandedResearchFolders = {};
     researchStatus = "";
     researchSettingsStatus = "";
     pendingResearchFolderId = null;
     editingResearchFolderId = null;
     researchFolderNameDraft = "";
-    const noteFolderIds = new Set(noteFolders.map((folder) => folder.id));
     const researchFolderIds = new Set(researchFolders.map((folder) => folder.id));
     researchItems = normalizeResearchItems(project.researchItems, researchFolderIds);
     documents = project.documents.map((doc) => {
-      const normalized = normalizeDocumentSheets(doc);
-      const validFolderIds = normalized.space === "Notes"
-        ? noteFolderIds
-        : normalized.space === "Research"
-          ? researchFolderIds
-          : null;
-      if (validFolderIds && normalized.folderId && validFolderIds.has(normalized.folderId)) {
-        return normalized;
-      }
-      if (!normalized.folderId) return normalized;
-      const { folderId: _folderId, ...withoutFolder } = normalized;
+      if (doc.space !== "Wiki" || !doc.folderId) return doc;
+      if (researchFolderIds.has(doc.folderId)) return doc;
+      const { folderId: _folderId, ...withoutFolder } = doc;
       return withoutFolder;
     });
     chapters = project.chapters.map((chapter) => ({
@@ -898,15 +754,22 @@
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
+    if (project !== sourceProject) {
+      try {
+        persistProjectCollection();
+      } catch (error) {
+        console.error("Could not save the Wiki migration.", error);
+      }
+    }
   }
 
-  function normalizeNoteFolders(value: unknown): NoteFolder[] {
+  function normalizeBinderFolders(value: unknown): BinderFolder[] {
     if (!Array.isArray(value)) return [];
-    const folders: NoteFolder[] = [];
+    const folders: BinderFolder[] = [];
     const seen = new Set<string>();
     for (const entry of value) {
       if (typeof entry !== "object" || entry === null) continue;
-      const folder = entry as Partial<NoteFolder>;
+      const folder = entry as Partial<BinderFolder>;
       if (typeof folder.id !== "string" || !folder.id || seen.has(folder.id)
         || typeof folder.title !== "string"
         || !(folder.parentId === null || typeof folder.parentId === "string")) continue;
@@ -924,7 +787,7 @@
         continue;
       }
       const path = new Set<string>();
-      let current: NoteFolder | undefined = folder;
+      let current: BinderFolder | undefined = folder;
       while (current?.parentId) {
         if (path.has(current.id)) {
           folder.parentId = null;
@@ -1453,7 +1316,6 @@
       storyboardCards: [],
       storyboardRows: [{ id: crypto.randomUUID(), title: "Timeline" }],
       timelineNodes: [],
-      noteFolders: [],
       researchFolderName: "",
       researchFolders: [],
       researchItems: [],
@@ -1481,38 +1343,8 @@
     projectSettingsDialog?.showModal();
   }
 
-  /**
-   * Renders a structured sheet as readable plain text for single-document
-   * export. Empty fields are omitted so a sparse sheet stays short.
-   */
-  function serializeSheet(
-    sections: SheetSection[],
-    values: Record<string, string>,
-    fallbackTitle: string
-  ): string {
-    const lines = [title || fallbackTitle];
-    for (const section of sections) {
-      const filled = section.fields
-        .map((field) => [field.label, (values[field.key] ?? "").trim()] as const)
-        .filter(([, value]) => value);
-      if (filled.length === 0) continue;
-      lines.push("", section.title.toUpperCase());
-      for (const [label, value] of filled) lines.push(`${label}: ${value}`);
-    }
-    return lines.join("\n");
-  }
-
   function exportDocument() {
-    const notes = (editor?.innerText ?? "").trim();
-    let text = notes;
-    if (isCharacterDocument) {
-      text = serializeSheet(characterSections, characterSheet, "Untitled character");
-    } else if (isPlaceDocument) {
-      text = serializeSheet(placeSections, placeSheet, "Untitled place");
-    }
-    if ((isCharacterDocument || isPlaceDocument) && notes) {
-      text = `${text}\n\nADDITIONAL NOTES\n${notes}`;
-    }
+    const text = (editor?.innerText ?? "").trim();
     const blob = new Blob([text], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -2349,6 +2181,91 @@
     if (!editor) return;
     editor.innerHTML = html;
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
+    refreshWikiMentionHighlights();
+  }
+
+  function refreshWikiMentionHighlights(
+    sourceDocuments: DocumentData[] = documents,
+    currentDocumentId: string = activeDocumentId
+  ) {
+    if (!editor) return;
+    const articles = sourceDocuments.filter((doc) =>
+      doc.space === "Wiki" && !doc.trashed && doc.id !== currentDocumentId && doc.title.trim()
+    );
+    const findMentions = createWikiMentionMatcher(articles);
+    const matches: WikiMention[] = [];
+    const ranges: Range[] = [];
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        return parent?.closest(
+          "a, code, pre, .math-inline, .math-block, .mermaid-diagram, [contenteditable='false']"
+        )
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    while (walker.nextNode()) {
+      const node = walker.currentNode as Text;
+      for (const mention of findMentions(node.data)) {
+        matches.push({ node, ...mention });
+        const range = document.createRange();
+        range.setStart(node, mention.from);
+        range.setEnd(node, mention.to);
+        ranges.push(range);
+      }
+    }
+
+    wikiMentions = matches;
+    wikiMentionPreview = null;
+    const registry = Reflect.get(window.CSS, "highlights") as {
+      set: (name: string, highlight: unknown) => void;
+      delete: (name: string) => void;
+    } | undefined;
+    const HighlightConstructor = Reflect.get(window, "Highlight") as
+      | (new (...highlightRanges: Range[]) => unknown)
+      | undefined;
+    registry?.delete(wikiMentionHighlightName);
+    if (ranges.length > 0 && registry && HighlightConstructor) {
+      registry.set(wikiMentionHighlightName, new HighlightConstructor(...ranges));
+    }
+  }
+
+  function handleWikiMentionPointerMove(event: PointerEvent) {
+    if (event.pointerType === "touch") return;
+    const positionFromPoint = Reflect.get(document, "caretPositionFromPoint") as
+      | ((x: number, y: number) => { offsetNode: Node; offset: number } | null)
+      | undefined;
+    const rangeFromPoint = Reflect.get(document, "caretRangeFromPoint") as
+      | ((x: number, y: number) => Range | null)
+      | undefined;
+    const position = positionFromPoint?.call(document, event.clientX, event.clientY);
+    const range = position ? null : rangeFromPoint?.call(document, event.clientX, event.clientY);
+    const node = position?.offsetNode ?? range?.startContainer;
+    const offset = position?.offset ?? range?.startOffset;
+    const mention = node instanceof Text && offset !== undefined
+      ? wikiMentions.find((entry) => entry.node === node && offset >= entry.from && offset < entry.to)
+      : undefined;
+
+    if (!mention) {
+      wikiMentionPreview = null;
+      return;
+    }
+
+    const previous = wikiMentionPreview;
+    const excerpt = previous?.article.id === mention.article.id
+      ? previous.excerpt
+      : htmlToPlainText(cleanHtml(mention.article.content), { rich: "omit" })
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 360);
+    wikiMentionPreview = {
+      article: mention.article,
+      excerpt,
+      left: Math.max(8, Math.min(event.clientX + 14, window.innerWidth - 350)),
+      top: Math.max(8, Math.min(event.clientY + 16, window.innerHeight - 190))
+    };
   }
 
   function captureEditorSelection() {
@@ -3286,46 +3203,19 @@
     }
   }
 
-  /**
-   * Updates one field of the active character's sheet. The name is stored in
-   * `title`, and the rich-text editor below the form stores free-form notes in
-   * `content`, so this only touches the structured profile.
-   */
-  function updateCharacterField(field: keyof CharacterSheet, value: string) {
-    const trimmed = value.slice(0, SHEET_FIELD_LIMIT);
-    documents = documents.map((doc) => doc.id === activeDocumentId
-      ? { ...doc, character: { ...normalizeCharacterSheet(doc.character), [field]: trimmed } }
-      : doc);
-    persist();
-  }
-
-  /** Updates one field of the active place's sheet. Mirrors the character path. */
-  function updatePlaceField(field: keyof PlaceSheet, value: string) {
-    const trimmed = value.slice(0, SHEET_FIELD_LIMIT);
-    documents = documents.map((doc) => doc.id === activeDocumentId
-      ? { ...doc, place: { ...normalizePlaceSheet(doc.place), [field]: trimmed } }
-      : doc);
-    persist();
-  }
-
   function createSpaceDocument(space: SpaceName, folderId?: string) {
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const next: DocumentData = {
       id: crypto.randomUUID(),
-      title: `Untitled ${spaceNouns[space]}`,
+      title: WIKI_PAGE_TITLE,
       content: "<p><br></p>",
       space,
-      ...(space === "Notes" || space === "Research" ? folderId ? { folderId } : {} : {}),
-      ...(space === "Characters" ? { character: emptyCharacterSheet() } : {}),
-      ...(space === "Places" ? { place: emptyPlaceSheet() } : {})
+      ...(folderId ? { folderId } : {})
     };
     documents = [...documents, next];
     expandedSpaces[space] = true;
-    if (space === "Notes" && folderId) {
-      expandNoteFolderPath(folderId);
-    }
-    if (space === "Research" && folderId) {
+    if (folderId) {
       expandResearchFolderPath(folderId);
     }
     activeDocumentId = next.id;
@@ -3339,73 +3229,6 @@
     editor.focus();
   }
 
-  async function createNoteFolder(parentId: string | null = null) {
-    const folder: NoteFolder = {
-      id: crypto.randomUUID(),
-      title: "Untitled folder",
-      parentId
-    };
-    noteFolders = [...noteFolders, folder];
-    expandedSpaces.Notes = true;
-    if (parentId) expandNoteFolderPath(parentId);
-    expandedNoteFolders = { ...expandedNoteFolders, [folder.id]: true };
-    persist();
-    await startNoteFolderRename(folder);
-  }
-
-  async function startNoteFolderRename(folder: NoteFolder) {
-    editingNoteFolderId = folder.id;
-    noteFolderNameDraft = folder.title;
-    await tick();
-    noteFolderInput?.focus();
-    noteFolderInput?.select();
-  }
-
-  function saveNoteFolderRename(id: string) {
-    if (editingNoteFolderId !== id) return;
-    const nextTitle = noteFolderNameDraft.trim().slice(0, 60);
-    if (nextTitle) {
-      noteFolders = noteFolders.map((folder) => folder.id === id ? { ...folder, title: nextTitle } : folder);
-      persist();
-    }
-    editingNoteFolderId = null;
-  }
-
-  function cancelNoteFolderRename() {
-    editingNoteFolderId = null;
-    noteFolderNameDraft = "";
-  }
-
-  function moveNoteToFolder(documentId: string, folderId: string) {
-    if (folderId && !noteFolders.some((folder) => folder.id === folderId)) return;
-    documents = documents.map((doc) => {
-      if (doc.id !== documentId || doc.space !== "Notes") return doc;
-      const { folderId: _previousFolderId, ...withoutFolder } = doc;
-      return folderId ? { ...withoutFolder, folderId } : withoutFolder;
-    });
-    if (folderId) {
-      expandNoteFolderPath(folderId);
-    }
-    persist();
-  }
-
-  function expandNoteFolderPath(id: string) {
-    const expanded = { ...expandedNoteFolders };
-    let currentId: string | null | undefined = id;
-    while (currentId) {
-      expanded[currentId] = true;
-      currentId = noteFolders.find((folder) => folder.id === currentId)?.parentId;
-    }
-    expandedNoteFolders = expanded;
-  }
-
-  function toggleNoteFolder(id: string) {
-    expandedNoteFolders = {
-      ...expandedNoteFolders,
-      [id]: expandedNoteFolders[id] === false
-    };
-  }
-
   async function createResearchFolder(parentId: string | null = null) {
     const folder: BinderFolder = {
       id: crypto.randomUUID(),
@@ -3413,7 +3236,7 @@
       parentId
     };
     researchFolders = [...researchFolders, folder];
-    expandedSpaces.Research = true;
+    expandedSpaces.Wiki = true;
     if (parentId) expandResearchFolderPath(parentId);
     expandedResearchFolders = { ...expandedResearchFolders, [folder.id]: true };
     persist();
@@ -3464,15 +3287,15 @@
     const parentId = folder.parentId;
     const parentTitle = parentId
       ? researchFolders.find((entry) => entry.id === parentId)?.title ?? "the parent folder"
-      : "the Research root";
-    if (!window.confirm(`Remove “${folder.title}”? Its folders, notes, files, and links will move to ${parentTitle}.`)) {
+      : "the Wiki root";
+    if (!window.confirm(`Remove “${folder.title}”? Its folders, pages, files, and links will move to ${parentTitle}.`)) {
       return;
     }
     researchFolders = researchFolders
       .filter((entry) => entry.id !== folder.id)
       .map((entry) => entry.parentId === folder.id ? { ...entry, parentId } : entry);
     documents = documents.map((doc) => {
-      if (doc.space !== "Research" || doc.folderId !== folder.id) return doc;
+      if (doc.space !== "Wiki" || doc.folderId !== folder.id) return doc;
       if (parentId) return { ...doc, folderId: parentId };
       const { folderId: _folderId, ...withoutFolder } = doc;
       return withoutFolder;
@@ -3487,7 +3310,7 @@
   function moveResearchDocument(documentId: string, folderId: string) {
     if (folderId && !researchFolders.some((folder) => folder.id === folderId)) return;
     documents = documents.map((doc) => {
-      if (doc.id !== documentId || doc.space !== "Research") return doc;
+      if (doc.id !== documentId || doc.space !== "Wiki") return doc;
       if (folderId) return { ...doc, folderId };
       const { folderId: _folderId, ...withoutFolder } = doc;
       return withoutFolder;
@@ -3532,16 +3355,16 @@
       const picked = await open({
         directory: true,
         multiple: false,
-        title: "Choose a folder for research files",
+        title: "Choose a folder for wiki files",
         defaultPath: researchRoot || undefined
       });
       if (typeof picked !== "string" || !picked) return null;
       researchRoot = picked;
       savePreferences();
-      researchStatus = "Research files folder saved for this device.";
+      researchStatus = "Wiki files folder saved for this device.";
       return picked;
     } catch (error) {
-      console.error("Could not choose a research files folder.", error);
+      console.error("Could not choose a wiki files folder.", error);
       researchStatus = "Could not open the folder picker.";
       return null;
     }
@@ -3555,15 +3378,15 @@
       const picked = await open({
         directory: true,
         multiple: false,
-        title: "Choose a folder for research files",
+        title: "Choose a folder for wiki files",
         defaultPath: researchRoot || undefined
       });
       if (typeof picked !== "string" || !picked) return;
       researchRoot = picked;
       savePreferences();
-      researchSettingsStatus = "Research files folder saved. Existing files remain in the previous folder.";
+      researchSettingsStatus = "Wiki files folder saved. Existing files remain in the previous folder.";
     } catch (error) {
-      console.error("Could not choose a research files folder.", error);
+      console.error("Could not choose a wiki files folder.", error);
       researchSettingsStatus = "Could not open the folder picker.";
     }
   }
@@ -3582,8 +3405,8 @@
       await revealItemInDir(path);
       researchSettingsStatus = "";
     } catch (error) {
-      console.error("Could not reveal the research folder.", error);
-      researchSettingsStatus = researchErrorMessage(error, "Could not reveal the research folder.");
+      console.error("Could not reveal the wiki folder.", error);
+      researchSettingsStatus = researchErrorMessage(error, "Could not reveal the wiki folder.");
     }
   }
 
@@ -3603,7 +3426,7 @@
     if (!root) return;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const picked = await open({ multiple: true, title: "Add research files" });
+      const picked = await open({ multiple: true, title: "Add wiki files" });
       const paths = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
       if (paths.length === 0) return;
 
@@ -3644,13 +3467,13 @@
           researchItems = [...researchItems, item];
           added += 1;
         } catch (error) {
-          console.error("Could not import a research file.", error);
+          console.error("Could not import a wiki file.", error);
           failures.push(researchErrorMessage(error, "Unknown error"));
         }
       }
 
       if (added > 0 && activeProjectId === importProjectId) {
-        expandedSpaces.Research = true;
+        expandedSpaces.Wiki = true;
         if (folderId) expandResearchFolderPath(folderId);
         persist();
       }
@@ -3658,7 +3481,7 @@
         researchStatus = researchImportStatus(added, failures);
       }
     } catch (error) {
-      console.error("Could not add research files.", error);
+      console.error("Could not add wiki files.", error);
       researchStatus = "Could not open the file picker.";
     } finally {
       researchBusy = false;
@@ -3681,7 +3504,7 @@
     for (const file of files) {
       try {
         if (file.size > MAX_RESEARCH_FILE_BYTES) {
-          throw new Error("Research files must be 200 MB or smaller.");
+          throw new Error("Wiki files must be 200 MB or smaller.");
         }
         const id = crypto.randomUUID();
         const fileName = safeResearchFileName(file.name);
@@ -3706,12 +3529,12 @@
         researchItems = [...researchItems, item];
         added += 1;
       } catch (error) {
-        console.error("Could not save a research file in browser storage.", error);
+        console.error("Could not save a wiki file in browser storage.", error);
         failures.push(researchErrorMessage(error, "Unknown error"));
       }
     }
     if (added > 0 && activeProjectId === importProjectId) {
-      expandedSpaces.Research = true;
+      expandedSpaces.Wiki = true;
       if (folderId) expandResearchFolderPath(folderId);
       persist();
     }
@@ -3778,7 +3601,7 @@
       });
       researchStatus = "";
     } catch (error) {
-      console.error("Could not open a research file.", error);
+      console.error("Could not open a wiki file.", error);
       researchStatus = researchErrorMessage(error, "Could not open that file.");
     }
   }
@@ -3803,7 +3626,7 @@
       await revealItemInDir(path);
       researchStatus = "";
     } catch (error) {
-      console.error("Could not reveal a research file.", error);
+      console.error("Could not reveal a wiki file.", error);
       researchStatus = researchErrorMessage(error, "Could not reveal that file.");
     }
   }
@@ -3811,7 +3634,7 @@
   async function openResearchLink(item: ResearchLink) {
     const url = normalizeResearchUrl(item.url);
     if (!url) {
-      researchStatus = "That research link is not a valid web address.";
+      researchStatus = "That wiki link is not a valid web address.";
       return;
     }
     try {
@@ -3832,7 +3655,7 @@
       }
       researchStatus = "";
     } catch (error) {
-      console.error("Could not open a research link.", error);
+      console.error("Could not open a wiki link.", error);
       researchStatus = "Could not open that link.";
     }
   }
@@ -3864,7 +3687,7 @@
       addedAt: Date.now()
     };
     researchItems = [...researchItems, item];
-    expandedSpaces.Research = true;
+    expandedSpaces.Wiki = true;
     if (researchLinkFolderId) expandResearchFolderPath(researchLinkFolderId);
     persist();
     researchStatus = "Link added.";
@@ -3873,7 +3696,7 @@
 
   async function removeResearchItem(item: ResearchItem) {
     const label = researchItemTitle(item);
-    if (!window.confirm(`Remove “${label}” from Research?${item.kind === "file" ? " The file will be deleted from the project folder." : ""}`)) {
+    if (!window.confirm(`Remove “${label}” from the Wiki?${item.kind === "file" ? " The file will be deleted from the project folder." : ""}`)) {
       return;
     }
     researchItems = researchItems.filter((entry) => entry.id !== item.id);
@@ -3895,7 +3718,7 @@
       }
       researchStatus = "";
     } catch (error) {
-      console.error("Could not delete a research file.", error);
+      console.error("Could not delete a wiki file.", error);
       researchStatus = "The item was removed, but its file could not be deleted.";
     }
   }
@@ -4244,7 +4067,7 @@
             typeof item.id === "string" &&
             typeof item.title === "string" &&
             typeof item.content === "string"
-          ).map((doc) => normalizeDocumentSheets({
+          ).map((doc) => migrateLegacyDocument({
             ...doc,
             content: cleanHtml(doc.content)
           }));
@@ -4539,233 +4362,150 @@
       </div>
 
       <div class="tree-divider"></div>
-      <div class="tree-heading spaces-heading"><span class="nav-label">STORY SPACES</span></div>
-      {#each spaces as space (space)}
-        <div class="space-group">
-          <div class="space-heading">
-            <button class="space-toggle" aria-expanded={expandedSpaces[space]} onclick={() => expandedSpaces[space] = !expandedSpaces[space]}>
-              <span class:rotated={expandedSpaces[space]} class="chevron">›</span>
-              <span class="space-icon" aria-hidden="true">{space === "Characters" ? "◉" : space === "Places" ? "⌖" : space === "Research" ? "⌕" : "▤"}</span>
-              <span class="tree-name">{space}</span>
-            </button>
-            {#if space === "Notes"}
-              <button class="row-add" aria-label="Add folder to Notes" title="Add folder" onclick={() => createNoteFolder()}>▱</button>
-            {:else if space === "Research"}
-              <button class="row-add research-add" aria-label="Add folder to Research" title="Add folder" onclick={() => createResearchFolder()}>▱</button>
-              <button class="row-add research-add" aria-label="Add file to Research" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}>↥</button>
-              <button class="row-add research-add" aria-label="Add link to Research" title="Add web link" onclick={() => openResearchLinkDialog()}>↗</button>
-            {/if}
-            <button class="row-add" class:research-add={space === "Research"} aria-label="Add to {space}" title="Add to {space}" onclick={() => createSpaceDocument(space)}>+</button>
-          </div>
-          {#if expandedSpaces[space]}
-            <div class="space-items">
-              {#if space === "Notes"}
-                {#each noteTreeItems as item (item.kind === "folder" ? `folder-${item.folder.id}` : `document-${item.document.id}`)}
-                  {#if item.kind === "folder"}
-                    <div class="note-folder-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
-                      {#if editingNoteFolderId === item.folder.id}
-                        <input
-                          bind:this={noteFolderInput}
-                          class="chapter-name-input note-folder-name-input"
-                          aria-label="Rename folder {item.folder.title}"
-                          bind:value={noteFolderNameDraft}
-                          maxlength="60"
-                          onblur={() => saveNoteFolderRename(item.folder.id)}
-                          onkeydown={(event) => {
-                            if (event.key === "Enter") (event.currentTarget as HTMLInputElement).blur();
-                            if (event.key === "Escape") {
-                              event.preventDefault();
-                              cancelNoteFolderRename();
-                            }
-                          }}
-                          onpointerdown={(event) => event.stopPropagation()}
-                        />
-                      {:else}
-                        <button
-                          class="note-folder-toggle"
-                          aria-expanded={expandedNoteFolders[item.folder.id] !== false}
-                          onclick={() => toggleNoteFolder(item.folder.id)}
-                        >
-                          <span class:rotated={expandedNoteFolders[item.folder.id] !== false} class="chevron">›</span>
-                          <span class="note-folder-icon" aria-hidden="true">▱</span>
-                          <span class="tree-name">{item.folder.title}</span>
-                        </button>
-                      {/if}
-                      <div class="note-folder-actions">
-                        <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createNoteFolder(item.folder.id)}>▱+</button>
-                        <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startNoteFolderRename(item.folder)}>✎</button>
-                        <button class="row-add" aria-label="Add note to {item.folder.title}" title="Add note" onclick={() => createSpaceDocument("Notes", item.folder.id)}>+</button>
-                      </div>
-                    </div>
-                  {:else}
-                    <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
-                      <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(item.document.id)}>
-                        <span class="scene-mark">¶</span>
-                        <span class="tree-name">{item.document.title || "Untitled"}</span>
-                      </button>
-                      {#if noteFolderChoices.length > 0}
-                        <select
-                          class="note-folder-select"
-                          aria-label="Move {item.document.title || 'note'} to folder"
-                          value={item.document.folderId ?? ""}
-                          onchange={(event) => moveNoteToFolder(item.document.id, (event.currentTarget as HTMLSelectElement).value)}
-                        >
-                          <option value="">Unfiled</option>
-                          {#each noteFolderChoices as choice (choice.folder.id)}
-                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
-                          {/each}
-                        </select>
-                      {/if}
-                      <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}>×</button>
-                    </div>
-                  {/if}
-                {/each}
-                {#if !documents.some((doc) => doc.space === "Notes" && !doc.trashed) && noteFolders.length === 0}
-                  <span class="empty-tree">Nothing here yet</span>
-                {/if}
-              {:else if space === "Research"}
-                {#each researchTreeItems as item (item.kind === "folder"
-                  ? `folder-${item.folder.id}`
-                  : item.kind === "document"
-                    ? `document-${item.document.id}`
-                    : `${item.kind}-${item.item.id}`)}
-                  {#if item.kind === "folder"}
-                    <div class="note-folder-row research-folder-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
-                      {#if editingResearchFolderId === item.folder.id}
-                        <input
-                          bind:this={researchFolderInput}
-                          class="chapter-name-input note-folder-name-input"
-                          aria-label="Rename folder {item.folder.title}"
-                          bind:value={researchFolderNameDraft}
-                          maxlength="60"
-                          onblur={() => saveResearchFolderRename(item.folder.id)}
-                          onkeydown={(event) => {
-                            if (event.key === "Enter") (event.currentTarget as HTMLInputElement).blur();
-                            if (event.key === "Escape") {
-                              event.preventDefault();
-                              cancelResearchFolderRename();
-                            }
-                          }}
-                          onpointerdown={(event) => event.stopPropagation()}
-                        />
-                      {:else}
-                        <button
-                          class="note-folder-toggle"
-                          aria-expanded={expandedResearchFolders[item.folder.id] !== false}
-                          onclick={() => toggleResearchFolder(item.folder.id)}
-                        >
-                          <span class:rotated={expandedResearchFolders[item.folder.id] !== false} class="chevron">›</span>
-                          <span class="note-folder-icon" aria-hidden="true">▱</span>
-                          <span class="tree-name">{item.folder.title}</span>
-                        </button>
-                      {/if}
-                      <div class="note-folder-actions">
-                        <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}>▱+</button>
-                        <button class="chapter-action" aria-label="Add note to {item.folder.title}" title="Add research note" onclick={() => createSpaceDocument("Research", item.folder.id)}>+</button>
-                        <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}>✎</button>
-                        <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}>×</button>
-                      </div>
-                    </div>
-                  {:else if item.kind === "document"}
-                    <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
-                      <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(item.document.id)}>
-                        <span class="scene-mark">¶</span>
-                        <span class="tree-name">{item.document.title || "Untitled"}</span>
-                      </button>
-                      {#if researchFolderChoices.length > 0}
-                        <select
-                          class="note-folder-select"
-                          aria-label="Move {item.document.title || 'research note'} to folder"
-                          value={item.document.folderId ?? ""}
-                          onchange={(event) => moveResearchDocument(item.document.id, (event.currentTarget as HTMLSelectElement).value)}
-                        >
-                          <option value="">Unfiled</option>
-                          {#each researchFolderChoices as choice (choice.folder.id)}
-                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
-                          {/each}
-                        </select>
-                      {/if}
-                      <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}>×</button>
-                    </div>
-                  {:else if item.kind === "file"}
-                    <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
-                      <button
-                        class="document-select"
-                        title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
-                        onclick={() => openResearchFile(item.item)}
-                      >
-                        <span class="scene-mark research-file-mark">{researchFileGlyph(item.item)}</span>
-                        <span class="tree-name">{researchItemTitle(item.item)}</span>
-                      </button>
-                      {#if researchFolderChoices.length > 0}
-                        <select
-                          class="note-folder-select"
-                          aria-label="Move {researchItemTitle(item.item)} to folder"
-                          value={item.item.folderId ?? ""}
-                          onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
-                        >
-                          <option value="">Unfiled</option>
-                          {#each researchFolderChoices as choice (choice.folder.id)}
-                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
-                          {/each}
-                        </select>
-                      {/if}
-                      {#if desktopRuntime}
-                        <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}>⌖</button>
-                      {/if}
-                      <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}>×</button>
-                    </div>
-                  {:else}
-                    <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
-                      <button
-                        class="document-select"
-                        title={researchItemMeta(item.item)}
-                        onclick={() => openResearchLink(item.item)}
-                      >
-                        <span class="scene-mark research-link-mark">↗</span>
-                        <span class="tree-name">{researchItemTitle(item.item)}</span>
-                      </button>
-                      {#if researchFolderChoices.length > 0}
-                        <select
-                          class="note-folder-select"
-                          aria-label="Move {researchItemTitle(item.item)} to folder"
-                          value={item.item.folderId ?? ""}
-                          onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
-                        >
-                          <option value="">Unfiled</option>
-                          {#each researchFolderChoices as choice (choice.folder.id)}
-                            <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
-                          {/each}
-                        </select>
-                      {/if}
-                      <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}>×</button>
-                    </div>
-                  {/if}
-                {/each}
-                {#if researchEmpty}
-                  <span class="empty-tree">Add a note, file, or link</span>
-                {/if}
-                {#if researchStatus}
-                  <p class="research-status" role="status">{researchStatus}</p>
-                {/if}
-              {:else}
-                {#each documents.filter((doc) => doc.space === space && !doc.trashed) as doc (doc.id)}
-                  <div class:current={doc.id === activeDocumentId} class="document-row">
-                    <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(doc.id)}>
-                      <span class="scene-mark">¶</span>
-                      <span class="tree-name">{doc.title || "Untitled"}</span>
-                    </button>
-                    <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}>×</button>
-                  </div>
-                {/each}
-                {#if !documents.some((doc) => doc.space === space && !doc.trashed)}
-                  <span class="empty-tree">Nothing here yet</span>
-                {/if}
-              {/if}
-            </div>
-          {/if}
+      <div class="tree-heading spaces-heading"><span class="nav-label">WIKI</span></div>
+      <div class="space-group">
+        <div class="space-heading">
+          <button class="space-toggle" aria-expanded={expandedSpaces.Wiki} onclick={() => expandedSpaces.Wiki = !expandedSpaces.Wiki}>
+            <span class:rotated={expandedSpaces.Wiki} class="chevron">›</span>
+            <span class="space-icon" aria-hidden="true">▤</span>
+            <span class="tree-name">Wiki</span>
+          </button>
+          <button class="row-add research-add" aria-label="Add folder to Wiki" title="Add folder" onclick={() => createResearchFolder()}>▱</button>
+          <button class="row-add research-add" aria-label="Add file to Wiki" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}>↥</button>
+          <button class="row-add research-add" aria-label="Add link to Wiki" title="Add web link" onclick={() => openResearchLinkDialog()}>↗</button>
+          <button class="row-add research-add" aria-label="Add page to Wiki" title="Add page" onclick={() => createSpaceDocument("Wiki")}>+</button>
         </div>
-      {/each}
+        {#if expandedSpaces.Wiki}
+          <div class="space-items">
+            {#each researchTreeItems as item (item.kind === "folder"
+              ? `folder-${item.folder.id}`
+              : item.kind === "document"
+                ? `document-${item.document.id}`
+                : `${item.kind}-${item.item.id}`)}
+              {#if item.kind === "folder"}
+                <div class="note-folder-row research-folder-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                  {#if editingResearchFolderId === item.folder.id}
+                    <input
+                      bind:this={researchFolderInput}
+                      class="chapter-name-input note-folder-name-input"
+                      aria-label="Rename folder {item.folder.title}"
+                      bind:value={researchFolderNameDraft}
+                      maxlength="60"
+                      onblur={() => saveResearchFolderRename(item.folder.id)}
+                      onkeydown={(event) => {
+                        if (event.key === "Enter") (event.currentTarget as HTMLInputElement).blur();
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelResearchFolderRename();
+                        }
+                      }}
+                      onpointerdown={(event) => event.stopPropagation()}
+                    />
+                  {:else}
+                    <button
+                      class="note-folder-toggle"
+                      aria-expanded={expandedResearchFolders[item.folder.id] !== false}
+                      onclick={() => toggleResearchFolder(item.folder.id)}
+                    >
+                      <span class:rotated={expandedResearchFolders[item.folder.id] !== false} class="chevron">›</span>
+                      <span class="note-folder-icon" aria-hidden="true">▱</span>
+                      <span class="tree-name">{item.folder.title}</span>
+                    </button>
+                  {/if}
+                  <div class="note-folder-actions">
+                    <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}>▱+</button>
+                    <button class="chapter-action" aria-label="Add page to {item.folder.title}" title="Add page" onclick={() => createSpaceDocument("Wiki", item.folder.id)}>+</button>
+                    <button class="chapter-action" aria-label="Add file to {item.folder.title}" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles(item.folder.id)}>↥</button>
+                    <button class="chapter-action" aria-label="Add link to {item.folder.title}" title="Add web link" onclick={() => openResearchLinkDialog(item.folder.id)}>↗</button>
+                    <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}>✎</button>
+                    <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}>×</button>
+                  </div>
+                </div>
+              {:else if item.kind === "document"}
+                <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                  <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(item.document.id)}>
+                    <span class="scene-mark">¶</span>
+                    <span class="tree-name">{item.document.title || "Untitled"}</span>
+                  </button>
+                  {#if researchFolderChoices.length > 0}
+                    <select
+                      class="note-folder-select"
+                      aria-label="Move {item.document.title || 'wiki page'} to folder"
+                      value={item.document.folderId ?? ""}
+                      onchange={(event) => moveResearchDocument(item.document.id, (event.currentTarget as HTMLSelectElement).value)}
+                    >
+                      <option value="">Unfiled</option>
+                      {#each researchFolderChoices as choice (choice.folder.id)}
+                        <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
+                      {/each}
+                    </select>
+                  {/if}
+                  <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}>×</button>
+                </div>
+              {:else if item.kind === "file"}
+                <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                  <button
+                    class="document-select"
+                    title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
+                    onclick={() => openResearchFile(item.item)}
+                  >
+                    <span class="scene-mark research-file-mark">{researchFileGlyph(item.item)}</span>
+                    <span class="tree-name">{researchItemTitle(item.item)}</span>
+                  </button>
+                  {#if researchFolderChoices.length > 0}
+                    <select
+                      class="note-folder-select"
+                      aria-label="Move {researchItemTitle(item.item)} to folder"
+                      value={item.item.folderId ?? ""}
+                      onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
+                    >
+                      <option value="">Unfiled</option>
+                      {#each researchFolderChoices as choice (choice.folder.id)}
+                        <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
+                      {/each}
+                    </select>
+                  {/if}
+                  {#if desktopRuntime}
+                    <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}>⌖</button>
+                  {/if}
+                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}>×</button>
+                </div>
+              {:else}
+                <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                  <button
+                    class="document-select"
+                    title={researchItemMeta(item.item)}
+                    onclick={() => openResearchLink(item.item)}
+                  >
+                    <span class="scene-mark research-link-mark">↗</span>
+                    <span class="tree-name">{researchItemTitle(item.item)}</span>
+                  </button>
+                  {#if researchFolderChoices.length > 0}
+                    <select
+                      class="note-folder-select"
+                      aria-label="Move {researchItemTitle(item.item)} to folder"
+                      value={item.item.folderId ?? ""}
+                      onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
+                    >
+                      <option value="">Unfiled</option>
+                      {#each researchFolderChoices as choice (choice.folder.id)}
+                        <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
+                      {/each}
+                    </select>
+                  {/if}
+                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}>×</button>
+                </div>
+              {/if}
+            {/each}
+            {#if researchEmpty}
+              <span class="empty-tree">Add a page, file, or link</span>
+            {/if}
+            {#if researchStatus}
+              <p class="research-status" role="status">{researchStatus}</p>
+            {/if}
+          </div>
+        {/if}
+      </div>
 
       <div class="tree-divider"></div>
       <div class="space-group trash-group">
@@ -4894,29 +4634,13 @@
         <input
           class="title-input"
           aria-label="Document title"
-          placeholder={isCharacterDocument ? "Character name" : isPlaceDocument ? "Place name" : "Untitled"}
+          placeholder="Untitled"
           bind:value={title}
           oninput={persist}
           maxlength="120"
         />
 
-        {#if isCharacterDocument}
-          <EntitySheet
-            sections={characterSections}
-            values={characterSheet}
-            onchange={(key, value) => updateCharacterField(key as keyof CharacterSheet, value)}
-            hint="Use the notes below for anything the fields above don’t cover."
-          />
-        {:else if isPlaceDocument}
-          <EntitySheet
-            sections={placeSections}
-            values={placeSheet}
-            onchange={(key, value) => updatePlaceField(key as keyof PlaceSheet, value)}
-            hint="Use the notes below for anything the fields above don’t cover."
-          />
-        {/if}
-
-        {#if !isCharacterDocument && !isPlaceDocument && !markdownEditorMode}
+        {#if !markdownEditorMode}
         <div class="toolbar" role="toolbar" aria-label="Text formatting">
           <label class="sr-only" for="block-style">Text style</label>
           <select id="block-style" class="style-select" aria-label="Text style" onchange={changeBlock}>
@@ -4956,10 +4680,6 @@
           </div>
         {/if}
 
-        {#if isCharacterDocument || isPlaceDocument}
-          <h2 class="sheet-notes-title">Additional notes</h2>
-        {/if}
-
         {#if markdownEditorMode}
           <div
             bind:this={markdownEditorHost}
@@ -4972,7 +4692,6 @@
         {/if}
         <div
           class="editor-content"
-          class:sheet-notes={isCharacterDocument || isPlaceDocument}
           class:editor-content-hidden={markdownEditorMode}
           class:fade-other-paragraphs={fadeOtherParagraphs}
           bind:this={editor}
@@ -4990,8 +4709,21 @@
           }}
           oninput={handleInput}
           onclick={handleEditorClick}
+          onpointermove={handleWikiMentionPointerMove}
+          onpointerleave={() => wikiMentionPreview = null}
           onkeydown={(event) => { if (event.key === "Escape") selectEditorImage(null); }}
         >{@html starterContent}</div>
+
+        {#if wikiMentionPreview}
+          <aside
+            class="wiki-mention-preview"
+            role="tooltip"
+            style={`left: ${wikiMentionPreview.left}px; top: ${wikiMentionPreview.top}px`}
+          >
+            <strong>{wikiMentionPreview.article.title}</strong>
+            <p>{wikiMentionPreview.excerpt || "This Wiki article has no text yet."}</p>
+          </aside>
+        {/if}
 
         <footer class="editor-footer">
           <span>{wordCount} words <span class="footer-separator">·</span> {characterCount} characters</span>
@@ -5053,21 +4785,19 @@
                 <p class="board-source-empty">No scenes yet</p>
               {/each}
             </section>
-            {#each spaces as space (space)}
-              <section class="board-source-group">
-                <h3>{space}</h3>
-                {#each documents.filter((doc) => doc.space === space && !doc.trashed) as doc (doc.id)}
-                  <div class="board-source">
-                    <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, space, doc.id)}>⠿</button>
-                    <span class="source-icon">{space === "Characters" ? "◉" : space === "Places" ? "⌖" : space === "Research" ? "⌕" : "▤"}</span>
-                    <span class="source-name">{doc.title || "Untitled"}</span>
-                    <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard(space, doc.id)}>+</button>
-                  </div>
-                {:else}
-                  <p class="board-source-empty">No {space.toLowerCase()} yet</p>
-                {/each}
-              </section>
-            {/each}
+            <section class="board-source-group">
+              <h3>Wiki</h3>
+              {#each documents.filter((doc) => doc.space === "Wiki" && !doc.trashed) as doc (doc.id)}
+                <div class="board-source">
+                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "Wiki", doc.id)}>⠿</button>
+                  <span class="source-icon">▤</span>
+                  <span class="source-name">{doc.title || "Untitled"}</span>
+                  <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("Wiki", doc.id)}>+</button>
+                </div>
+              {:else}
+                <p class="board-source-empty">No wiki pages yet</p>
+              {/each}
+            </section>
           </aside>
           <section class="storyboard-canvas" aria-label="Freeform storyboard">
             <header class="storyboard-header">
@@ -5392,7 +5122,7 @@
   if (event.target === researchMarkdownDialog) researchMarkdownDialog.close();
 }}>
   <div class="settings-header">
-    <div><span class="settings-kicker">RESEARCH FILE</span><h2>{researchMarkdownTitle}</h2></div>
+    <div><span class="settings-kicker">WIKI FILE</span><h2>{researchMarkdownTitle}</h2></div>
     <button class="close-settings" aria-label="Close Markdown preview" onclick={() => researchMarkdownDialog.close()}>×</button>
   </div>
   <article class="research-markdown-content">{@html researchMarkdownHtml}</article>
@@ -5633,9 +5363,9 @@
         </div>
       {/if}
       <div class="data-group">
-        <span class="data-group-label">Research files</span>
+        <span class="data-group-label">Wiki files</span>
         {#if desktopRuntime}
-          <p class="data-help">Imported research files live in a project folder on this device. They are stored as plain files, not encrypted, and are not included in project backups or device sync. Their metadata travels with the project. Files can be up to 200 MB each.</p>
+          <p class="data-help">Imported wiki files live in a project folder on this device. They are stored as plain files, not encrypted, and are not included in project backups or device sync. Their metadata travels with the project. Files can be up to 200 MB each.</p>
           <div class="sync-folder-row">
             <span class="sync-folder-path" title={researchRoot}>{researchRoot || "No folder chosen"}</span>
             <button type="button" class="data-button" onclick={chooseResearchRoot}>Choose folder…</button>
@@ -5645,7 +5375,7 @@
           </div>
           {#if researchSettingsStatus}<p class="data-status" role="status">{researchSettingsStatus}</p>{/if}
         {:else}
-          <p class="data-help">Imported research files are stored as plain files in this browser’s local database. They are not encrypted or included in project backups or device sync. Files can be up to 200 MB each.</p>
+          <p class="data-help">Imported wiki files are stored as plain files in this browser’s local database. They are not encrypted or included in project backups or device sync. Files can be up to 200 MB each.</p>
         {/if}
       </div>
       <input
@@ -5771,12 +5501,12 @@
 }}>
   <form onsubmit={saveResearchLink}>
     <div class="settings-header">
-      <div><span class="settings-kicker">RESEARCH</span><h2>Add web link</h2></div>
+      <div><span class="settings-kicker">WIKI</span><h2>Add web link</h2></div>
       <button class="close-settings" aria-label="Close link dialog" type="button" onclick={() => researchLinkDialog.close()}>×</button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
-        <div class="preference-heading"><strong>Link details</strong><span>Save a website or online resource in the Research binder</span></div>
+        <div class="preference-heading"><strong>Link details</strong><span>Save a website or online resource in the Wiki</span></div>
         <label class="preference-label" for="research-link-url">Web address</label>
         <input
           id="research-link-url"
@@ -5887,7 +5617,7 @@
   class="data-file-input"
   type="file"
   multiple
-  aria-label="Add research files"
+  aria-label="Add wiki files"
   bind:this={researchFileInput}
   onchange={handleBrowserResearchFiles}
 />
@@ -6152,7 +5882,6 @@
   .note-folder-actions { display: flex; flex: 0 0 auto; align-items: center; }
   .note-folder-actions .chapter-action { opacity: .45; }
   .note-folder-row:hover .chapter-action, .note-folder-actions .chapter-action:focus-visible { opacity: 1; }
-  .note-folder-row:hover .row-add, .note-folder-actions .row-add:focus-visible { opacity: 1; }
   .note-folder-row:hover .row-action, .note-folder-actions .row-action:focus-visible { opacity: 1; }
   .note-folder-name-input { height: 23px; }
   .note-document-row { padding-right: 2px; }
@@ -6318,6 +6047,27 @@
   :global(.markdown-image-placeholder) { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font: 10px/1.6 var(--markdown-editor-font); white-space: nowrap; }
   .editor-content-hidden { display: none; }
   .editor-content { min-height: 430px; padding: 37px 1px 35px; outline: none; color: var(--text-body); font-family: var(--writing-font, var(--interface-font)); font-size: calc(16px * var(--editor-scale)); line-height: 1.85; }
+  :global(::highlight(prosecraft-wiki-mention)) {
+    background-color: color-mix(in srgb, var(--accent) 13%, transparent);
+    text-decoration: underline dotted var(--accent);
+    text-underline-offset: .15em;
+  }
+  .wiki-mention-preview {
+    position: fixed;
+    z-index: 20;
+    width: min(340px, calc(100vw - 16px));
+    max-height: 180px;
+    overflow: hidden;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-panel);
+    color: var(--text-body);
+    pointer-events: none;
+  }
+  .wiki-mention-preview strong { display: block; margin-bottom: 5px; color: var(--text-heading); font-family: Georgia, serif; font-size: 15px; font-weight: 500; }
+  .wiki-mention-preview p { display: -webkit-box; overflow: hidden; margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.5; line-clamp: 6; -webkit-box-orient: vertical; -webkit-line-clamp: 6; }
   .editor-content.fade-other-paragraphs :global(.faded-writing-block) {
     opacity: .38;
     transition: opacity .15s ease;
@@ -6341,8 +6091,6 @@
   .editor-content :global(code) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
   .editor-content :global(table) { width: 100%; border-collapse: collapse; font-size: .9em; }
   .editor-content :global(th), .editor-content :global(td) { padding: 5px 8px; border: 1px solid var(--border); text-align: left; }
-  .sheet-notes-title { margin: 26px 0 0; color: var(--eyebrow); font-size: 9px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase; }
-  .editor-content.sheet-notes { min-height: 120px; padding-top: 11px; font-size: calc(15px * var(--editor-scale)); }
   .editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 15px; border-top: 1px solid var(--border-soft); color: var(--text-faint); font-size: 10px; }
   .footer-actions { display: flex; align-items: center; gap: 12px; }
   .footer-separator { margin: 0 4px; color: var(--border); }

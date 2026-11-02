@@ -83,8 +83,11 @@ export type ProjectData = {
   storyboardRows?: StoryboardRow[];
   storyboardDrawings?: StoryboardDrawing[];
   timelineNodes?: TimelineNode[];
+  /** Legacy Notes folders; migrated into `researchFolders` by the Wiki migration. */
   noteFolders?: NoteFolder[];
+  /** Folder name used for imported Wiki files on this device. */
   researchFolderName?: string;
+  /** Folders backing the Wiki. The `research*` names are kept for storage compatibility. */
   researchFolders?: ResearchFolder[];
   researchItems?: ResearchItem[];
   publishOptions?: PublishOptions;
