@@ -6257,7 +6257,7 @@
   .workspace-controls {
     position: sticky;
     top: 0;
-    z-index: 6;
+    z-index: 1;
     display: flex;
     width: min(100%, 1120px);
     align-items: center;
@@ -6286,7 +6286,7 @@
   .meta-divider { height: 12px; border-left: 1px solid var(--border); }
   .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--writing-font, var(--interface-font)); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
   .title-input::placeholder { color: var(--text-faint); }
-  .toolbar { position: sticky; top: 58px; z-index: 5; display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
+  .toolbar { position: sticky; top: 58px; z-index: 1; display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
   .style-select { width: 112px; height: 28px; padding: 0 6px; border: 0; outline: 0; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
