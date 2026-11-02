@@ -176,11 +176,35 @@ git([
 ]);
 git(["commit", "-m", `chore(release): ${tag}`]);
 git(["tag", "-a", tag, "-m", `Release ${tag}`]);
-git([
-  "push",
-  "--atomic",
-  "origin",
-  `HEAD:refs/heads/${branch}`,
-  `refs/tags/${tag}`,
-]);
+try {
+  git([
+    "push",
+    "--atomic",
+    "origin",
+    `HEAD:refs/heads/${branch}`,
+    `refs/tags/${tag}`,
+  ]);
+} catch (error) {
+  console.error(
+    `The release commit and local tag ${tag} were created, but the push failed. ` +
+      `After resolving the Git error, retry with:\n` +
+      `git push --atomic origin HEAD:refs/heads/${branch} refs/tags/${tag}`,
+  );
+  throw error;
+}
+
+const expectedCommit = git(["rev-parse", "HEAD"], true);
+const remoteTagCommit = git(
+  ["ls-remote", "--tags", "origin", `${tag}^{}`],
+  true,
+)
+  .split(/\s+/)[0];
+
+if (remoteTagCommit !== expectedCommit) {
+  throw new Error(
+    `Release push completed but remote tag verification failed for ${tag}. ` +
+      `Expected it to point to ${expectedCommit}; found ${remoteTagCommit || "missing"}.`,
+  );
+}
+
 console.log(`Pushed ${tag}; the GitHub Actions release workflow will build and publish it.`);

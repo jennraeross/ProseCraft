@@ -23,8 +23,11 @@ npm run release -- major
 
 The command increments the version in the frontend and Tauri manifests, creates a release
 commit and `vX.Y.Z` tag, and pushes both to `origin`. The tag triggers the installer builds
-and GitHub Release publication. Add `--dry-run` to check the proposed version without
-changing files or pushing.
+and GitHub Release publication. Use this command for releases rather than changing the
+version files and pushing a commit separately. If the push fails, the command prints the
+atomic push command to retry after resolving the Git error. It also verifies that the commit
+and tag reached `origin`. Add `--dry-run` to check the proposed version without changing
+files or pushing.
 
 ![Outlining](<Screenshots/1.27.03 PM.png>)
 ![Storyboarding](<Screenshots/1.27.36 PM.png>)
