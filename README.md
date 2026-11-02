@@ -19,6 +19,8 @@ To build it yourself, clone the repo, enter it's directory and run `npm install 
 #### Outlining
 - [x] Chapter by chapter Outline mode
 - [x] Storyboarding mode
+- [x] Freeform pannable storyboard canvas
+- [x] Basic storyboard diagrams (lines, arrows, boxes, and adjustable-size text) with pan tool
 - [x] Full timeline support
 - [ ] Image support
 - [ ] Plot grid
