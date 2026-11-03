@@ -66,6 +66,7 @@ the release once they succeed.
 - [x] Typewriter mode
 - [x] Focus mode
 - [x] Zen mode
+- [x] Comments on selected text (for a co-author, a proofreader or an agent)
 - [x] LaTeX math (MathJax)
 - [x] Mermaid
 - [ ] MathCAD

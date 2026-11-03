@@ -9,6 +9,23 @@ import type {
 } from "../publish/types";
 
 export type ActivityRecord = { edits: number; wordsAdded: number };
+
+/**
+ * A note attached to a passage of a document. The passage is found again by its
+ * quoted words plus a little text before and after, so nothing is written into
+ * the document HTML.
+ */
+export type TextComment = {
+  id: string;
+  documentId: string;
+  quote: string;
+  prefix: string;
+  suffix: string;
+  body: string;
+  author: string;
+  createdAt: number;
+  resolved: boolean;
+};
 export type StoryboardKind = "chapter" | "scene" | "blank" | SpaceName;
 export type StoryboardRow = { id: string; title: string };
 export type StoryboardCard = {
@@ -91,6 +108,8 @@ export type ProjectData = {
   researchFolders?: ResearchFolder[];
   researchItems?: ResearchItem[];
   publishOptions?: PublishOptions;
+  /** Notes on passages of text, for example from a co-author, a proofreader or an agent. */
+  comments?: TextComment[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */

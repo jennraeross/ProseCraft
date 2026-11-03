@@ -16,6 +16,18 @@
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
+  import { commentText, offsetsFromRange, rangeFromOffsets } from "$lib/comment-dom";
+  import {
+    buildAnchor,
+    commentsForDocument,
+    createComment,
+    dropOrphanComments,
+    locateAnchor,
+    normalizeComments,
+    removeComment,
+    setCommentResolved,
+    type CommentAnchor
+  } from "$lib/comments";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -115,6 +127,7 @@
     StoryboardDrawing,
     StoryboardKind,
     StoryboardRow,
+    TextComment,
     TimelineNode
   } from "$lib/storage/types";
 
@@ -312,6 +325,15 @@
   let researchFolderName = $state("");
   let researchFolders = $state<BinderFolder[]>([]);
   let researchItems = $state<ResearchItem[]>([]);
+  let comments = $state<TextComment[]>([]);
+  let commentsDialog: HTMLDialogElement;
+  let commentDraft = $state("");
+  let commentAuthor = $state("");
+  let pendingAnchor = $state<CommentAnchor | null>(null);
+  let showResolvedComments = $state(false);
+  let commentPositions = $state<Record<string, number | null>>({});
+  const commentHighlightName = "prosecraft-comment";
+  const commentAuthorStorageKey = "prosecraft-comment-author";
   let expandedResearchFolders = $state<Record<string, boolean>>({});
   let researchStatus = $state("");
   let researchSettingsStatus = $state("");
@@ -636,7 +658,8 @@
       researchFolderName,
       researchFolders,
       researchItems,
-      publishOptions
+      publishOptions,
+      comments: dropOrphanComments(comments, new Set(documents.map((doc) => doc.id)))
     };
   }
 
@@ -680,6 +703,7 @@
     researchFolderNameDraft = "";
     const researchFolderIds = new Set(researchFolders.map((folder) => folder.id));
     researchItems = normalizeResearchItems(project.researchItems, researchFolderIds);
+    comments = normalizeComments(project.comments);
     documents = project.documents.map((doc) => {
       if (doc.space !== "Wiki" || !doc.folderId) return doc;
       if (researchFolderIds.has(doc.folderId)) return doc;
@@ -2557,6 +2581,122 @@
     saveState = "Saving…";
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(persistNow, 350);
+  }
+
+  const activeComments = $derived(commentsForDocument(comments, activeDocumentId)
+    .filter((comment) => showResolvedComments || !comment.resolved)
+    .sort((a, b) => (commentPositions[a.id] ?? Infinity) - (commentPositions[b.id] ?? Infinity)
+      || a.createdAt - b.createdAt));
+  const resolvedCommentCount = $derived(commentsForDocument(comments, activeDocumentId)
+    .filter((comment) => comment.resolved).length);
+
+  // Draws the open comments of the current scene on top of the text, using the
+  // same highlight API as the wiki mentions, so the scene HTML stays untouched.
+  function refreshCommentHighlights() {
+    const registry = Reflect.get(window.CSS, "highlights") as {
+      set: (name: string, highlight: unknown) => void;
+      delete: (name: string) => void;
+    } | undefined;
+    const HighlightConstructor = Reflect.get(window, "Highlight") as
+      | (new (...highlightRanges: Range[]) => unknown)
+      | undefined;
+    registry?.delete(commentHighlightName);
+    if (!editor || markdownEditorMode || !activeDocumentId) {
+      commentPositions = {};
+      return;
+    }
+    const text = commentText(editor);
+    const positions: Record<string, number | null> = {};
+    const ranges: Range[] = [];
+    for (const comment of commentsForDocument(comments, activeDocumentId)) {
+      const found = locateAnchor(text, comment);
+      positions[comment.id] = found ? found.start : null;
+      if (!found || comment.resolved) continue;
+      const range = rangeFromOffsets(editor, found.start, found.end);
+      if (range) ranges.push(range);
+    }
+    commentPositions = positions;
+    if (ranges.length > 0 && registry && HighlightConstructor) {
+      registry.set(commentHighlightName, new HighlightConstructor(...ranges));
+    }
+  }
+
+  $effect(() => {
+    void documents;
+    void comments;
+    void activeDocumentId;
+    void markdownEditorMode;
+    refreshCommentHighlights();
+  });
+
+  function readCommentAuthor(): string {
+    try {
+      return localStorage.getItem(commentAuthorStorageKey) || authorName || "";
+    } catch {
+      return authorName || "";
+    }
+  }
+
+  function openComments() {
+    if (!activeDocumentId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    pendingAnchor = null;
+    if (editor && !markdownEditorMode) {
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+        const offsets = offsetsFromRange(editor, selection.getRangeAt(0));
+        if (offsets) pendingAnchor = buildAnchor(commentText(editor), offsets.start, offsets.end);
+      }
+    }
+    commentDraft = "";
+    commentAuthor = readCommentAuthor();
+    commentsDialog.showModal();
+  }
+
+  function addComment(event: SubmitEvent) {
+    event.preventDefault();
+    if (!pendingAnchor || !commentDraft.trim()) return;
+    const author = commentAuthor.trim() || "Me";
+    try {
+      localStorage.setItem(commentAuthorStorageKey, author);
+    } catch {
+      // The author name just isn't remembered.
+    }
+    comments = [...comments, createComment({
+      id: crypto.randomUUID(),
+      documentId: activeDocumentId,
+      anchor: pendingAnchor,
+      body: commentDraft,
+      author,
+      now: Date.now()
+    })];
+    pendingAnchor = null;
+    commentDraft = "";
+    persistNow();
+  }
+
+  function goToComment(comment: TextComment) {
+    if (!editor || markdownEditorMode) return;
+    const found = locateAnchor(commentText(editor), comment);
+    const range = found ? rangeFromOffsets(editor, found.start, found.end) : null;
+    if (!range) return;
+    commentsDialog.close();
+    editor.focus();
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    range.startContainer.parentElement?.scrollIntoView({ block: "center" });
+  }
+
+  function resolveComment(id: string, resolved: boolean) {
+    comments = setCommentResolved(comments, id, resolved);
+    persistNow();
+  }
+
+  function deleteComment(id: string) {
+    comments = removeComment(comments, id);
+    persistNow();
   }
 
   function openDocument(id: string) {
@@ -4664,6 +4804,7 @@
           <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <span class="toolbar-divider"></span>
           <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.3" width="14.4" height="13.4" rx="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.4" r="1.4" stroke="currentColor" stroke-width="1.2"/><path d="m4.2 14.8 4-4 2.5 2.5 2-2 3.1 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4.2 4.6h11.6a1.2 1.2 0 0 1 1.2 1.2v6.6a1.2 1.2 0 0 1-1.2 1.2H9.6l-3.4 2.8v-2.8H4.2a1.2 1.2 0 0 1-1.2-1.2V5.8a1.2 1.2 0 0 1 1.2-1.2Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><span aria-hidden="true" class="math-tool-mark">Σ</span></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.2" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="11.6" y="12.6" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M8.4 5.3h1.8a2 2 0 0 1 2 2v5.3m0 0-1.8-1.8m1.8 1.8 1.8-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
@@ -5496,6 +5637,60 @@
   </form>
 </dialog>
 
+<dialog class="settings-dialog comments-dialog" bind:this={commentsDialog} onclick={(event) => {
+  if (event.target === commentsDialog) commentsDialog.close();
+}}>
+  <div class="settings-header">
+    <div><span class="settings-kicker">SCENE</span><h2>Comments</h2></div>
+    <button class="close-settings" aria-label="Close comments" type="button" onclick={() => commentsDialog.close()}>×</button>
+  </div>
+  <div class="settings-body">
+    <section class="preference-section">
+      <div class="preference-heading"><strong>New comment</strong><span>Notes for yourself, a co-author, a proofreader or an agent. They are not part of the text or of any export.</span></div>
+      {#if pendingAnchor}
+        <form class="comment-form" onsubmit={addComment}>
+          <blockquote class="comment-quote">{pendingAnchor.quote.length > 160 ? `${pendingAnchor.quote.slice(0, 160)}…` : pendingAnchor.quote}</blockquote>
+          <textarea class="preference-select" rows="3" placeholder="Your comment" maxlength="4000" bind:value={commentDraft} aria-label="Comment text" required></textarea>
+          <div class="comment-form-row">
+            <input class="preference-select" type="text" placeholder="Name" maxlength="60" bind:value={commentAuthor} aria-label="Author name" />
+            <button class="data-button" type="submit">Add comment</button>
+          </div>
+        </form>
+      {:else if markdownEditorMode}
+        <p class="data-help">Comments attach to the rich text editor. Switch back to it to add or jump to a comment.</p>
+      {:else}
+        <p class="data-help">Select some text in the scene, then press the comment button again.</p>
+      {/if}
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading">
+        <strong>In this scene</strong>
+        {#if resolvedCommentCount > 0}
+          <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showResolvedComments} /> Show resolved ({resolvedCommentCount})</label>
+        {/if}
+      </div>
+      {#if activeComments.length === 0}
+        <p class="data-help">No comments yet.</p>
+      {:else}
+        <ul class="comment-list">
+          {#each activeComments as comment (comment.id)}
+            <li class="comment-item" class:resolved={comment.resolved}>
+              <blockquote class="comment-quote">{comment.quote.length > 120 ? `${comment.quote.slice(0, 120)}…` : comment.quote}</blockquote>
+              <p class="comment-body">{comment.body}</p>
+              <div class="comment-meta">{comment.author} · {new Date(comment.createdAt).toLocaleDateString()}{commentPositions[comment.id] === null ? " · text not found any more" : ""}</div>
+              <div class="comment-actions">
+                <button class="data-button" type="button" disabled={markdownEditorMode || commentPositions[comment.id] === null} onclick={() => goToComment(comment)}>Go to</button>
+                <button class="data-button" type="button" onclick={() => resolveComment(comment.id, !comment.resolved)}>{comment.resolved ? "Reopen" : "Resolve"}</button>
+                <button class="data-button danger-button" type="button" aria-label="Delete comment" onclick={() => deleteComment(comment.id)}>Delete</button>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  </div>
+</dialog>
+
 <dialog class="settings-dialog research-link-dialog" bind:this={researchLinkDialog} onclick={(event) => {
   if (event.target === researchLinkDialog) researchLinkDialog.close();
 }}>
@@ -6242,6 +6437,21 @@
   .data-group-label { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; }
   .data-button { height: 32px; padding: 0 13px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 11px; }
   .data-button:hover { border-color: var(--accent); color: var(--text-heading); }
+  .danger-button { color: var(--danger); }
+  .danger-button:hover { border-color: var(--danger); color: var(--danger); }
+  :global(::highlight(prosecraft-comment)) { background-color: color-mix(in srgb, #e0b000 30%, transparent); }
+  .comment-form { display: flex; flex-direction: column; gap: 8px; }
+  .comment-form textarea { resize: vertical; font-family: inherit; }
+  .comment-form-row { display: flex; gap: 8px; }
+  .comment-form-row input { min-width: 0; flex: 1; }
+  .comment-quote { margin: 0; padding: 2px 0 2px 10px; border-left: 2px solid var(--accent); color: var(--text-muted); font-size: 11px; font-style: italic; line-height: 1.5; }
+  .comment-list { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 12px; list-style: none; }
+  .comment-item { display: flex; flex-direction: column; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .comment-item.resolved { opacity: .6; }
+  .comment-body { margin: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .comment-meta { color: var(--text-muted); font-size: 10px; }
+  .comment-actions { display: flex; gap: 6px; }
+  .comment-resolved-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 10px; }
   .data-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .data-file-input { display: none; }
   .data-status { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; }
