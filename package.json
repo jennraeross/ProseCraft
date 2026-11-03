@@ -37,6 +37,7 @@
     "jspdf": "^4.2.1",
     "marked": "^18.1.1",
     "mermaid": "^12.2.0",
+    "pdfjs-dist": "^6.5.438",
     "turndown": "^7.2.4"
   },
   "devDependencies": {

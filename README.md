@@ -66,7 +66,7 @@ the release once they succeed.
 - [x] Typewriter mode
 - [x] Focus mode
 - [x] Zen mode
-- [x] Split view (the editor plus up to four read-only reference panes)
+- [x] Split view (the editor plus up to four read-only reference panes, PDFs included)
 - [x] LaTeX math (MathJax)
 - [x] Mermaid
 - [ ] MathCAD

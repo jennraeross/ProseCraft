@@ -1,11 +1,13 @@
 <script lang="ts">
   import { markdownToHtml } from "$lib/publish/markdown";
   import type { DocumentData, ResearchFile } from "$lib/publish/types";
+  import PdfView from "$lib/PdfView.svelte";
   import { sanitizeHtml } from "$lib/sanitize";
   import { parseSplitTarget, type SplitGroup } from "$lib/split";
 
   const MAX_TEXT_BYTES = 2 * 1024 * 1024;
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+  const MAX_PDF_BYTES = 50 * 1024 * 1024;
 
   type Loaded = { html?: string; imageUrl?: string; note?: string };
 
@@ -43,6 +45,8 @@
     ? files.find((item) => item.id === parsed.id) ?? null
     : null);
   const documentHtml = $derived(document ? sanitizeHtml(document.content) : "");
+  const isPdf = $derived(Boolean(file && (file.mimeType === "application/pdf" || /\.pdf$/i.test(file.fileName))));
+  const showPdf = $derived(Boolean(file && isPdf && file.size <= MAX_PDF_BYTES));
 
   let loaded = $state<Loaded | null>(null);
 
@@ -56,6 +60,11 @@
     const current = file;
     loaded = null;
     if (!current) return;
+    if (isPdf) {
+      // PDFs are rendered by PdfView; only an oversized one needs a note here.
+      if (!showPdf) loaded = { note: "This PDF is too large to show here (over 50 MB)." };
+      return;
+    }
     let cancelled = false;
     let imageUrl: string | undefined;
     void (async () => {
@@ -117,6 +126,7 @@
       <div class="split-content" role="presentation" onclick={handleContentClick}>{@html documentHtml}</div>
     {:else if file}
       <h2 class="split-title">{file.title || file.fileName}</h2>
+      {#if showPdf}{#key file.id}<PdfView load={() => readBytes(file)} />{/key}{/if}
       {#if loaded?.html}<div class="split-content" role="presentation" onclick={handleContentClick}>{@html loaded.html}</div>{/if}
       {#if loaded?.imageUrl}<img class="split-image" src={loaded.imageUrl} alt={file.title || file.fileName} />{/if}
       {#if loaded?.note}
