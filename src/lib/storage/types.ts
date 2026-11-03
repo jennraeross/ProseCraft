@@ -9,6 +9,17 @@ import type {
 } from "../publish/types";
 
 export type ActivityRecord = { edits: number; wordsAdded: number };
+
+/** A saved copy of one document's text. `before-restore` ones are made automatically so a restore can be undone. */
+export type DocumentSnapshot = {
+  id: string;
+  documentId: string;
+  createdAt: number;
+  title: string;
+  content: string;
+  note?: string;
+  reason: "manual" | "before-restore";
+};
 export type StoryboardKind = "chapter" | "scene" | "blank" | SpaceName;
 export type StoryboardRow = { id: string; title: string };
 export type StoryboardCard = {
@@ -91,6 +102,8 @@ export type ProjectData = {
   researchFolders?: ResearchFolder[];
   researchItems?: ResearchItem[];
   publishOptions?: PublishOptions;
+  /** Saved earlier versions of document text, newest per document capped by `MAX_SNAPSHOTS_PER_DOCUMENT`. */
+  snapshots?: DocumentSnapshot[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */

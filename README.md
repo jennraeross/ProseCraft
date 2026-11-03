@@ -66,6 +66,7 @@ the release once they succeed.
 - [x] Typewriter mode
 - [x] Focus mode
 - [x] Zen mode
+- [x] Snapshots of a scene (save, preview and restore earlier versions)
 - [x] LaTeX math (MathJax)
 - [x] Mermaid
 - [ ] MathCAD
