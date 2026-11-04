@@ -61,13 +61,17 @@ export type StateTree = Record<string, unknown>;
 export type StateStep = { changes: Record<string, StateChange>; time: number; signature: string };
 export type IgnoredProps = Record<string, readonly string[]>;
 
-type PageStep = { type: "field"; key: string; entryId: number } | { type: "state"; step: StateStep };
+type PageStep =
+  | { type: "field"; key: string; entryId: number }
+  | { type: "state"; step: StateStep }
+  | { type: "external"; key: string };
 type PageHistory = { done: PageStep[]; undone: PageStep[] };
 
 export type FieldResult<S> = { key: string; value: string; selection: S };
 export type PageResult<S> =
   | ({ type: "field" } & FieldResult<S>)
-  | { type: "state"; step: StateStep };
+  | { type: "state"; step: StateStep }
+  | { type: "external"; key: string };
 export type RecordOptions<S> = {
   kind: EditKind;
   time: number;
@@ -175,6 +179,11 @@ export class UndoManager<S> {
         history.undone.push(step);
         return step;
       }
+      if (step.type === "external") {
+        if (canApply(step.key)) return step;
+        history.done.pop();
+        continue;
+      }
       const field = this.fields.get(step.key);
       if (field?.done.at(-1)?.id === step.entryId && canApply(step.key)) {
         return { type: "field", ...this.undoField(step.key)! };
@@ -193,6 +202,11 @@ export class UndoManager<S> {
         history.done.push(step);
         return step;
       }
+      if (step.type === "external") {
+        if (canApply(step.key)) return step;
+        history.undone.pop();
+        continue;
+      }
       const field = this.fields.get(step.key);
       if (field?.undone.at(-1)?.id === step.entryId && canApply(step.key)) {
         return { type: "field", ...this.redoField(step.key)! };
@@ -200,6 +214,42 @@ export class UndoManager<S> {
       history.undone.pop();
     }
     return null;
+  }
+
+  /**
+   * Records a step in an editor that keeps its own history. The page only holds the
+   * position in its order: undoPage returns the step without moving it, and the
+   * editor reports what it applied through externalUndone or externalRedone.
+   */
+  recordExternal(page: string, key: string) {
+    const history = this.page(page);
+    history.undone = [];
+    pushCapped(history.done, { type: "external", key });
+  }
+
+  externalUndone(page: string, key: string) {
+    const history = this.page(page);
+    const step = takeExternalStep(history.done, key);
+    if (step) history.undone.push(step);
+  }
+
+  externalRedone(page: string, key: string) {
+    const history = this.page(page);
+    pushCapped(history.done, takeExternalStep(history.undone, key) ?? { type: "external", key });
+  }
+
+  /** Removes the newest step from a list, for when the external editor had nothing to apply. */
+  discardNewest(page: string, direction: "undo" | "redo") {
+    const history = this.page(page);
+    (direction === "undo" ? history.done : history.undone).pop();
+  }
+
+  /** Removes a page's steps for an external editor whose history was cleared. */
+  forgetExternal(page: string, key: string) {
+    const history = this.page(page);
+    for (const list of [history.done, history.undone]) {
+      while (takeExternalStep(list, key));
+    }
   }
 
   pushState(page: string, step: StateStep) {
@@ -264,6 +314,17 @@ function takeFieldStep(list: PageStep[], key: string, entryId: number) {
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const step = list[index];
     if (step.type === "field" && step.key === key && step.entryId === entryId) {
+      list.splice(index, 1);
+      return step;
+    }
+  }
+  return null;
+}
+
+function takeExternalStep(list: PageStep[], key: string) {
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const step = list[index];
+    if (step.type === "external" && step.key === key) {
       list.splice(index, 1);
       return step;
     }

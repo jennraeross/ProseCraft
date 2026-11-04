@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
-  import { history, historyKeymap, isolateHistory, redo as redoMarkdown, undo as undoMarkdown } from "@codemirror/commands";
+  import { history, historyKeymap, isolateHistory, redo as redoMarkdown, undo as undoMarkdown, undoDepth } from "@codemirror/commands";
   import { markdown } from "@codemirror/lang-markdown";
   import { Compartment, EditorState, StateEffect, StateField, Transaction, type Range as DecorationRange } from "@codemirror/state";
   import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
@@ -507,10 +507,28 @@
       ? { annotations: isolateHistory.of("before") }
       : null;
   });
-  const markdownHistoryExtension = history({ newGroupDelay: UNDO_GROUP_MAX_MS });
+  const markdownHistoryExtension = history({ newGroupDelay: UNDO_GROUP_MAX_MS, minDepth: 1000 });
   const markdownHistory = new Compartment();
   const markdownStates = new Map<string, EditorState>();
   let markdownStateKey = "";
+  let loadingMarkdownDocument = false;
+
+  function markdownUndoKey() {
+    return `markdown:${markdownStateKey}`;
+  }
+
+  function trackMarkdownHistory(update: ViewUpdate) {
+    if (loadingMarkdownDocument) return;
+    const page = currentUndoPage();
+    if (update.transactions.some((tr) => tr.isUserEvent("undo"))) {
+      undoManager.externalUndone(page, markdownUndoKey());
+    } else if (update.transactions.some((tr) => tr.isUserEvent("redo"))) {
+      undoManager.externalRedone(page, markdownUndoKey());
+    } else if (undoDepth(update.state) !== undoDepth(update.startState)) {
+      commitPageState();
+      undoManager.recordExternal(page, markdownUndoKey());
+    }
+  }
   const markdownZenInput = EditorView.domEventHandlers({
     beforeinput(event) {
       const inputEvent = event as InputEvent;
@@ -523,6 +541,9 @@
     const savedStateKey = untrack(() => `${activeProjectId}/${activeDocumentId}`);
     const savedState = markdownStates.get(savedStateKey);
     markdownStateKey = savedStateKey;
+    if (!savedState || savedState.doc.toString() !== untrack(() => markdownSource)) {
+      undoManager.forgetExternal(untrack(() => currentUndoPage()), markdownUndoKey());
+    }
     const view = new EditorView({
       state: savedState && savedState.doc.toString() === untrack(() => markdownSource) ? savedState : EditorState.create({
         doc: untrack(() => markdownSource),
@@ -569,6 +590,7 @@
           EditorView.updateListener.of((update) => {
             const { docChanged, state } = update;
             if (docChanged) {
+              trackMarkdownHistory(update);
               markdownSource = state.doc.toString();
               handleMarkdownInput();
             }
@@ -2244,6 +2266,8 @@
     }
     // Removing and re-adding the extension clears the undo history, so undo
     // cannot restore text from the previously open document.
+    undoManager.forgetExternal(currentUndoPage(), markdownUndoKey());
+    loadingMarkdownDocument = true;
     view.dispatch({
       ...(view.state.doc.toString() !== source
         ? { changes: { from: 0, to: view.state.doc.length, insert: source } }
@@ -2251,6 +2275,7 @@
       effects: markdownHistory.reconfigure([])
     });
     view.dispatch({ effects: markdownHistory.reconfigure(markdownHistoryExtension) });
+    loadingMarkdownDocument = false;
   }
 
   function setEditorContent(html: string) {
@@ -4156,7 +4181,9 @@
   }
 
   function canApplyFieldHistory(key: string) {
-    return key === bodyUndoKey() ? !markdownEditorMode : nativeFieldForKey(key) !== null;
+    if (key === bodyUndoKey()) return !markdownEditorMode;
+    if (key === markdownUndoKey()) return markdownEditorMode && markdownCodeEditor !== undefined;
+    return nativeFieldForKey(key) !== null;
   }
 
   function runPageHistory(direction: "undo" | "redo") {
@@ -4165,13 +4192,19 @@
       persistNow();
     }
     commitPageState(true);
-    if (workspaceView === "writing" && markdownEditorMode && markdownCodeEditor
-      && (direction === "undo" ? undoMarkdown : redoMarkdown)(markdownCodeEditor)) return;
     const page = currentUndoPage();
     const result = direction === "undo"
       ? undoManager.undoPage(page, canApplyFieldHistory)
       : undoManager.redoPage(page, canApplyFieldHistory);
     if (!result) return;
+    if (result.type === "external") {
+      // The update listener moves the page step once the editor applies this.
+      if (!markdownCodeEditor || !(direction === "undo" ? undoMarkdown : redoMarkdown)(markdownCodeEditor)) {
+        undoManager.discardNewest(page, direction);
+        runPageHistory(direction);
+      }
+      return;
+    }
     if (result.type === "field") {
       const target = result.key === bodyUndoKey() ? editor : nativeFieldForKey(result.key);
       if (target) applyFieldValue(target, result.value, result.selection);

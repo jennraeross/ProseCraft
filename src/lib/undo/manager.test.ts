@@ -156,6 +156,62 @@ describe("page history", () => {
   });
 });
 
+describe("external editor steps", () => {
+  function pageWithFieldThenExternal() {
+    const undo = new UndoManager<null>();
+    undo.sync("title", "");
+    undo.record("title", "p", "t", edit("type", 0));
+    undo.recordExternal("p", "md");
+    return undo;
+  }
+
+  it("keeps its position among field steps", () => {
+    const undo = pageWithFieldThenExternal();
+    expect(undo.undoPage("p", () => true)).toEqual({ type: "external", key: "md" });
+    undo.externalUndone("p", "md");
+    expect(undo.undoPage("p", () => true)).toMatchObject({ type: "field", key: "title" });
+  });
+
+  it("comes after a field step recorded later", () => {
+    const undo = new UndoManager<null>();
+    undo.recordExternal("p", "md");
+    undo.sync("title", "");
+    undo.record("title", "p", "t", edit("type", 0));
+    expect(undo.undoPage("p", () => true)).toMatchObject({ type: "field", key: "title" });
+    expect(undo.undoPage("p", () => true)).toEqual({ type: "external", key: "md" });
+  });
+
+  it("stays in step when the editor undoes by itself", () => {
+    const undo = pageWithFieldThenExternal();
+    undo.externalUndone("p", "md");
+    expect(undo.undoPage("p", () => true)).toMatchObject({ type: "field", key: "title" });
+    expect(undo.redoPage("p", () => true)).toMatchObject({ type: "field", key: "title" });
+    expect(undo.redoPage("p", () => true)).toEqual({ type: "external", key: "md" });
+    undo.externalRedone("p", "md");
+    expect(undo.redoPage("p", () => true)).toBeNull();
+  });
+
+  it("skips steps for an editor that is not available", () => {
+    const undo = pageWithFieldThenExternal();
+    expect(undo.undoPage("p", (key) => key !== "md")).toMatchObject({ type: "field", key: "title" });
+  });
+
+  it("discards a step the editor could not apply", () => {
+    const undo = pageWithFieldThenExternal();
+    undo.undoPage("p", () => true);
+    undo.discardNewest("p", "undo");
+    expect(undo.undoPage("p", () => true)).toMatchObject({ type: "field", key: "title" });
+  });
+
+  it("forgets steps when the editor history is cleared", () => {
+    const undo = new UndoManager<null>();
+    undo.recordExternal("p", "md");
+    undo.recordExternal("p", "md");
+    undo.forgetExternal("p", "md");
+    expect(undo.undoPage("p", () => true)).toBeNull();
+  });
+});
+
 describe("state steps", () => {
   it("restores only changed props, leaving newer text alone", () => {
     const step = diffState({ cards: [{ id: "c", x: 0, note: "old" }] }, { cards: [{ id: "c", x: 9, note: "old" }] })!;
