@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { history, historyKeymap, isolateHistory, redo as redoMarkdown, undo as undoMarkdown } from "@codemirror/commands";
   import { markdown } from "@codemirror/lang-markdown";
-  import { EditorState, StateEffect, type Range as DecorationRange } from "@codemirror/state";
+  import { Compartment, EditorState, StateEffect, StateField, Transaction, type Range as DecorationRange } from "@codemirror/state";
   import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
   import { tags } from "@lezer/highlight";
-  import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from "@codemirror/view";
+  import { Decoration, EditorView, keymap, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from "@codemirror/view";
   import "@fontsource-variable/bitter/wght.css";
   import "@fontsource-variable/literata/wght.css";
   import "@fontsource/ibm-plex-serif/latin-400.css";
@@ -33,6 +34,18 @@
     type SystemFontFamily
   } from "$lib/editor-fonts";
   import { sanitizeHtml as cleanHtml } from "$lib/sanitize";
+  import { encodeSelection, restoreSelection, type CaretSelection } from "$lib/undo/caret";
+  import {
+    applyStateStep,
+    diffState,
+    editKindFromInputType,
+    removedIds,
+    UNDO_GROUP_MAX_MS,
+    UndoManager,
+    type EditKind,
+    type StateStep,
+    type StateTree
+  } from "$lib/undo/manager";
   import { countWords, htmlToPlainText } from "$lib/publish/content";
   import {
     createRichPlaceholder,
@@ -460,6 +473,44 @@
     },
     { decorations: (plugin) => plugin.decorations }
   );
+  type UndoGroupKind = "type" | "delete" | "newline";
+  type UndoGroup = { kind: UndoGroupKind; start: number };
+
+  function startsUndoGroup(group: UndoGroup | null, kind: UndoGroupKind, time: number) {
+    return !group || kind === "newline" || kind !== group.kind || time - group.start >= UNDO_GROUP_MAX_MS;
+  }
+
+  function markdownUndoGroupKind(tr: Transaction): UndoGroupKind | null {
+    if (!tr.docChanged || tr.isUserEvent("input.type.compose")) return null;
+    if (!tr.isUserEvent("input.type") && !tr.isUserEvent("delete")) return null;
+    let inserted = "";
+    tr.changes.iterChanges((_fromA, _toA, _fromB, _toB, text) => { inserted += text.toString(); });
+    if (!inserted) return "delete";
+    return inserted.includes("\n") ? "newline" : "type";
+  }
+
+  const markdownUndoGroup = StateField.define<UndoGroup | null>({
+    create: () => null,
+    update(group, tr) {
+      if (!tr.docChanged) return tr.selection ? null : group;
+      const kind = markdownUndoGroupKind(tr);
+      if (!kind) return null;
+      const time = tr.annotation(Transaction.time) ?? Date.now();
+      return startsUndoGroup(group, kind, time) ? { kind, start: time } : group;
+    }
+  });
+  const markdownUndoBoundaries = EditorState.transactionExtender.of((tr) => {
+    const kind = markdownUndoGroupKind(tr as Transaction);
+    if (!kind) return null;
+    const time = tr.annotation(Transaction.time) ?? Date.now();
+    return startsUndoGroup(tr.startState.field(markdownUndoGroup), kind, time)
+      ? { annotations: isolateHistory.of("before") }
+      : null;
+  });
+  const markdownHistoryExtension = history({ newGroupDelay: UNDO_GROUP_MAX_MS });
+  const markdownHistory = new Compartment();
+  const markdownStates = new Map<string, EditorState>();
+  let markdownStateKey = "";
   const markdownZenInput = EditorView.domEventHandlers({
     beforeinput(event) {
       const inputEvent = event as InputEvent;
@@ -469,10 +520,17 @@
   });
   $effect(() => {
     if (!markdownEditorMode || !markdownEditorHost) return;
+    const savedStateKey = untrack(() => `${activeProjectId}/${activeDocumentId}`);
+    const savedState = markdownStates.get(savedStateKey);
+    markdownStateKey = savedStateKey;
     const view = new EditorView({
-      state: EditorState.create({
+      state: savedState && savedState.doc.toString() === untrack(() => markdownSource) ? savedState : EditorState.create({
         doc: untrack(() => markdownSource),
         extensions: [
+          markdownUndoGroup,
+          markdownUndoBoundaries,
+          markdownHistory.of(markdownHistoryExtension),
+          keymap.of(historyKeymap),
           markdown(),
           embeddedImageAbbreviation,
           markdownFadePlugin,
@@ -529,6 +587,7 @@
     });
     markdownCodeEditor = view;
     return () => {
+      markdownStates.set(markdownStateKey, view.state);
       view.destroy();
       if (markdownCodeEditor === view) markdownCodeEditor = undefined;
     };
@@ -754,6 +813,7 @@
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
+    refreshPageStateBaseline();
     if (project !== sourceProject) {
       try {
         persistProjectCollection();
@@ -1356,6 +1416,7 @@
 
   function handlePublishOptionsChange(next: PublishOptions) {
     publishOptions = next;
+    pageStateDirty = true;
     if (publishTimer) clearTimeout(publishTimer);
     publishTimer = setTimeout(() => {
       persistProjectCollection();
@@ -1770,6 +1831,7 @@
 
   function setWorkspaceView(next: WorkspaceView) {
     if (next === workspaceView) return;
+    commitPageState();
     showZenInterface();
     if (workspaceView === "writing" && next !== "writing") {
       writingSidebarState = { left: leftSidebarVisible, right: rightSidebarVisible };
@@ -2172,14 +2234,29 @@
   function setMarkdownSource(source: string) {
     markdownSource = source;
     const view = markdownCodeEditor;
-    if (view && view.state.doc.toString() !== source) {
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+    if (!view) return;
+    markdownStates.set(markdownStateKey, view.state);
+    markdownStateKey = `${activeProjectId}/${activeDocumentId}`;
+    const saved = markdownStates.get(markdownStateKey);
+    if (saved && saved.doc.toString() === source) {
+      view.setState(saved);
+      return;
     }
+    // Removing and re-adding the extension clears the undo history, so undo
+    // cannot restore text from the previously open document.
+    view.dispatch({
+      ...(view.state.doc.toString() !== source
+        ? { changes: { from: 0, to: view.state.doc.length, insert: source } }
+        : {}),
+      effects: markdownHistory.reconfigure([])
+    });
+    view.dispatch({ effects: markdownHistory.reconfigure(markdownHistoryExtension) });
   }
 
   function setEditorContent(html: string) {
     if (!editor) return;
     editor.innerHTML = html;
+    if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
   }
@@ -2545,6 +2622,7 @@
     documents = documents.map((doc) => doc.id === activeDocumentId
       ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
       : doc);
+    commitPageState();
     try {
       persistProjectCollection();
       saveState = "All changes saved";
@@ -2554,6 +2632,7 @@
   }
 
   function persist() {
+    pageStateDirty = true;
     saveState = "Saving…";
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(persistNow, 350);
@@ -3195,6 +3274,7 @@
   }
 
   function persistChapters() {
+    pageStateDirty = true;
     try {
       persistProjectCollection();
       saveState = "All changes saved";
@@ -3762,6 +3842,8 @@
   }
 
   function permanentlyDelete(id: string) {
+    commitPageState();
+    permanentDeleteInProgress = true;
     documents = documents.filter((doc) => doc.id !== id);
     if (activeDocumentId === id) {
       const next = documents.find((doc) => !doc.trashed);
@@ -3777,6 +3859,7 @@
       }
     }
     persist();
+    forgetPermanentlyDeleted();
   }
 
   function trashChapter(id: string) {
@@ -3830,6 +3913,8 @@
       return;
     }
 
+    commitPageState();
+    permanentDeleteInProgress = true;
     const chapterDocumentIds = new Set(chapterDocuments.map((doc) => doc.id));
     chapters = chapters.filter((item) => item.id !== id);
     documents = documents.filter((doc) => !chapterDocumentIds.has(doc.id));
@@ -3852,6 +3937,7 @@
       }
     }
     persist();
+    forgetPermanentlyDeleted();
   }
 
   function trashActiveProject() {
@@ -3893,6 +3979,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    handleHistoryShortcut(event);
     handleStoryboardPanKeydown(event);
     if (workspaceView === "storyboard" && (event.key === "Delete" || event.key === "Backspace")
       && selectedDrawingId) {
@@ -3911,6 +3998,9 @@
   }
 
   function handleInput() {
+    if (!applyingUndoHistory && undoManager.has(bodyUndoKey())) {
+      recordFieldEdit(editor, cleanHtml(editor.innerHTML), encodeSelection(editor));
+    }
     const previousWordCount = lastEditorWordCount;
     documents = documents.map((doc) => {
       if (doc.id !== activeDocumentId || doc.markdownSource === undefined) return doc;
@@ -3924,6 +4014,290 @@
     scheduleRichTextTypewriter();
     if (fadeOtherParagraphs) scheduleRichTextFade();
   }
+
+  type NativeSelection = { start: number; end: number; direction: "forward" | "backward" | "none" };
+  type FieldSelection = NativeSelection | CaretSelection;
+  type NativeTextField = HTMLInputElement | HTMLTextAreaElement;
+
+  const undoManager = new UndoManager<FieldSelection>();
+  // Text in these props has its own field history or is not a page action.
+  const undoIgnoredProps = {
+    documents: ["content", "title", "markdownSource", "folderId"],
+    chapters: ["expanded"]
+  };
+  const anonymousUndoKeys = new WeakMap<Element, string>();
+  const nativeTextInputTypes = new Set(["text", "search", "url", "email", "tel", "number"]);
+  let anonymousUndoKeyCount = 0;
+  let pageStateBaseline: StateTree = {};
+  let pageStateDirty = false;
+  let pointerIsDown = false;
+  let permanentDeleteInProgress = false;
+  let focusAtPointerDown: Element | null = null;
+  let applyingUndoHistory = false;
+  let pendingEdit: { kind: EditKind; caretMoved: boolean; before: FieldSelection } | null = null;
+  let lastEditCaret: { key: string; caret: string } | null = null;
+
+  function isNativeTextField(target: EventTarget | null): target is NativeTextField {
+    return target instanceof HTMLTextAreaElement
+      || target instanceof HTMLInputElement && (nativeTextInputTypes.has(target.type) || target.type === "password");
+  }
+
+  function undoTextTarget(target: EventTarget | null): NativeTextField | HTMLElement | null {
+    if (target === editor) return editor;
+    return isNativeTextField(target) && target.type !== "password" ? target : null;
+  }
+
+  function bodyUndoKey() {
+    return `${activeProjectId}/body:${activeDocumentId}`;
+  }
+
+  function undoKeyFor(target: NativeTextField | HTMLElement) {
+    if (target === editor) return bodyUndoKey();
+    const named = target.dataset.undoKey;
+    if (named) return `${activeProjectId}/${named}`;
+    let key = anonymousUndoKeys.get(target);
+    if (!key) {
+      key = `element:${anonymousUndoKeyCount += 1}`;
+      anonymousUndoKeys.set(target, key);
+    }
+    return key;
+  }
+
+  function undoPageFor(target: NativeTextField | HTMLElement) {
+    return target === editor || target.dataset.undoKey ? currentUndoPage() : null;
+  }
+
+  function currentUndoPage() {
+    const page = workspaceView === "writing" ? `writing:${activeDocumentId}` : workspaceView;
+    return `${activeProjectId}/${page}`;
+  }
+
+  function nativeFieldForKey(key: string) {
+    const prefix = `${activeProjectId}/`;
+    if (!key.startsWith(prefix)) return null;
+    return document.querySelector<NativeTextField>(`[data-undo-key="${CSS.escape(key.slice(prefix.length))}"]`);
+  }
+
+  function capturePageState(): StateTree {
+    return {
+      storyboardCards: $state.snapshot(storyboardCards),
+      storyboardDrawings: $state.snapshot(storyboardDrawings),
+      storyboardRows: $state.snapshot(storyboardRows),
+      timelineNodes: $state.snapshot(timelineNodes),
+      publishOptions: $state.snapshot(publishOptions),
+      chapters: $state.snapshot(chapters),
+      documents: $state.snapshot(documents)
+    };
+  }
+
+  function refreshPageStateBaseline() {
+    pageStateBaseline = capturePageState();
+    pageStateDirty = false;
+  }
+
+  function commitPageState(force = false): StateStep | null {
+    if (pointerIsDown || permanentDeleteInProgress || !pageStateDirty && !force) return null;
+    const next = capturePageState();
+    const step = diffState(pageStateBaseline, next, undoIgnoredProps, Date.now());
+    pageStateBaseline = next;
+    pageStateDirty = false;
+    if (step) undoManager.pushState(currentUndoPage(), step);
+    return step;
+  }
+
+  function forgetPermanentlyDeleted() {
+    permanentDeleteInProgress = false;
+    const next = capturePageState();
+    for (const { collection, id } of removedIds(pageStateBaseline, next)) undoManager.forget(collection, id);
+    pageStateBaseline = next;
+    pageStateDirty = false;
+  }
+
+  function applyFieldValue(target: NativeTextField | HTMLElement, value: string, selection: FieldSelection) {
+    applyingUndoHistory = true;
+    try {
+      if (target === editor) {
+        const focused = document.activeElement === editor;
+        setEditorContent(value);
+        handleInput();
+        if (focused) {
+          restoreSelection(editor, selection as CaretSelection);
+          window.getSelection()?.focusNode?.parentElement?.scrollIntoView({ block: "nearest" });
+        }
+        lastEditCaret = { key: bodyUndoKey(), caret: JSON.stringify(encodeSelection(editor)) };
+      } else if (isNativeTextField(target)) {
+        target.value = value;
+        const saved = selection as NativeSelection | null;
+        if (saved && target === document.activeElement && target.selectionStart !== null) {
+          target.setSelectionRange(saved.start, saved.end, saved.direction);
+        }
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        if (target.type === "number") target.dispatchEvent(new Event("change", { bubbles: true }));
+        lastEditCaret = { key: undoKeyFor(target), caret: JSON.stringify(nativeSelection(target)) };
+      }
+    } finally {
+      applyingUndoHistory = false;
+    }
+    refreshPageStateBaseline();
+  }
+
+  function nativeSelection(target: NativeTextField): NativeSelection | null {
+    return target.selectionStart === null || target.selectionEnd === null
+      ? null
+      : { start: target.selectionStart, end: target.selectionEnd, direction: target.selectionDirection ?? "none" };
+  }
+
+  function runFieldHistory(target: NativeTextField | HTMLElement, direction: "undo" | "redo") {
+    commitPageState();
+    const key = undoKeyFor(target);
+    if (target !== editor) undoManager.sync(key, (target as NativeTextField).value);
+    const result = direction === "undo" ? undoManager.undoField(key) : undoManager.redoField(key);
+    if (result) applyFieldValue(target, result.value, result.selection);
+  }
+
+  function canApplyFieldHistory(key: string) {
+    return key === bodyUndoKey() ? !markdownEditorMode : nativeFieldForKey(key) !== null;
+  }
+
+  function runPageHistory(direction: "undo" | "redo") {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      persistNow();
+    }
+    commitPageState(true);
+    if (workspaceView === "writing" && markdownEditorMode && markdownCodeEditor
+      && (direction === "undo" ? undoMarkdown : redoMarkdown)(markdownCodeEditor)) return;
+    const page = currentUndoPage();
+    const result = direction === "undo"
+      ? undoManager.undoPage(page, canApplyFieldHistory)
+      : undoManager.redoPage(page, canApplyFieldHistory);
+    if (!result) return;
+    if (result.type === "field") {
+      const target = result.key === bodyUndoKey() ? editor : nativeFieldForKey(result.key);
+      if (target) applyFieldValue(target, result.value, result.selection);
+      return;
+    }
+    applyPageStateStep(result.step, direction);
+    undoManager.moveState(page, currentUndoPage(), result.step);
+  }
+
+  function applyPageStateStep(step: StateStep, direction: "undo" | "redo") {
+    const next = applyStateStep(capturePageState(), step, direction);
+    if (step.changes.storyboardCards) storyboardCards = next.storyboardCards as StoryboardCard[];
+    if (step.changes.storyboardDrawings) storyboardDrawings = next.storyboardDrawings as StoryboardDrawing[];
+    if (step.changes.storyboardRows) storyboardRows = next.storyboardRows as StoryboardRow[];
+    if (step.changes.timelineNodes) timelineNodes = next.timelineNodes as TimelineNode[];
+    if (step.changes.publishOptions) publishOptions = next.publishOptions as PublishOptions;
+    if (step.changes.chapters) chapters = next.chapters as ChapterData[];
+    if (step.changes.documents) documents = next.documents as DocumentData[];
+    if (!storyboardDrawings.some((drawing) => drawing.id === selectedDrawingId)) selectedDrawingId = null;
+    if (!documents.some((doc) => doc.id === activeDocumentId && !doc.trashed)) {
+      const fallback = documents.find((doc) => !doc.trashed);
+      if (fallback) {
+        openDocument(fallback.id);
+      } else {
+        activeDocumentId = "";
+        title = "";
+        setEditorContent("<p><br></p>");
+        setMarkdownSource("");
+      }
+    }
+    persist();
+    refreshPageStateBaseline();
+  }
+
+  function handleHistoryShortcut(event: KeyboardEvent) {
+    const isApple = /Mac|iPhone|iPad/.test(navigator.platform);
+    if (event.altKey || (isApple ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLowerCase();
+    const direction = key === "z" ? (event.shiftKey ? "redo" : "undo")
+      : key === "y" && !event.shiftKey ? "redo"
+      : null;
+    if (!direction) return;
+    const element = event.target instanceof Element ? event.target : null;
+    if (element?.closest(".cm-editor")) return;
+    const target = undoTextTarget(event.target);
+    if (target) {
+      event.preventDefault();
+      runFieldHistory(target, direction);
+    } else if (isNativeTextField(event.target)) {
+      // Password fields have no history, so that passphrases stay out of memory.
+      event.preventDefault();
+    } else if (!document.querySelector("dialog[open]")) {
+      event.preventDefault();
+      runPageHistory(direction);
+    }
+  }
+
+  function handleUndoBeforeInput(event: InputEvent) {
+    const target = undoTextTarget(event.target);
+    if (!target) return;
+    if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
+      event.preventDefault();
+      runFieldHistory(target, event.inputType === "historyUndo" ? "undo" : "redo");
+      return;
+    }
+    commitPageState();
+    const key = undoKeyFor(target);
+    const caret = target === editor ? encodeSelection(editor) : nativeSelection(target as NativeTextField);
+    if (target === editor) {
+      if (!undoManager.has(key)) undoManager.sync(key, cleanHtml(editor.innerHTML));
+    } else {
+      undoManager.sync(key, (target as NativeTextField).value);
+    }
+    pendingEdit = {
+      kind: editKindFromInputType(event.inputType, event.isComposing),
+      caretMoved: lastEditCaret?.key !== key || lastEditCaret.caret !== JSON.stringify(caret),
+      before: caret
+    };
+  }
+
+  function recordFieldEdit(target: NativeTextField | HTMLElement, value: string, after: FieldSelection) {
+    const key = undoKeyFor(target);
+    const edit = pendingEdit ?? { kind: "other" as const, caretMoved: true, before: after };
+    pendingEdit = null;
+    undoManager.record(key, undoPageFor(target), value, { ...edit, time: Date.now(), after });
+    lastEditCaret = { key, caret: JSON.stringify(after) };
+  }
+
+  // Runs after the field's own handlers, so the baseline includes what they wrote to state.
+  function handleUndoInput(event: Event) {
+    const target = undoTextTarget(event.target);
+    if (!target) return;
+    if (!applyingUndoHistory && target !== editor) {
+      recordFieldEdit(target, (target as NativeTextField).value, nativeSelection(target as NativeTextField));
+    }
+    refreshPageStateBaseline();
+  }
+
+  $effect(() => {
+    const handlePointerDown = () => {
+      pointerIsDown = true;
+      focusAtPointerDown = document.activeElement;
+    };
+    const handlePointerEnd = () => {
+      pointerIsDown = false;
+      setTimeout(() => {
+        const step = commitPageState(true);
+        // A dragged box leaves focus in the last text field, so without this
+        // blur the next undo would apply to that field instead of the page.
+        const active = document.activeElement;
+        if (step && active instanceof HTMLElement && active === focusAtPointerDown && undoTextTarget(active)) active.blur();
+      });
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("pointerup", handlePointerEnd, true);
+    window.addEventListener("pointercancel", handlePointerEnd, true);
+    window.addEventListener("beforeinput", handleUndoBeforeInput, true);
+    window.addEventListener("input", handleUndoInput);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("pointerup", handlePointerEnd, true);
+      window.removeEventListener("pointercancel", handlePointerEnd, true);
+      window.removeEventListener("beforeinput", handleUndoBeforeInput, true);
+      window.removeEventListener("input", handleUndoInput);
+    };
+  });
 
   function runCommand(command: string, value?: string) {
     editor?.focus();
@@ -4141,6 +4515,7 @@
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
+    refreshPageStateBaseline();
     void syncNativeProjectMenu();
   });
 
@@ -4633,6 +5008,7 @@
 
         <input
           class="title-input"
+          data-undo-key={`title:${activeDocumentId}`}
           aria-label="Document title"
           placeholder="Untitled"
           bind:value={title}
@@ -4660,8 +5036,8 @@
           <button class="tool-button" aria-label="Numbered list" title="Numbered list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertOrderedList")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 5h8M8 10h8M8 15h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 4.2h1v2H4m-.2 3.5h1.4l-1.4 1.6h1.4m-1.6 3.5h1.6l-1.6 1.6h1.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <span class="toolbar-divider"></span>
           <button class="tool-button" aria-label="Add link" title="Add link" onpointerdown={(event) => event.preventDefault()} onclick={addLink}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m8.2 11.8 3.6-3.6m-5 5-1.2 1.2a2.55 2.55 0 0 1-3.6-3.6l3-3a2.55 2.55 0 0 1 3.6 0m2.2-2.6 1.2-1.2a2.55 2.55 0 0 1 3.6 3.6l-3 3a2.55 2.55 0 0 1-3.6 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
-          <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("undo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M7.5 6 4 9.5 7.5 13M4.5 9.5h6a5 5 0 0 1 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "undo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M7.5 6 4 9.5 7.5 13M4.5 9.5h6a5 5 0 0 1 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <span class="toolbar-divider"></span>
           <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.3" width="14.4" height="13.4" rx="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.4" r="1.4" stroke="currentColor" stroke-width="1.2"/><path d="m4.2 14.8 4-4 2.5 2.5 2-2 3.1 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><span aria-hidden="true" class="math-tool-mark">Σ</span></button>
@@ -4906,6 +5282,7 @@
                       <textarea
                         id={`storyboard-drawing-text-${drawing.id}`}
                         class="storyboard-text-editor"
+                        data-undo-key={`label:${drawing.id}`}
                         style:font-size={`${drawing.fontSize}px`}
                         aria-label="Diagram text"
                         placeholder="Type a label…"
@@ -4954,9 +5331,10 @@
                       <span class="card-kind">{card.kind === "blank" ? "blank" : card.kind}</span>
                       <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}>×</button>
                     </div>
-                    <input class="board-card-title" aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
+                    <input class="board-card-title" data-undo-key={`card-title:${card.id}`} aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
                     <textarea
                       class="board-card-note"
+                      data-undo-key={card.kind === "chapter" ? `chapter-summary:${card.sourceId}` : `card-note:${card.id}`}
                       aria-label={card.kind === "chapter" ? `Chapter summary for ${card.title}` : `Planning notes for ${card.title}`}
                       placeholder={card.kind === "chapter" ? "Chapter summary — synced with Outline" : "Write a note about this story element…"}
                       value={card.note}

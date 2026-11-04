@@ -152,6 +152,7 @@
             <input
               bind:this={titleInputs[node.id]}
               class="timeline-title"
+              data-undo-key={`timeline-title:${node.id}`}
               aria-label="Title for timeline moment {index + 1}"
               placeholder="What happens here?"
               maxlength={TIMELINE_TITLE_LIMIT}
@@ -190,6 +191,7 @@
               <input
                 type="text"
                 aria-label="Date for {nodeLabel(node, index)}"
+                data-undo-key={`timeline-date:${node.id}`}
                 placeholder="Day 12, Third Age, 14 May 1842…"
                 maxlength={TIMELINE_WHEN_LIMIT}
                 value={node.date}
@@ -201,6 +203,7 @@
               <input
                 type="text"
                 aria-label="Time for {nodeLabel(node, index)}"
+                data-undo-key={`timeline-time:${node.id}`}
                 placeholder="4:30 PM, dawn, midnight…"
                 maxlength={TIMELINE_WHEN_LIMIT}
                 value={node.time}
@@ -210,6 +213,7 @@
           </div>
           <textarea
             class="timeline-description"
+            data-undo-key={`timeline-description:${node.id}`}
             aria-label="Description for {nodeLabel(node, index)}"
             placeholder="Describe the moment, who is involved, and what changes…"
             maxlength={TIMELINE_DESCRIPTION_LIMIT}

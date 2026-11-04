@@ -79,6 +79,7 @@
             <textarea
               bind:this={summaryInputs[chapter.id]}
               class="outline-summary"
+              data-undo-key={`chapter-summary:${chapter.id}`}
               aria-label="Summary for {chapterLabel(chapter, chapters)}"
               placeholder="What happens in this chapter?"
               maxlength="4000"

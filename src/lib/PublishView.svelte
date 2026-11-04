@@ -822,6 +822,7 @@
             <input
               type="text"
               value={options.subtitle}
+              data-undo-key="publish-subtitle"
               maxlength="200"
               placeholder="Optional subtitle"
               oninput={(event) => updateText("subtitle", (event.currentTarget as HTMLInputElement).value)}
@@ -831,6 +832,7 @@
             <span>Copyright</span>
             <textarea
               value={options.copyright}
+              data-undo-key="publish-copyright"
               maxlength="500"
               rows="2"
               placeholder="© 2026 Author. All rights reserved."
@@ -852,6 +854,7 @@
             <span>Dedication</span>
             <textarea
               value={options.dedication}
+              data-undo-key="publish-dedication"
               maxlength="1000"
               rows="2"
               placeholder="For the people who kept the light on."
@@ -893,6 +896,7 @@
                     class="matter-page-title"
                     type="text"
                     value={page.title}
+                    data-undo-key={`matter-title:${page.id}`}
                     maxlength={MATTER_TITLE_LIMIT}
                     placeholder={page.blank && !page.title ? "Blank page" : "Page title"}
                     aria-label="Front matter page title"
@@ -922,6 +926,7 @@
                 </div>
                 <textarea
                   value={page.body}
+                  data-undo-key={`matter-body:${page.id}`}
                   maxlength={MATTER_BODY_LIMIT}
                   rows="3"
                   placeholder="Page text…"
@@ -964,6 +969,7 @@
                     class="matter-page-title"
                     type="text"
                     value={page.title}
+                    data-undo-key={`matter-title:${page.id}`}
                     maxlength={MATTER_TITLE_LIMIT}
                     placeholder={page.blank && !page.title ? "Blank page" : "Page title"}
                     aria-label="Back matter page title"
@@ -993,6 +999,7 @@
                 </div>
                 <textarea
                   value={page.body}
+                  data-undo-key={`matter-body:${page.id}`}
                   maxlength={MATTER_BODY_LIMIT}
                   rows="3"
                   placeholder="Page text…"
