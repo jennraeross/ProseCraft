@@ -150,6 +150,13 @@
   import { saveExport } from "$lib/publish/save";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
+    buildScrivenerProject,
+    estimateScrivenerStoredChars,
+    scrivenerFilesFromEntries,
+    scrivenerFilesFromZip
+  } from "$lib/import/scrivener";
+  import type { ScrivenerFiles, ScrivenerImportReport } from "$lib/import/scrivener";
+  import {
     createResearchFolderName,
     formatResearchFileSize,
     MAX_RESEARCH_FILE_BYTES,
@@ -187,6 +194,7 @@
     writeStored
   } from "$lib/storage/repository";
   import { readEncryptedBundleHint } from "$lib/storage/encrypted-bundle";
+  import { getVaultBackend } from "$lib/storage/vault-store";
   import {
     clearSyncState,
     loadSyncState,
@@ -317,6 +325,18 @@
   let dataStatus = $state("");
   let epubImportInput = $state<HTMLInputElement>();
   let epubImportBusy = $state(false);
+  let scrivenerZipInput = $state<HTMLInputElement>();
+  let scrivenerFolderInput = $state<HTMLInputElement>();
+  let scrivenerImportDialog: HTMLDialogElement;
+  let scrivenerImportBusy = $state(false);
+  // Read when the dialog opens: the storage backend is chosen at startup and does not change reactively.
+  let scrivenerImportOnLocalStorage = $state(false);
+  let scrivenerPreview = $state<{
+    project: ProjectData;
+    report: ScrivenerImportReport;
+    storedChars: number;
+  } | null>(null);
+  let scrivenerNameDraft = $state("");
   let encryptedImportInput: HTMLInputElement;
   let passphraseDialog: HTMLDialogElement;
   let passphraseMode = $state<"export" | "import">("export");
@@ -1810,6 +1830,116 @@
       openSettings();
     } finally {
       epubImportBusy = false;
+    }
+  }
+
+  const MAX_SCRIVENER_ENTRY_BYTES = 50_000_000;
+
+  function triggerScrivenerZipImport() {
+    if (scrivenerImportBusy) return;
+    scrivenerZipInput?.click();
+  }
+
+  function triggerScrivenerFolderImport() {
+    if (scrivenerImportBusy) return;
+    scrivenerFolderInput?.click();
+  }
+
+  async function handleScrivenerZipImport(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || scrivenerImportBusy) return;
+    scrivenerImportBusy = true;
+    dataStatus = "Reading Scrivener project…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      openScrivenerPreview(scrivenerFilesFromZip(bytes), "");
+    } catch (error) {
+      console.error("Could not read that Scrivener project.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not read that Scrivener project.";
+    } finally {
+      scrivenerImportBusy = false;
+    }
+  }
+
+  async function handleScrivenerFolderImport(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const picked = [...(input.files ?? [])];
+    input.value = "";
+    if (!picked.length || scrivenerImportBusy) return;
+    scrivenerImportBusy = true;
+    dataStatus = "Reading Scrivener project…";
+    try {
+      const entries: { path: string; bytes: Uint8Array }[] = [];
+      const folderName = picked[0].webkitRelativePath.split("/")[0] || "";
+      for (const file of picked) {
+        const relativePath = file.webkitRelativePath || file.name;
+        const segments = relativePath.split("/");
+        if (segments.length < 2) continue;
+        if (file.size > MAX_SCRIVENER_ENTRY_BYTES) continue;
+        entries.push({
+          path: segments.slice(1).join("/"),
+          bytes: new Uint8Array(await file.arrayBuffer())
+        });
+      }
+      openScrivenerPreview(scrivenerFilesFromEntries(entries), folderName);
+    } catch (error) {
+      console.error("Could not read that Scrivener project.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not read that Scrivener project.";
+    } finally {
+      scrivenerImportBusy = false;
+    }
+  }
+
+  function openScrivenerPreview(files: ScrivenerFiles, projectName: string) {
+    const { project, report } = buildScrivenerProject(files, projectName ? { projectName } : {});
+    scrivenerPreview = { project, report, storedChars: estimateScrivenerStoredChars(files) };
+    scrivenerNameDraft = project.name;
+    dataStatus = "";
+    scrivenerImportOnLocalStorage = getVaultBackend() === "localstorage";
+    if (!scrivenerImportDialog.open) scrivenerImportDialog.showModal();
+  }
+
+  async function submitScrivenerImport(event: SubmitEvent) {
+    event.preventDefault();
+    const preview = scrivenerPreview;
+    if (!preview || scrivenerImportBusy) return;
+    const project = { ...preview.project, name: scrivenerNameDraft.trim() || preview.project.name };
+    scrivenerImportBusy = true;
+    try {
+      showZenInterface();
+      if (saveTimer) clearTimeout(saveTimer);
+      persistNow();
+      const nextProjects = [...projects, project];
+      try {
+        saveVault(nextProjects, project.id);
+        await flushVaultStorage();
+      } catch (error) {
+        try {
+          saveVault(projects, activeProjectId);
+          await flushVaultStorage();
+        } catch {
+          // The previous state could not be rewritten either.
+        }
+        console.error("Not enough storage for that import.", error);
+        throw new Error(isQuotaExceededError(error)
+          ? "There is not enough storage for that import. Try importing a smaller project."
+          : "Could not save the imported project.");
+      }
+      projects = nextProjects;
+      loadProject(project);
+      void syncNativeProjectMenu();
+      const { report } = preview;
+      dataStatus = `Imported “${project.name}”: ${report.chapters} chapter(s), `
+        + `${report.scenes} scene(s), ${report.wikiPages} wiki page(s).`;
+      scrivenerPreview = null;
+      scrivenerImportDialog?.close();
+      settingsDialog?.close();
+    } catch (error) {
+      dataStatus = error instanceof Error ? error.message : "Could not import that Scrivener project.";
+    } finally {
+      scrivenerImportBusy = false;
     }
   }
 
@@ -6727,8 +6857,21 @@
             onclick={triggerEpubImport}
             disabled={epubImportBusy}
           >{epubImportBusy ? "Importing…" : "Import EPUB…"}</button>
+          <button
+            type="button"
+            class="data-button"
+            onclick={triggerScrivenerZipImport}
+            disabled={scrivenerImportBusy}
+          >Import Scrivener zip…</button>
+          <button
+            type="button"
+            class="data-button"
+            onclick={triggerScrivenerFolderImport}
+            disabled={scrivenerImportBusy}
+          >Import Scrivener folder…</button>
         </div>
         <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
+        <p class="data-help">Creates a new project from a Scrivener project (.scriv), as a zip or as a folder. Manuscript chapters and scenes become chapters and scenes, the research folder becomes wiki pages. Labels, status, keywords, notes and snapshots are not imported.</p>
       </div>
       <div class="data-group">
         <span class="data-group-label">Device sync</span>
@@ -6950,6 +7093,23 @@
         accept=".epub,application/epub+zip"
         bind:this={epubImportInput}
         onchange={handleEpubImport}
+      />
+      <input
+        id="scrivener-zip-import-input"
+        class="data-file-input"
+        type="file"
+        accept=".zip,application/zip"
+        bind:this={scrivenerZipInput}
+        onchange={handleScrivenerZipImport}
+      />
+      <input
+        id="scrivener-folder-import-input"
+        class="data-file-input"
+        type="file"
+        multiple
+        {...{ webkitdirectory: true }}
+        bind:this={scrivenerFolderInput}
+        onchange={handleScrivenerFolderImport}
       />
       {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
     </section>
@@ -7185,6 +7345,60 @@
       </section>
     </div>
     <div class="settings-footer"><span>Only http and https links are supported.</span><button class="done-button" type="submit">Add link</button></div>
+  </form>
+</dialog>
+
+<dialog class="settings-dialog scrivener-import-dialog" bind:this={scrivenerImportDialog} onclick={(event) => {
+  if (event.target === scrivenerImportDialog) scrivenerImportDialog.close();
+}}>
+  <form onsubmit={(event) => void submitScrivenerImport(event)}>
+    <div class="settings-header">
+      <div><span class="settings-kicker">SCRIVENER</span><h2>Import project</h2></div>
+      <button class="close-settings" aria-label="Close Scrivener import" type="button" onclick={() => scrivenerImportDialog.close()}>×</button>
+    </div>
+    <div class="settings-body">
+      {#if scrivenerPreview}
+        <section class="preference-section">
+          <div class="preference-heading"><strong>Project details</strong><span>Review what the import will create</span></div>
+          <label class="preference-label" for="scrivener-project-name">Project name</label>
+          <input
+            id="scrivener-project-name"
+            class="preference-select"
+            type="text"
+            bind:value={scrivenerNameDraft}
+            maxlength="100"
+            required
+          />
+          <ul class="scrivener-import-summary">
+            <li>{scrivenerPreview.report.chapters} chapter(s)</li>
+            <li>{scrivenerPreview.report.scenes} scene(s)</li>
+            <li>{scrivenerPreview.report.wikiPages} wiki page(s)</li>
+            <li>{scrivenerPreview.report.wikiFolders} wiki folder(s)</li>
+            {#if scrivenerPreview.report.skippedFiles > 0}
+              <li>{scrivenerPreview.report.skippedFiles} file(s) such as PDFs and images were skipped</li>
+            {/if}
+            {#if scrivenerPreview.report.itemsWithNotes > 0}
+              <li>{scrivenerPreview.report.itemsWithNotes} item(s) have notes that are not imported</li>
+            {/if}
+            {#if scrivenerPreview.report.flattenedFolders > 0}
+              <li>{scrivenerPreview.report.flattenedFolders} folder(s) were flattened</li>
+            {/if}
+            {#if scrivenerPreview.report.missingFiles > 0}
+              <li>{scrivenerPreview.report.missingFiles} file(s) could not be read</li>
+            {/if}
+          </ul>
+          {#if scrivenerImportOnLocalStorage}
+            {#if scrivenerPreview.storedChars > 3_000_000}
+              <p class="data-warning">This is probably too much for ProseCraft's storage, which holds roughly four million characters in total. Try importing a smaller project.</p>
+            {:else}
+              <p class="data-help">Selected: about {(scrivenerPreview.storedChars / 1_000_000).toFixed(1)} of roughly 4 million characters of storage.</p>
+            {/if}
+          {/if}
+        </section>
+        {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
+      {/if}
+    </div>
+    <div class="settings-footer"><span>Only the manuscript and research are imported.</span><button class="done-button" type="submit" disabled={scrivenerImportBusy}>{scrivenerImportBusy ? "Importing…" : "Import"}</button></div>
   </form>
 </dialog>
 
@@ -7852,6 +8066,8 @@
   .research-markdown-content :global(img) { max-width: 100%; height: auto; }
   .project-settings-dialog form { margin: 0; }
   .research-link-dialog form { margin: 0; }
+  .scrivener-import-dialog form { margin: 0; }
+  .scrivener-import-summary { display: grid; gap: 4px; margin: 10px 0 8px; padding: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; list-style: none; }
   .settings-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
   .settings-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 23px 25px 18px; border-bottom: 1px solid var(--border-soft); }
   .settings-kicker { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 1.2px; }
