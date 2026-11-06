@@ -13,6 +13,7 @@
   import "@fontsource/ibm-plex-sans/latin-700.css";
   import "$lib/color-schemes.css";
   import { autoResize } from "$lib/auto-resize";
+  import { confirmDestructiveAction } from "$lib/confirm";
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
@@ -3527,12 +3528,12 @@
     expandedResearchFolders = expanded;
   }
 
-  function removeResearchFolder(folder: BinderFolder) {
+  async function removeResearchFolder(folder: BinderFolder) {
     const parentId = folder.parentId;
     const parentTitle = parentId
       ? researchFolders.find((entry) => entry.id === parentId)?.title ?? "the parent folder"
       : "the Wiki root";
-    if (!window.confirm(`Remove “${folder.title}”? Its folders, pages, files, and links will move to ${parentTitle}.`)) {
+    if (!(await confirmDestructiveAction(`Remove “${folder.title}”? Its folders, pages, files, and links will move to ${parentTitle}.`))) {
       return;
     }
     researchFolders = researchFolders
@@ -3940,7 +3941,7 @@
 
   async function removeResearchItem(item: ResearchItem) {
     const label = researchItemTitle(item);
-    if (!window.confirm(`Remove “${label}” from the Wiki?${item.kind === "file" ? " The file will be deleted from the project folder." : ""}`)) {
+    if (!(await confirmDestructiveAction(`Remove “${label}” from the Wiki?${item.kind === "file" ? " The file will be deleted from the project folder." : ""}`))) {
       return;
     }
     researchItems = researchItems.filter((entry) => entry.id !== item.id);
@@ -4023,12 +4024,14 @@
     persist();
   }
 
-  function trashChapter(id: string) {
+  async function trashChapter(id: string) {
     const chapter = chapters.find((item) => item.id === id && !item.trashed);
     if (!chapter) return;
     const sceneCount = documents.filter((doc) => doc.chapterId === id && !doc.space && !doc.trashed).length;
     const sceneLabel = sceneCount === 1 ? "scene" : "scenes";
-    if (!window.confirm(`Move “${chapterLabel(chapter)}” and its ${sceneCount} ${sceneLabel} to Trash? You can restore them later.`)) {
+    if (!(await confirmDestructiveAction(`Move “${chapterLabel(chapter)}” and its ${sceneCount} ${sceneLabel} to Trash? You can restore them later.`, {
+      confirmLabel: "Move to Trash"
+    }))) {
       return;
     }
 
@@ -4066,11 +4069,11 @@
     persist();
   }
 
-  function permanentlyDeleteChapter(id: string) {
+  async function permanentlyDeleteChapter(id: string) {
     const chapter = chapters.find((item) => item.id === id && item.trashed);
     if (!chapter) return;
     const chapterDocuments = documents.filter((doc) => doc.chapterId === id);
-    if (!window.confirm(`Permanently delete “${chapterLabel(chapter)}” and its ${chapterDocuments.length} scene(s)? This cannot be undone.`)) {
+    if (!(await confirmDestructiveAction(`Permanently delete “${chapterLabel(chapter)}” and its ${chapterDocuments.length} scene(s)? This cannot be undone.`))) {
       return;
     }
 
@@ -4098,11 +4101,13 @@
     persist();
   }
 
-  function trashActiveProject() {
+  async function trashActiveProject() {
     if (liveProjects.length <= 1) return;
     const project = projects.find((item) => item.id === activeProjectId && !item.trashed);
     if (!project) return;
-    if (!window.confirm(`Move “${project.name}” to Trash? You can restore it later.`)) return;
+    if (!(await confirmDestructiveAction(`Move “${project.name}” to Trash? You can restore it later.`, {
+      confirmLabel: "Move to Trash"
+    }))) return;
 
     const next = liveProjects.find((item) => item.id !== project.id);
     if (!next) return;
@@ -4120,10 +4125,10 @@
     persistProjectCollection();
   }
 
-  function permanentlyDeleteProject(id: string) {
+  async function permanentlyDeleteProject(id: string) {
     const project = projects.find((item) => item.id === id && item.trashed);
     if (!project) return;
-    if (!window.confirm(`Permanently delete “${project.name}” and all its contents? This cannot be undone.`)) return;
+    if (!(await confirmDestructiveAction(`Permanently delete “${project.name}” and all its contents? This cannot be undone.`))) return;
     projects = projects.filter((item) => item.id !== id);
     saveVault(projects, activeProjectId);
     void syncNativeProjectMenu();
