@@ -33,6 +33,7 @@
     Plus,
     Redo2,
     RotateCcw,
+    Search,
     Settings,
     Sigma,
     Square,
@@ -60,6 +61,7 @@
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
+  import SearchDialog from "$lib/SearchDialog.svelte";
   import { commentText, offsetFromPoint, offsetsFromRange, rangeFromOffsets } from "$lib/comment-dom";
   import {
     HARPER_DIALECTS,
@@ -521,6 +523,7 @@
   let commentPopoverSuppressedUntil = 0;
   const commentHighlightName = "prosecraft-comment";
   const commentAuthorStorageKey = "prosecraft-comment-author";
+  let projectSearchOpen = $state(false);
   let splitPanes = $state<SplitPaneState[]>([]);
   let splitEditorBasis = $state(690);
   let splitResize = $state<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -3909,6 +3912,11 @@
     }
   }
 
+  function openSearchResult(id: string) {
+    projectSearchOpen = false;
+    openSidebarDocument(id);
+  }
+
   function createScene(
     chapterId: string,
     sceneTitle = "Untitled scene",
@@ -5408,7 +5416,12 @@
       closeSidebarDrawers();
       return;
     }
-    if (event.key === "Escape") showZenInterface();
+    if (event.key === "Escape" && !projectSearchOpen) showZenInterface();
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      projectSearchOpen = true;
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
       event.preventDefault();
       createDocument();
@@ -6765,6 +6778,10 @@
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
         <div class="panel-toggles">
+          <button class="panel-toggle" aria-label="Search project" title="Search project (Ctrl+Shift+F)" onclick={() => projectSearchOpen = true}>
+            <Search size={15} aria-hidden="true" />
+            <span>Search</span>
+          </button>
           <button class="panel-toggle split-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
             <Columns2 size={15} aria-hidden="true" />
             <span>Split</span>
@@ -8194,6 +8211,15 @@
     <div class="settings-footer"><span>Only http and https links are supported.</span><button class="done-button" type="submit">Add link</button></div>
   </form>
 </dialog>
+
+{#if projectSearchOpen}
+  <SearchDialog
+    documents={documents}
+    chapters={chapters}
+    onOpen={openSearchResult}
+    onClose={() => projectSearchOpen = false}
+  />
+{/if}
 
 <dialog class="settings-dialog rich-dialog" bind:this={richDialog} onclick={(event) => {
   if (event.target === richDialog) closeRichDialog();
