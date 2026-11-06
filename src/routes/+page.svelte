@@ -1,10 +1,51 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { history, historyKeymap, isolateHistory, redo as redoMarkdown, undo as undoMarkdown, undoDepth } from "@codemirror/commands";
+  import {
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    BookOpen,
+    Columns2,
+    ChevronLeft,
+    ChevronRight,
+    Download,
+    ExternalLink,
+    FileText,
+    Folder,
+    FolderPlus,
+    GripVertical,
+    Hand,
+    History,
+    Image as ImageIcon,
+    ImagePlus,
+    Link as LinkIcon,
+    List,
+    ListOrdered,
+    MessageSquareText,
+    MousePointer2,
+    PanelLeft,
+    PanelRight,
+    Pencil,
+    Plus,
+    Redo2,
+    RotateCcw,
+    Settings,
+    Sigma,
+    Square,
+    Trash2,
+    Type,
+    Undo2,
+    Upload,
+    Workflow,
+    X
+  } from "@lucide/svelte";
   import { markdown } from "@codemirror/lang-markdown";
-  import { EditorState, StateEffect, type Range as DecorationRange } from "@codemirror/state";
+  import { Compartment, EditorState, StateEffect, StateField, Transaction, type Range as DecorationRange } from "@codemirror/state";
   import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
   import { tags } from "@lezer/highlight";
-  import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from "@codemirror/view";
+  import { Decoration, EditorView, keymap, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from "@codemirror/view";
   import "@fontsource-variable/bitter/wght.css";
   import "@fontsource-variable/literata/wght.css";
   import "@fontsource/ibm-plex-serif/latin-400.css";
@@ -13,6 +54,7 @@
   import "@fontsource/ibm-plex-sans/latin-700.css";
   import "$lib/color-schemes.css";
   import { autoResize } from "$lib/auto-resize";
+  import { confirmDestructiveAction } from "$lib/confirm";
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
@@ -28,6 +70,26 @@
     setCommentResolved,
     type CommentAnchor
   } from "$lib/comments";
+  import SplitPane from "$lib/SplitPane.svelte";
+  import {
+    addSplitPane,
+    canAddSplitPane,
+    docTarget,
+    fileTarget,
+    pruneSplitTargets,
+    removeSplitPane,
+    setSplitTarget,
+    type SplitGroup,
+    type SplitPaneState
+  } from "$lib/split";
+  import {
+    addSnapshot,
+    createSnapshot,
+    dropOrphanSnapshots,
+    normalizeSnapshots,
+    removeSnapshot,
+    snapshotsForDocument
+  } from "$lib/snapshots";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -45,6 +107,18 @@
     type SystemFontFamily
   } from "$lib/editor-fonts";
   import { sanitizeHtml as cleanHtml } from "$lib/sanitize";
+  import { encodeSelection, restoreSelection, type CaretSelection } from "$lib/undo/caret";
+  import {
+    applyStateStep,
+    diffState,
+    editKindFromInputType,
+    removedIds,
+    UNDO_GROUP_MAX_MS,
+    UndoManager,
+    type EditKind,
+    type StateStep,
+    type StateTree
+  } from "$lib/undo/manager";
   import { countWords, htmlToPlainText } from "$lib/publish/content";
   import {
     createRichPlaceholder,
@@ -90,6 +164,7 @@
   import {
     deleteBrowserResearchFile,
     openBrowserResearchFile,
+    readBrowserResearchBlob,
     readBrowserResearchFile,
     saveBrowserResearchFile
   } from "$lib/research-files";
@@ -100,15 +175,34 @@
     createBundleText,
     createEncryptedBundleText,
     currentDeviceId,
+    flushVaultStorage,
     importBundleText,
     importEncryptedBundleText,
+    initVaultStorage,
+    isQuotaExceededError,
     loadVault,
+    onVaultStorageError,
     readStoredProjectRecords,
     saveVault,
     writeStored
   } from "$lib/storage/repository";
   import { readEncryptedBundleHint } from "$lib/storage/encrypted-bundle";
-  import { clearSyncState, loadSyncState, saveSyncState } from "$lib/storage/sync/state";
+  import {
+    clearSyncState,
+    loadSyncState,
+    saveSyncState,
+    type PersistedSyncState,
+    type SyncProviderType
+  } from "$lib/storage/sync/state";
+  import {
+    authenticateGoogleDrive,
+    cancelGoogleDriveAuthorization,
+    exchangeCodeForToken,
+    isTokenExpired,
+    refreshAccessToken,
+    revokeGoogleDriveAccess,
+    type GoogleDriveTokens
+  } from "$lib/storage/sync/google-drive-oauth";
   import {
     boardPointAtViewportCenter,
     boardPointFromClient,
@@ -119,9 +213,10 @@
     resizeStoryboardDrawing,
     type BoardPoint
   } from "$lib/storyboard-layout";
-  import type { SyncMode, SyncProvider } from "$lib/storage/sync/types";
+  import type { SyncMode, SyncProvider, SyncStamp } from "$lib/storage/sync/types";
   import type {
     ActivityRecord,
+    DocumentSnapshot,
     ProjectData,
     StoryboardCard,
     StoryboardDrawing,
@@ -182,13 +277,13 @@
     start: BoardPoint;
     original: StoryboardDrawing;
   };
-  const storyboardDrawingTools: { tool: StoryboardDrawingTool; label: string; glyph: string }[] = [
-    { tool: "select", label: "Select", glyph: "↖" },
-    { tool: "pan", label: "Pan", glyph: "✋" },
-    { tool: "line", label: "Line", glyph: "／" },
-    { tool: "arrow", label: "Arrow", glyph: "➜" },
-    { tool: "box", label: "Box", glyph: "□" },
-    { tool: "text", label: "Text", glyph: "T" }
+  const storyboardDrawingTools: { tool: StoryboardDrawingTool; label: string; icon: typeof MousePointer2 }[] = [
+    { tool: "select", label: "Select", icon: MousePointer2 },
+    { tool: "pan", label: "Pan", icon: Hand },
+    { tool: "line", label: "Line", icon: ArrowRight },
+    { tool: "arrow", label: "Arrow", icon: ArrowRight },
+    { tool: "box", label: "Box", icon: Square },
+    { tool: "text", label: "Text", icon: Type }
   ];
   type ResearchTreeItem =
     | { kind: "folder"; folder: BinderFolder; depth: number }
@@ -233,6 +328,7 @@
   let pendingEncryptedImport = "";
   let pendingEncryptedHint = $state("");
   let desktopRuntime = $state(false);
+  let syncProviderType = $state<SyncProviderType>("folder");
   let syncFolder = $state("");
   let syncMode = $state<SyncMode>("encrypted-file");
   let syncPassphrase = $state("");
@@ -240,9 +336,21 @@
   let syncStatus = $state("");
   let syncProvider: SyncProvider | undefined;
   let syncProviderKey = "";
+  let googleDriveAccessToken = $state("");
+  let googleDriveRefreshToken = $state("");
+  let googleDriveTokenExpiry = $state(0);
+  let googleDriveEmail = $state("");
+  let googleDriveAuthenticated = $state(false);
+  let googleDriveAuthCode = $state("");
+  let googleDriveCodeVerifier = $state("");
+  let googleDriveAuthorizing = $state(false);
+  let googleDriveConfigured = $derived(Boolean(googleDriveAccessToken || googleDriveRefreshToken));
   let lastEditorWordCount = 0;
   let title = $state("The shape of a first draft");
   let saveState = $state("All changes saved");
+  let storageError = $state("");
+  let storageUsage = $state<{ usage: number; quota: number } | null>(null);
+  let saveSequence = 0;
   let themePreference = $state<ThemePreference>("system");
   let resolvedTheme = $state<"light" | "dark">("light");
   let colorScheme = $state<ColorScheme>("prosecraft");
@@ -334,6 +442,13 @@
   let commentPositions = $state<Record<string, number | null>>({});
   const commentHighlightName = "prosecraft-comment";
   const commentAuthorStorageKey = "prosecraft-comment-author";
+  let splitPanes = $state<SplitPaneState[]>([]);
+  let splitEditorBasis = $state(690);
+  let splitResize = $state<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  let snapshots = $state<DocumentSnapshot[]>([]);
+  let snapshotsDialog: HTMLDialogElement;
+  let snapshotNote = $state("");
+  let snapshotPreviewId = $state<string | null>(null);
   let expandedResearchFolders = $state<Record<string, boolean>>({});
   let researchStatus = $state("");
   let researchSettingsStatus = $state("");
@@ -348,6 +463,7 @@
   let boardPanDrag = $state<BoardPanDrag | null>(null);
   let boardTouchPoints = $state<Map<number, BoardPoint>>(new Map());
   let boardSpacePan = $state(false);
+  let editorPanel = $state<HTMLDivElement>();
   let storyboardCards = $state<StoryboardCard[]>([]);
   let storyboardDrawings = $state<StoryboardDrawing[]>([]);
   let activeDrawingTool = $state<StoryboardDrawingTool>("select");
@@ -482,6 +598,62 @@
     },
     { decorations: (plugin) => plugin.decorations }
   );
+  type UndoGroupKind = "type" | "delete" | "newline";
+  type UndoGroup = { kind: UndoGroupKind; start: number };
+
+  function startsUndoGroup(group: UndoGroup | null, kind: UndoGroupKind, time: number) {
+    return !group || kind === "newline" || kind !== group.kind || time - group.start >= UNDO_GROUP_MAX_MS;
+  }
+
+  function markdownUndoGroupKind(tr: Transaction): UndoGroupKind | null {
+    if (!tr.docChanged || tr.isUserEvent("input.type.compose")) return null;
+    if (!tr.isUserEvent("input.type") && !tr.isUserEvent("delete")) return null;
+    let inserted = "";
+    tr.changes.iterChanges((_fromA, _toA, _fromB, _toB, text) => { inserted += text.toString(); });
+    if (!inserted) return "delete";
+    return inserted.includes("\n") ? "newline" : "type";
+  }
+
+  const markdownUndoGroup = StateField.define<UndoGroup | null>({
+    create: () => null,
+    update(group, tr) {
+      if (!tr.docChanged) return tr.selection ? null : group;
+      const kind = markdownUndoGroupKind(tr);
+      if (!kind) return null;
+      const time = tr.annotation(Transaction.time) ?? Date.now();
+      return startsUndoGroup(group, kind, time) ? { kind, start: time } : group;
+    }
+  });
+  const markdownUndoBoundaries = EditorState.transactionExtender.of((tr) => {
+    const kind = markdownUndoGroupKind(tr as Transaction);
+    if (!kind) return null;
+    const time = tr.annotation(Transaction.time) ?? Date.now();
+    return startsUndoGroup(tr.startState.field(markdownUndoGroup), kind, time)
+      ? { annotations: isolateHistory.of("before") }
+      : null;
+  });
+  const markdownHistoryExtension = history({ newGroupDelay: UNDO_GROUP_MAX_MS, minDepth: 1000 });
+  const markdownHistory = new Compartment();
+  const markdownStates = new Map<string, EditorState>();
+  let markdownStateKey = "";
+  let loadingMarkdownDocument = false;
+
+  function markdownUndoKey() {
+    return `markdown:${markdownStateKey}`;
+  }
+
+  function trackMarkdownHistory(update: ViewUpdate) {
+    if (loadingMarkdownDocument) return;
+    const page = currentUndoPage();
+    if (update.transactions.some((tr) => tr.isUserEvent("undo"))) {
+      undoManager.externalUndone(page, markdownUndoKey());
+    } else if (update.transactions.some((tr) => tr.isUserEvent("redo"))) {
+      undoManager.externalRedone(page, markdownUndoKey());
+    } else if (undoDepth(update.state) !== undoDepth(update.startState)) {
+      commitPageState();
+      undoManager.recordExternal(page, markdownUndoKey());
+    }
+  }
   const markdownZenInput = EditorView.domEventHandlers({
     beforeinput(event) {
       const inputEvent = event as InputEvent;
@@ -491,10 +663,20 @@
   });
   $effect(() => {
     if (!markdownEditorMode || !markdownEditorHost) return;
+    const savedStateKey = untrack(() => `${activeProjectId}/${activeDocumentId}`);
+    const savedState = markdownStates.get(savedStateKey);
+    markdownStateKey = savedStateKey;
+    if (!savedState || savedState.doc.toString() !== untrack(() => markdownSource)) {
+      undoManager.forgetExternal(untrack(() => currentUndoPage()), markdownUndoKey());
+    }
     const view = new EditorView({
-      state: EditorState.create({
+      state: savedState && savedState.doc.toString() === untrack(() => markdownSource) ? savedState : EditorState.create({
         doc: untrack(() => markdownSource),
         extensions: [
+          markdownUndoGroup,
+          markdownUndoBoundaries,
+          markdownHistory.of(markdownHistoryExtension),
+          keymap.of(historyKeymap),
           markdown(),
           embeddedImageAbbreviation,
           markdownFadePlugin,
@@ -533,6 +715,7 @@
           EditorView.updateListener.of((update) => {
             const { docChanged, state } = update;
             if (docChanged) {
+              trackMarkdownHistory(update);
               markdownSource = state.doc.toString();
               handleMarkdownInput();
             }
@@ -551,6 +734,7 @@
     });
     markdownCodeEditor = view;
     return () => {
+      markdownStates.set(markdownStateKey, view.state);
       view.destroy();
       if (markdownCodeEditor === view) markdownCodeEditor = undefined;
     };
@@ -659,7 +843,8 @@
       researchFolders,
       researchItems,
       publishOptions,
-      comments: dropOrphanComments(comments, new Set(documents.map((doc) => doc.id)))
+      comments: dropOrphanComments(comments, new Set(documents.map((doc) => doc.id))),
+      snapshots: dropOrphanSnapshots(snapshots, new Set(documents.map((doc) => doc.id)))
     };
   }
 
@@ -670,8 +855,64 @@
     projects = currentIndex < 0
       ? [...projects, current]
       : projects.map((project) => project.id === activeProjectId ? current : project);
-    saveVault(projects, activeProjectId);
-    void syncNativeProjectMenu();
+    try {
+      saveVault(projects, activeProjectId);
+      void syncNativeProjectMenu();
+      scheduleSaveState();
+    } catch (error) {
+      handleStorageError(error);
+    }
+  }
+
+  function handleStorageError(error: unknown) {
+    console.error("Could not save changes.", error);
+    saveState = "Could not save changes";
+    storageError = isQuotaExceededError(error)
+      ? "Storage is full. Export a backup now, then remove large images or projects."
+      : "Could not save changes to this device. Export a backup to avoid losing work.";
+  }
+
+  function scheduleSaveState() {
+    const sequence = ++saveSequence;
+    saveState = "Saving…";
+    void flushVaultStorage()
+      .then(() => {
+        if (sequence !== saveSequence) return;
+        saveState = "All changes saved";
+        storageError = "";
+        void refreshStorageUsage();
+      })
+      .catch((error) => {
+        if (sequence !== saveSequence) return;
+        handleStorageError(error);
+      });
+  }
+
+  async function refreshStorageUsage() {
+    try {
+      const estimate = await navigator.storage?.estimate?.();
+      if (estimate && typeof estimate.usage === "number") {
+        storageUsage = { usage: estimate.usage, quota: estimate.quota ?? 0 };
+      }
+    } catch {
+      // Storage estimates are best-effort.
+    }
+  }
+
+  function formatStorageBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
+  function storageUsageText(): string {
+    if (!storageUsage) return "Storage usage is unavailable.";
+    const used = formatStorageBytes(storageUsage.usage);
+    if (storageUsage.quota > 0) {
+      return `${used} used of ${formatStorageBytes(storageUsage.quota)} available.`;
+    }
+    return `${used} used.`;
   }
 
   async function syncNativeProjectMenu() {
@@ -704,6 +945,8 @@
     const researchFolderIds = new Set(researchFolders.map((folder) => folder.id));
     researchItems = normalizeResearchItems(project.researchItems, researchFolderIds);
     comments = normalizeComments(project.comments);
+    snapshots = normalizeSnapshots(project.snapshots);
+    snapshotPreviewId = null;
     documents = project.documents.map((doc) => {
       if (doc.space !== "Wiki" || !doc.folderId) return doc;
       if (researchFolderIds.has(doc.folderId)) return doc;
@@ -778,6 +1021,7 @@
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
+    refreshPageStateBaseline();
     if (project !== sourceProject) {
       try {
         persistProjectCollection();
@@ -1287,6 +1531,7 @@
     showZenInterface();
     if (settingsDialog && !settingsDialog.open) settingsDialog.showModal();
     void ensureSystemFonts();
+    void refreshStorageUsage();
   }
 
   function openProjectSettings() {
@@ -1380,6 +1625,7 @@
 
   function handlePublishOptionsChange(next: PublishOptions) {
     publishOptions = next;
+    pageStateDirty = true;
     if (publishTimer) clearTimeout(publishTimer);
     publishTimer = setTimeout(() => {
       persistProjectCollection();
@@ -1390,6 +1636,11 @@
     try {
       if (saveTimer) clearTimeout(saveTimer);
       persistNow();
+      try {
+        await flushVaultStorage();
+      } catch (error) {
+        handleStorageError(error);
+      }
       const text = createBundleText();
       const result = await saveExport({
         blob: new Blob([text], { type: "application/json" }),
@@ -1428,7 +1679,7 @@
       if (encrypted) {
         openEncryptedImport(text);
       } else {
-        importBackupText(text);
+        await importBackupText(text);
       }
     } catch (error) {
       console.error("Could not import a backup.", error);
@@ -1496,6 +1747,7 @@
       projects = [...projects, project];
       loadProject(project);
       saveVault(projects, project.id);
+      await flushVaultStorage();
       void syncNativeProjectMenu();
       const images = manuscript.skippedImages;
       dataStatus = `Imported “${project.name}” — ${project.chapters.length} chapter(s), `
@@ -1516,16 +1768,16 @@
     input.value = "";
     if (!file) return;
     try {
-      importBackupText(await file.text());
+      await importBackupText(await file.text());
     } catch (error) {
       console.error("Could not read a backup.", error);
       dataStatus = "Could not read that backup.";
     }
   }
 
-  function importBackupText(text: string) {
+  async function importBackupText(text: string) {
     try {
-      const result = importBundleText(text);
+      const result = await importBundleText(text);
       dataStatus = `Imported ${result.imported} of ${result.total} project(s). Reloading…`;
       setTimeout(() => location.reload(), 400);
     } catch (error) {
@@ -1591,6 +1843,11 @@
       if (passphraseMode === "export") {
         if (saveTimer) clearTimeout(saveTimer);
         persistNow();
+        try {
+          await flushVaultStorage();
+        } catch (error) {
+          handleStorageError(error);
+        }
         const text = await createEncryptedBundleText(passphrase, passphraseHint.trim() || undefined);
         const result = await saveExport({
           blob: new Blob([text], { type: "application/json" }),
@@ -1624,27 +1881,112 @@
     }
   }
 
-  async function getSyncProvider(folder: string, mode: SyncMode): Promise<SyncProvider> {
-    const key = `${mode}\u0000${folder}`;
-    if (syncProvider && syncProviderKey === key) return syncProvider;
-    const [
-      { TauriFileSystem },
-      { FolderSyncProvider },
-      { EncryptedFileSyncProvider },
-      { OpenFolderSyncProvider }
-    ] = await Promise.all([
-      import("$lib/storage/sync/tauri-fs"),
-      import("$lib/storage/sync/folder-provider"),
-      import("$lib/storage/sync/bundle-provider"),
-      import("$lib/storage/sync/open-provider")
-    ]);
-    const fs = new TauriFileSystem(folder);
-    syncProvider = mode === "encrypted-file"
-      ? new EncryptedFileSyncProvider(fs)
-      : mode === "open-folder"
-        ? new OpenFolderSyncProvider(fs)
-        : new FolderSyncProvider(fs);
-    syncProviderKey = key;
+  function currentSyncState(lastSynced: Record<string, SyncStamp>): PersistedSyncState {
+    return {
+      provider: syncProviderType,
+      folder: syncFolder,
+      mode: syncMode,
+      googleDriveAccessToken,
+      googleDriveRefreshToken,
+      googleDriveTokenExpiry,
+      googleDriveEmail,
+      lastSynced
+    };
+  }
+
+  /**
+   * Writes the active configuration to device storage. Nothing is saved until
+   * the selected provider is usable, so switching to Google Drive and closing
+   * the settings dialog cannot erase a working folder setup.
+   */
+  function persistSyncSettings(lastSynced?: Record<string, SyncStamp>): void {
+    if (syncProviderType === "folder" && !syncFolder) return;
+    if (syncProviderType === "googledrive"
+      && !googleDriveAccessToken
+      && !googleDriveRefreshToken) return;
+    const previous = loadSyncState();
+    const sameTarget = previous?.provider === syncProviderType
+      && previous.mode === syncMode
+      && (syncProviderType === "folder" ? previous.folder === syncFolder : true);
+    saveSyncState(currentSyncState(
+      lastSynced ?? (sameTarget ? previous.lastSynced : {})
+    ));
+  }
+
+  /**
+   * Returns a usable access token for Drive requests, refreshing it and
+   * persisting the new token when the short-lived token has expired.
+   */
+  async function googleDriveAccessTokenForRequest(): Promise<string> {
+    const state = loadSyncState();
+    if (!state || state.provider !== "googledrive") {
+      throw new Error("Google Drive is not connected.");
+    }
+    const tokens = {
+      accessToken: state.googleDriveAccessToken,
+      refreshToken: state.googleDriveRefreshToken,
+      expiry: state.googleDriveTokenExpiry,
+      email: state.googleDriveEmail
+    };
+    if (tokens.accessToken && !isTokenExpired(tokens)) return tokens.accessToken;
+    if (!tokens.refreshToken) {
+      throw new Error("Google Drive session expired. Please reconnect.");
+    }
+
+    const result = await refreshAccessToken(tokens.refreshToken);
+    if (!result.success || !result.tokens) {
+      throw new Error(result.error ?? "Could not refresh the Google Drive session.");
+    }
+
+    googleDriveAccessToken = result.tokens.accessToken;
+    googleDriveRefreshToken = result.tokens.refreshToken ?? state.googleDriveRefreshToken;
+    googleDriveTokenExpiry = result.tokens.expiry;
+    googleDriveEmail = result.tokens.email ?? state.googleDriveEmail;
+    googleDriveAuthenticated = true;
+    saveSyncState({
+      ...state,
+      googleDriveAccessToken,
+      googleDriveRefreshToken,
+      googleDriveTokenExpiry,
+      googleDriveEmail
+    });
+    return googleDriveAccessToken;
+  }
+
+  async function getSyncProvider(): Promise<SyncProvider> {
+    const state = loadSyncState();
+    if (!state) throw new Error("Sync is not configured.");
+    const cacheKey = `${state.provider}\u0000${state.mode}\u0000${state.provider === "folder" ? state.folder : state.googleDriveEmail}`;
+    if (syncProvider && syncProviderKey === cacheKey) return syncProvider;
+
+    if (state.provider === "folder") {
+      if (!desktopRuntime) throw new Error("Folder sync is only available on desktop.");
+      const [
+        { TauriFileSystem },
+        { FolderSyncProvider },
+        { EncryptedFileSyncProvider },
+        { OpenFolderSyncProvider }
+      ] = await Promise.all([
+        import("$lib/storage/sync/tauri-fs"),
+        import("$lib/storage/sync/folder-provider"),
+        import("$lib/storage/sync/bundle-provider"),
+        import("$lib/storage/sync/open-provider")
+      ]);
+      const fs = new TauriFileSystem(state.folder);
+      syncProvider = state.mode === "encrypted-file"
+        ? new EncryptedFileSyncProvider(fs)
+        : state.mode === "open-folder"
+          ? new OpenFolderSyncProvider(fs)
+          : new FolderSyncProvider(fs);
+    } else {
+      const { createGoogleDriveProvider } = await import("$lib/storage/sync/google-drive-provider");
+      syncProvider = createGoogleDriveProvider(
+        { getAccessToken: googleDriveAccessTokenForRequest },
+        state.mode
+      );
+    }
+
+    syncProviderKey = cacheKey;
     return syncProvider;
   }
 
@@ -1655,12 +1997,24 @@
 
   function syncCreatedMessage(count: number): string {
     if (syncMode === "open-folder") {
-      return `Set up the open folder. ${count} project(s) synced.`;
+      return syncProviderType === "googledrive"
+        ? `Set up Google Drive as an open folder. ${count} project(s) synced.`
+        : `Set up the open folder. ${count} project(s) synced.`;
     }
     if (syncMode === "encrypted-file") {
-      return `Created an encrypted sync file. ${count} project(s) synced.`;
+      return syncProviderType === "googledrive"
+        ? `Created an encrypted sync file in Google Drive. ${count} project(s) synced.`
+        : `Created an encrypted sync file. ${count} project(s) synced.`;
     }
-    return `Created an encrypted vault in this folder. ${count} project(s) synced.`;
+    return syncProviderType === "googledrive"
+      ? `Created an encrypted vault in Google Drive. ${count} project(s) synced.`
+      : `Created an encrypted vault in this folder. ${count} project(s) synced.`;
+  }
+
+  function googleDriveReadyMessage(): string {
+    return syncMode === "open-folder"
+      ? "Connected to Google Drive. Choose Sync now."
+      : "Connected to Google Drive. Enter your passphrase and choose Sync now.";
   }
 
   function setSyncMode(next: SyncMode) {
@@ -1669,16 +2023,11 @@
     syncProvider = undefined;
     syncProviderKey = "";
     syncPassphrase = "";
-    const state = loadSyncState();
-    if (syncFolder) {
-      saveSyncState({
-        folder: syncFolder,
-        mode: next,
-        lastSynced: state?.folder === syncFolder && state.mode === next
-          ? state.lastSynced
-          : {}
-      });
+    persistSyncSettings({});
+    if (syncProviderType === "folder" && syncFolder) {
       syncStatus = "Sync method changed. Use a folder already set up for this method, or an empty folder.";
+    } else if (syncProviderType === "googledrive" && googleDriveConfigured) {
+      syncStatus = "Sync method changed. Use a Google Drive setup already created for this method, or start fresh.";
     } else {
       syncStatus = "";
     }
@@ -1692,16 +2041,15 @@
       const picked = await open({ directory: true, multiple: false, title: "Choose a sync folder" });
       if (typeof picked !== "string" || !picked) return;
       const previous = loadSyncState();
-      const same = previous?.folder === picked && previous.mode === syncMode;
+      const same = previous?.provider === "folder"
+        && previous.folder === picked
+        && previous.mode === syncMode;
       if (!same) syncPassphrase = "";
       syncFolder = picked;
+      syncProviderType = "folder";
       syncProvider = undefined;
       syncProviderKey = "";
-      saveSyncState({
-        folder: picked,
-        mode: syncMode,
-        lastSynced: same ? previous.lastSynced : {}
-      });
+      persistSyncSettings(same ? previous.lastSynced : {});
       if (same) {
         syncStatus = syncFolderReadyMessage();
       } else if (syncMode === "open-folder") {
@@ -1717,18 +2065,148 @@
     }
   }
 
-  function forgetSyncFolder() {
-    if (syncBusy) return;
-    clearSyncState();
-    syncFolder = "";
+  function handleSyncProviderChange(provider: SyncProviderType) {
+    if (syncBusy || provider === syncProviderType) return;
+    const previous = loadSyncState();
+    syncProviderType = provider;
     syncProvider = undefined;
     syncProviderKey = "";
     syncPassphrase = "";
-    syncStatus = "Sync folder forgotten. Files in the folder were left untouched.";
+    syncStatus = "";
+    // Keep the last-synced stamps only when returning to the same provider.
+    if (previous?.provider === provider) {
+      persistSyncSettings(previous.lastSynced);
+    } else {
+      persistSyncSettings({});
+    }
+  }
+
+  function applyGoogleDriveTokens(tokens: GoogleDriveTokens) {
+    googleDriveAccessToken = tokens.accessToken;
+    googleDriveRefreshToken = tokens.refreshToken ?? "";
+    googleDriveTokenExpiry = tokens.expiry;
+    googleDriveEmail = tokens.email ?? "";
+    googleDriveAuthenticated = true;
+    googleDriveAuthCode = "";
+    googleDriveCodeVerifier = "";
+    syncProviderType = "googledrive";
+    syncProvider = undefined;
+    syncProviderKey = "";
+    persistSyncSettings({});
+  }
+
+  async function connectGoogleDrive() {
+    if (syncBusy) return;
+    syncStatus = "";
+    syncBusy = true;
+    googleDriveAuthorizing = true;
+    try {
+      const result = await authenticateGoogleDrive((message) => {
+        syncStatus = message;
+      });
+      if (result.success && result.tokens) {
+        applyGoogleDriveTokens(result.tokens);
+        syncStatus = googleDriveReadyMessage();
+      } else if (result.cancelled) {
+        googleDriveCodeVerifier = "";
+        syncStatus = "Google Drive authorization cancelled.";
+      } else if (result.pending) {
+        googleDriveCodeVerifier = "pending";
+        syncStatus = result.error
+          ?? "Complete authorization in your browser, then paste the code below.";
+      } else {
+        syncStatus = result.error ?? "Could not start Google Drive authorization.";
+      }
+    } catch (error) {
+      console.error("Could not connect to Google Drive.", error);
+      syncStatus = "Could not connect to Google Drive.";
+    } finally {
+      googleDriveAuthorizing = false;
+      syncBusy = false;
+    }
+  }
+
+  async function exchangeAuthCode() {
+    if (syncBusy || !googleDriveAuthCode) return;
+    syncStatus = "";
+    syncBusy = true;
+    try {
+      const result = await exchangeCodeForToken(googleDriveAuthCode);
+      if (result.success && result.tokens) {
+        applyGoogleDriveTokens(result.tokens);
+        syncStatus = googleDriveReadyMessage();
+      } else {
+        syncStatus = result.error ?? "Failed to exchange authorization code.";
+      }
+    } catch (error) {
+      console.error("Could not exchange authorization code.", error);
+      syncStatus = "Could not exchange authorization code.";
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  function cancelGoogleDriveAuth() {
+    cancelGoogleDriveAuthorization();
+    googleDriveAuthCode = "";
+    googleDriveCodeVerifier = "";
+    if (!googleDriveAuthorizing) syncStatus = "";
+  }
+
+  async function disconnectGoogleDrive() {
+    if (syncBusy) return;
+    syncStatus = "";
+    syncBusy = true;
+    try {
+      const tokens = [googleDriveAccessToken, googleDriveRefreshToken].filter(Boolean);
+      for (const token of tokens) {
+        await revokeGoogleDriveAccess(token);
+      }
+      googleDriveAccessToken = "";
+      googleDriveRefreshToken = "";
+      googleDriveTokenExpiry = 0;
+      googleDriveEmail = "";
+      googleDriveAuthenticated = false;
+      googleDriveAuthCode = "";
+      googleDriveCodeVerifier = "";
+      syncPassphrase = "";
+      syncProvider = undefined;
+      syncProviderKey = "";
+      // The saved state belongs to the Google Drive connection, so remove it
+      // rather than leaving unusable tokens behind. Projects in Drive are not
+      // touched; the user can reconnect at any time.
+      clearSyncState();
+      syncStatus = "Disconnected from Google Drive. Files in your app data folder were left untouched.";
+    } catch (error) {
+      console.error("Could not disconnect from Google Drive.", error);
+      syncStatus = "Could not disconnect from Google Drive.";
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  function forgetSyncSettings() {
+    if (syncBusy) return;
+    clearSyncState();
+    syncFolder = "";
+    googleDriveAccessToken = "";
+    googleDriveRefreshToken = "";
+    googleDriveTokenExpiry = 0;
+    googleDriveEmail = "";
+    googleDriveAuthenticated = false;
+    googleDriveAuthCode = "";
+    googleDriveCodeVerifier = "";
+    syncProvider = undefined;
+    syncProviderKey = "";
+    syncPassphrase = "";
+    syncStatus = syncProviderType === "folder"
+      ? "Sync folder forgotten. Files in the folder were left untouched."
+      : "Google Drive connection forgotten. Files in your app data folder were left untouched.";
   }
 
   async function runSync() {
-    if (!syncFolder || syncBusy) return;
+    const configured = syncProviderType === "folder" ? Boolean(syncFolder) : googleDriveConfigured;
+    if (!configured || syncBusy) return;
     const encrypted = syncMode !== "open-folder";
     if (encrypted && syncPassphrase.length < 8) {
       syncStatus = "Use a sync passphrase of at least 8 characters.";
@@ -1739,11 +2217,13 @@
     try {
       if (saveTimer) clearTimeout(saveTimer);
       persistNow();
-      const provider = await getSyncProvider(syncFolder, syncMode);
+      const provider = await getSyncProvider();
       const state = loadSyncState();
-      const lastSynced = state?.folder === syncFolder && state.mode === syncMode
-        ? state.lastSynced
-        : {};
+      if (!state) throw new Error("Sync configuration not found.");
+      const sameTarget = state.provider === syncProviderType
+        && state.mode === syncMode
+        && (syncProviderType === "folder" ? state.folder === syncFolder : true);
+      const lastSynced = sameTarget ? state.lastSynced : {};
       const result = await provider.sync(
         syncPassphrase,
         readStoredProjectRecords(),
@@ -1751,15 +2231,12 @@
         Date.now(),
         currentDeviceId()
       );
-      saveSyncState({
-        folder: syncFolder,
-        mode: syncMode,
-        lastSynced: result.lastSynced
-      });
+      saveSyncState(currentSyncState(result.lastSynced));
       const nextActiveId = result.projects.some((project) => project.id === activeProjectId)
         ? activeProjectId
         : (result.projects[0]?.id ?? "");
       writeStored(result.projects, nextActiveId);
+      await flushVaultStorage();
       projects = result.projects.map((stored) => stored.project);
       const selected = projects.find((project) => project.id === nextActiveId);
       if (selected) {
@@ -1794,6 +2271,7 @@
 
   function setWorkspaceView(next: WorkspaceView) {
     if (next === workspaceView) return;
+    commitPageState();
     showZenInterface();
     if (workspaceView === "writing" && next !== "writing") {
       writingSidebarState = { left: leftSidebarVisible, right: rightSidebarVisible };
@@ -2196,14 +2674,32 @@
   function setMarkdownSource(source: string) {
     markdownSource = source;
     const view = markdownCodeEditor;
-    if (view && view.state.doc.toString() !== source) {
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+    if (!view) return;
+    markdownStates.set(markdownStateKey, view.state);
+    markdownStateKey = `${activeProjectId}/${activeDocumentId}`;
+    const saved = markdownStates.get(markdownStateKey);
+    if (saved && saved.doc.toString() === source) {
+      view.setState(saved);
+      return;
     }
+    // Removing and re-adding the extension clears the undo history, so undo
+    // cannot restore text from the previously open document.
+    undoManager.forgetExternal(currentUndoPage(), markdownUndoKey());
+    loadingMarkdownDocument = true;
+    view.dispatch({
+      ...(view.state.doc.toString() !== source
+        ? { changes: { from: 0, to: view.state.doc.length, insert: source } }
+        : {}),
+      effects: markdownHistory.reconfigure([])
+    });
+    view.dispatch({ effects: markdownHistory.reconfigure(markdownHistoryExtension) });
+    loadingMarkdownDocument = false;
   }
 
   function setEditorContent(html: string) {
     if (!editor) return;
     editor.innerHTML = html;
+    if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
   }
@@ -2569,6 +3065,7 @@
     documents = documents.map((doc) => doc.id === activeDocumentId
       ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
       : doc);
+    commitPageState();
     try {
       persistProjectCollection();
       saveState = "All changes saved";
@@ -2578,6 +3075,7 @@
   }
 
   function persist() {
+    pageStateDirty = true;
     saveState = "Saving…";
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(persistNow, 350);
@@ -2697,6 +3195,72 @@
   function deleteComment(id: string) {
     comments = removeComment(comments, id);
     persistNow();
+  }
+
+  const activeSnapshots = $derived(snapshotsForDocument(snapshots, activeDocumentId));
+
+  function openSnapshots() {
+    if (!activeDocumentId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    snapshotNote = "";
+    snapshotPreviewId = null;
+    snapshotsDialog.showModal();
+  }
+
+  function takeSnapshot(event: SubmitEvent) {
+    event.preventDefault();
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const current = documents.find((doc) => doc.id === activeDocumentId);
+    if (!current) return;
+    snapshots = addSnapshot(snapshots, createSnapshot(current, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "manual",
+      note: snapshotNote
+    }));
+    snapshotNote = "";
+    persistNow();
+  }
+
+  function restoreSnapshot(id: string) {
+    const snapshot = snapshots.find((entry) => entry.id === id);
+    if (!snapshot || snapshot.documentId !== activeDocumentId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const current = documents.find((doc) => doc.id === snapshot.documentId);
+    if (!current) return;
+    // Keep what is being replaced, so a restore can itself be undone.
+    snapshots = addSnapshot(snapshots, createSnapshot(current, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "before-restore"
+    }));
+    const restored = cleanHtml(snapshot.content);
+    documents = documents.map((doc) => {
+      if (doc.id !== snapshot.documentId) return doc;
+      const { markdownSource: _discarded, ...rest } = doc;
+      return { ...rest, content: restored };
+    });
+    setEditorContent(restored);
+    setMarkdownSource(htmlToMarkdown(restored));
+    refreshCounts();
+    lastEditorWordCount = wordCount;
+    snapshotPreviewId = null;
+    persistNow();
+    snapshotsDialog.close();
+  }
+
+  function deleteSnapshot(id: string) {
+    snapshots = removeSnapshot(snapshots, id);
+    if (snapshotPreviewId === id) snapshotPreviewId = null;
+    persistNow();
+  }
+
+  function snapshotLabel(snapshot: DocumentSnapshot): string {
+    const when = new Date(snapshot.createdAt).toLocaleString();
+    return snapshot.reason === "before-restore" ? `${when} (before a restore)` : when;
   }
 
   function openDocument(id: string) {
@@ -3335,6 +3899,7 @@
   }
 
   function persistChapters() {
+    pageStateDirty = true;
     try {
       persistProjectCollection();
       saveState = "All changes saved";
@@ -3423,12 +3988,12 @@
     expandedResearchFolders = expanded;
   }
 
-  function removeResearchFolder(folder: BinderFolder) {
+  async function removeResearchFolder(folder: BinderFolder) {
     const parentId = folder.parentId;
     const parentTitle = parentId
       ? researchFolders.find((entry) => entry.id === parentId)?.title ?? "the parent folder"
       : "the Wiki root";
-    if (!window.confirm(`Remove “${folder.title}”? Its folders, pages, files, and links will move to ${parentTitle}.`)) {
+    if (!(await confirmDestructiveAction(`Remove “${folder.title}”? Its folders, pages, files, and links will move to ${parentTitle}.`))) {
       return;
     }
     researchFolders = researchFolders
@@ -3696,16 +4261,123 @@
     return [formatResearchFileSize(item.size), item.mimeType].filter(Boolean).join(" · ");
   }
 
-  function researchFileGlyph(item: ResearchFile): string {
-    if (item.mimeType === "application/pdf") return "PDF";
-    if (item.mimeType.startsWith("image/")) return "▧";
-    return "▤";
+  const splitFiles = $derived(researchItems.flatMap((item) => item.kind === "file" ? [item] : []));
+  const splitGroups = $derived.by((): SplitGroup[] => {
+    const groups: SplitGroup[] = [];
+    for (const chapter of liveChapters) {
+      const options = documents
+        .filter((doc) => doc.chapterId === chapter.id && !doc.trashed)
+        .map((doc) => ({ value: docTarget(doc.id), label: doc.title || "Untitled" }));
+      if (options.length > 0) groups.push({ label: chapter.title || "Untitled chapter", options });
+    }
+    const wikiPages = documents
+      .filter((doc) => doc.space === "Wiki" && !doc.trashed)
+      .map((doc) => ({ value: docTarget(doc.id), label: doc.title || "Untitled" }));
+    if (wikiPages.length > 0) groups.push({ label: "Wiki pages", options: wikiPages });
+    if (splitFiles.length > 0) {
+      groups.push({
+        label: "Wiki files",
+        options: splitFiles.map((item) => ({ value: fileTarget(item.id), label: researchItemTitle(item) }))
+      });
+    }
+    return groups;
+  });
+
+  // Panes keep showing something that was deleted or trashed in the meantime.
+  $effect(() => {
+    const valid = new Set(splitGroups.flatMap((group) => group.options.map((option) => option.value)));
+    if (splitPanes.some((pane) => pane.target && !valid.has(pane.target))) {
+      splitPanes = pruneSplitTargets(splitPanes, valid);
+    }
+  });
+
+  function toggleSplitView() {
+    if (splitPanes.length > 0) {
+      splitPanes = [];
+      return;
+    }
+    if (editorPanel) {
+      resizeSplitEditor(Math.min(690, Math.max(360, (editorPanel.clientWidth - 24) * 0.55)));
+    }
+    splitPanes = addSplitPane([], crypto.randomUUID());
   }
 
-  async function openResearchFile(item: ResearchFile) {
+  function resizeSplitEditor(width: number) {
+    const minimumEditorWidth = 360;
+    const minimumPaneWidth = 260;
+    const splitterSpace = 24;
+    const availableWidth = editorPanel?.clientWidth ?? width;
+    const maximumEditorWidth = Math.max(minimumEditorWidth, availableWidth - minimumPaneWidth - splitterSpace);
+    splitEditorBasis = Math.max(minimumEditorWidth, Math.min(width, maximumEditorWidth));
+  }
+
+  function startSplitResize(event: PointerEvent) {
+    if (event.button !== 0 || !editorColumn) return;
+    event.preventDefault();
+    splitResize = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: editorColumn.getBoundingClientRect().width
+    };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function moveSplitResize(event: PointerEvent) {
+    if (!splitResize || splitResize.pointerId !== event.pointerId) return;
+    resizeSplitEditor(splitResize.startWidth + event.clientX - splitResize.startX);
+  }
+
+  function finishSplitResize(event: PointerEvent) {
+    if (!splitResize || splitResize.pointerId !== event.pointerId) return;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    splitResize = null;
+  }
+
+  function handleSplitResizeKeydown(event: KeyboardEvent) {
+    const step = event.shiftKey ? 40 : 16;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      resizeSplitEditor(splitEditorBasis - step);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      resizeSplitEditor(splitEditorBasis + step);
+    }
+  }
+
+  async function readResearchBytes(item: ResearchFile): Promise<ArrayBuffer> {
+    if (!desktopRuntime) {
+      return (await readBrowserResearchBlob(activeProjectId, item.storageKey)).arrayBuffer();
+    }
+    const root = await ensureResearchRoot();
+    if (!root) throw new Error("The wiki files folder is unavailable.");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const path = await invoke<string>("research_file_path", {
+      root,
+      projectFolder: ensureResearchFolderName(),
+      storageKey: item.storageKey
+    });
+    return invoke<ArrayBuffer>("read_import_file", { path });
+  }
+
+  async function openExternalUrl(url: string) {
+    try {
+      if (desktopRuntime) {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(url);
+      } else {
+        const opened = window.open(url, "_blank");
+        if (opened) opened.opener = null;
+      }
+    } catch (error) {
+      console.error("Could not open a link.", error);
+    }
+  }
+
+  async function openResearchFile(item: ResearchFile, { external = false } = {}) {
     researchStatus = "";
     try {
-      if (/\.(?:md|markdown)$/i.test(item.fileName)) {
+      if (!external && /\.(?:md|markdown)$/i.test(item.fileName)) {
         let markdownSource: string;
         if (!desktopRuntime) {
           markdownSource = await readBrowserResearchFile(activeProjectId, item.storageKey);
@@ -3836,7 +4508,7 @@
 
   async function removeResearchItem(item: ResearchItem) {
     const label = researchItemTitle(item);
-    if (!window.confirm(`Remove “${label}” from the Wiki?${item.kind === "file" ? " The file will be deleted from the project folder." : ""}`)) {
+    if (!(await confirmDestructiveAction(`Remove “${label}” from the Wiki?${item.kind === "file" ? " The file will be deleted from the project folder." : ""}`))) {
       return;
     }
     researchItems = researchItems.filter((entry) => entry.id !== item.id);
@@ -3902,6 +4574,8 @@
   }
 
   function permanentlyDelete(id: string) {
+    commitPageState();
+    permanentDeleteInProgress = true;
     documents = documents.filter((doc) => doc.id !== id);
     if (activeDocumentId === id) {
       const next = documents.find((doc) => !doc.trashed);
@@ -3917,14 +4591,17 @@
       }
     }
     persist();
+    forgetPermanentlyDeleted();
   }
 
-  function trashChapter(id: string) {
+  async function trashChapter(id: string) {
     const chapter = chapters.find((item) => item.id === id && !item.trashed);
     if (!chapter) return;
     const sceneCount = documents.filter((doc) => doc.chapterId === id && !doc.space && !doc.trashed).length;
     const sceneLabel = sceneCount === 1 ? "scene" : "scenes";
-    if (!window.confirm(`Move “${chapterLabel(chapter)}” and its ${sceneCount} ${sceneLabel} to Trash? You can restore them later.`)) {
+    if (!(await confirmDestructiveAction(`Move “${chapterLabel(chapter)}” and its ${sceneCount} ${sceneLabel} to Trash? You can restore them later.`, {
+      confirmLabel: "Move to Trash"
+    }))) {
       return;
     }
 
@@ -3962,14 +4639,16 @@
     persist();
   }
 
-  function permanentlyDeleteChapter(id: string) {
+  async function permanentlyDeleteChapter(id: string) {
     const chapter = chapters.find((item) => item.id === id && item.trashed);
     if (!chapter) return;
     const chapterDocuments = documents.filter((doc) => doc.chapterId === id);
-    if (!window.confirm(`Permanently delete “${chapterLabel(chapter)}” and its ${chapterDocuments.length} scene(s)? This cannot be undone.`)) {
+    if (!(await confirmDestructiveAction(`Permanently delete “${chapterLabel(chapter)}” and its ${chapterDocuments.length} scene(s)? This cannot be undone.`))) {
       return;
     }
 
+    commitPageState();
+    permanentDeleteInProgress = true;
     const chapterDocumentIds = new Set(chapterDocuments.map((doc) => doc.id));
     chapters = chapters.filter((item) => item.id !== id);
     documents = documents.filter((doc) => !chapterDocumentIds.has(doc.id));
@@ -3992,13 +4671,16 @@
       }
     }
     persist();
+    forgetPermanentlyDeleted();
   }
 
-  function trashActiveProject() {
+  async function trashActiveProject() {
     if (liveProjects.length <= 1) return;
     const project = projects.find((item) => item.id === activeProjectId && !item.trashed);
     if (!project) return;
-    if (!window.confirm(`Move “${project.name}” to Trash? You can restore it later.`)) return;
+    if (!(await confirmDestructiveAction(`Move “${project.name}” to Trash? You can restore it later.`, {
+      confirmLabel: "Move to Trash"
+    }))) return;
 
     const next = liveProjects.find((item) => item.id !== project.id);
     if (!next) return;
@@ -4016,10 +4698,10 @@
     persistProjectCollection();
   }
 
-  function permanentlyDeleteProject(id: string) {
+  async function permanentlyDeleteProject(id: string) {
     const project = projects.find((item) => item.id === id && item.trashed);
     if (!project) return;
-    if (!window.confirm(`Permanently delete “${project.name}” and all its contents? This cannot be undone.`)) return;
+    if (!(await confirmDestructiveAction(`Permanently delete “${project.name}” and all its contents? This cannot be undone.`))) return;
     projects = projects.filter((item) => item.id !== id);
     saveVault(projects, activeProjectId);
     void syncNativeProjectMenu();
@@ -4033,6 +4715,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    handleHistoryShortcut(event);
     handleStoryboardPanKeydown(event);
     if (workspaceView === "storyboard" && (event.key === "Delete" || event.key === "Backspace")
       && selectedDrawingId) {
@@ -4051,6 +4734,9 @@
   }
 
   function handleInput() {
+    if (!applyingUndoHistory && undoManager.has(bodyUndoKey())) {
+      recordFieldEdit(editor, cleanHtml(editor.innerHTML), encodeSelection(editor));
+    }
     const previousWordCount = lastEditorWordCount;
     documents = documents.map((doc) => {
       if (doc.id !== activeDocumentId || doc.markdownSource === undefined) return doc;
@@ -4064,6 +4750,298 @@
     scheduleRichTextTypewriter();
     if (fadeOtherParagraphs) scheduleRichTextFade();
   }
+
+  type NativeSelection = { start: number; end: number; direction: "forward" | "backward" | "none" };
+  type FieldSelection = NativeSelection | CaretSelection;
+  type NativeTextField = HTMLInputElement | HTMLTextAreaElement;
+
+  const undoManager = new UndoManager<FieldSelection>();
+  // Text in these props has its own field history or is not a page action.
+  const undoIgnoredProps = {
+    documents: ["content", "title", "markdownSource", "folderId"],
+    chapters: ["expanded"]
+  };
+  const anonymousUndoKeys = new WeakMap<Element, string>();
+  const nativeTextInputTypes = new Set(["text", "search", "url", "email", "tel", "number"]);
+  let anonymousUndoKeyCount = 0;
+  let pageStateBaseline: StateTree = {};
+  let pageStateDirty = false;
+  let pointerIsDown = false;
+  let permanentDeleteInProgress = false;
+  let focusAtPointerDown: Element | null = null;
+  let applyingUndoHistory = false;
+  let pendingEdit: { kind: EditKind; caretMoved: boolean; before: FieldSelection } | null = null;
+  let lastEditCaret: { key: string; caret: string } | null = null;
+
+  function isNativeTextField(target: EventTarget | null): target is NativeTextField {
+    return target instanceof HTMLTextAreaElement
+      || target instanceof HTMLInputElement && (nativeTextInputTypes.has(target.type) || target.type === "password");
+  }
+
+  function undoTextTarget(target: EventTarget | null): NativeTextField | HTMLElement | null {
+    if (target === editor) return editor;
+    return isNativeTextField(target) && target.type !== "password" ? target : null;
+  }
+
+  function bodyUndoKey() {
+    return `${activeProjectId}/body:${activeDocumentId}`;
+  }
+
+  function undoKeyFor(target: NativeTextField | HTMLElement) {
+    if (target === editor) return bodyUndoKey();
+    const named = target.dataset.undoKey;
+    if (named) return `${activeProjectId}/${named}`;
+    let key = anonymousUndoKeys.get(target);
+    if (!key) {
+      key = `element:${anonymousUndoKeyCount += 1}`;
+      anonymousUndoKeys.set(target, key);
+    }
+    return key;
+  }
+
+  function undoPageFor(target: NativeTextField | HTMLElement) {
+    return target === editor || target.dataset.undoKey ? currentUndoPage() : null;
+  }
+
+  function currentUndoPage() {
+    const page = workspaceView === "writing" ? `writing:${activeDocumentId}` : workspaceView;
+    return `${activeProjectId}/${page}`;
+  }
+
+  function nativeFieldForKey(key: string) {
+    const prefix = `${activeProjectId}/`;
+    if (!key.startsWith(prefix)) return null;
+    return document.querySelector<NativeTextField>(`[data-undo-key="${CSS.escape(key.slice(prefix.length))}"]`);
+  }
+
+  function capturePageState(): StateTree {
+    return {
+      storyboardCards: $state.snapshot(storyboardCards),
+      storyboardDrawings: $state.snapshot(storyboardDrawings),
+      storyboardRows: $state.snapshot(storyboardRows),
+      timelineNodes: $state.snapshot(timelineNodes),
+      publishOptions: $state.snapshot(publishOptions),
+      chapters: $state.snapshot(chapters),
+      documents: $state.snapshot(documents)
+    };
+  }
+
+  function refreshPageStateBaseline() {
+    pageStateBaseline = capturePageState();
+    pageStateDirty = false;
+  }
+
+  function commitPageState(force = false): StateStep | null {
+    if (pointerIsDown || permanentDeleteInProgress || !pageStateDirty && !force) return null;
+    const next = capturePageState();
+    const step = diffState(pageStateBaseline, next, undoIgnoredProps, Date.now());
+    pageStateBaseline = next;
+    pageStateDirty = false;
+    if (step) undoManager.pushState(currentUndoPage(), step);
+    return step;
+  }
+
+  function forgetPermanentlyDeleted() {
+    permanentDeleteInProgress = false;
+    const next = capturePageState();
+    for (const { collection, id } of removedIds(pageStateBaseline, next)) undoManager.forget(collection, id);
+    pageStateBaseline = next;
+    pageStateDirty = false;
+  }
+
+  function applyFieldValue(target: NativeTextField | HTMLElement, value: string, selection: FieldSelection) {
+    applyingUndoHistory = true;
+    try {
+      if (target === editor) {
+        const focused = document.activeElement === editor;
+        setEditorContent(value);
+        handleInput();
+        if (focused) {
+          restoreSelection(editor, selection as CaretSelection);
+          window.getSelection()?.focusNode?.parentElement?.scrollIntoView({ block: "nearest" });
+        }
+        lastEditCaret = { key: bodyUndoKey(), caret: JSON.stringify(encodeSelection(editor)) };
+      } else if (isNativeTextField(target)) {
+        target.value = value;
+        const saved = selection as NativeSelection | null;
+        if (saved && target === document.activeElement && target.selectionStart !== null) {
+          target.setSelectionRange(saved.start, saved.end, saved.direction);
+        }
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        if (target.type === "number") target.dispatchEvent(new Event("change", { bubbles: true }));
+        lastEditCaret = { key: undoKeyFor(target), caret: JSON.stringify(nativeSelection(target)) };
+      }
+    } finally {
+      applyingUndoHistory = false;
+    }
+    refreshPageStateBaseline();
+  }
+
+  function nativeSelection(target: NativeTextField): NativeSelection | null {
+    return target.selectionStart === null || target.selectionEnd === null
+      ? null
+      : { start: target.selectionStart, end: target.selectionEnd, direction: target.selectionDirection ?? "none" };
+  }
+
+  function runFieldHistory(target: NativeTextField | HTMLElement, direction: "undo" | "redo") {
+    commitPageState();
+    const key = undoKeyFor(target);
+    if (target !== editor) undoManager.sync(key, (target as NativeTextField).value);
+    const result = direction === "undo" ? undoManager.undoField(key) : undoManager.redoField(key);
+    if (result) applyFieldValue(target, result.value, result.selection);
+  }
+
+  function canApplyFieldHistory(key: string) {
+    if (key === bodyUndoKey()) return !markdownEditorMode;
+    if (key === markdownUndoKey()) return markdownEditorMode && markdownCodeEditor !== undefined;
+    return nativeFieldForKey(key) !== null;
+  }
+
+  function runPageHistory(direction: "undo" | "redo") {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      persistNow();
+    }
+    commitPageState(true);
+    const page = currentUndoPage();
+    const result = direction === "undo"
+      ? undoManager.undoPage(page, canApplyFieldHistory)
+      : undoManager.redoPage(page, canApplyFieldHistory);
+    if (!result) return;
+    if (result.type === "external") {
+      // The update listener moves the page step once the editor applies this.
+      if (!markdownCodeEditor || !(direction === "undo" ? undoMarkdown : redoMarkdown)(markdownCodeEditor)) {
+        undoManager.discardNewest(page, direction);
+        runPageHistory(direction);
+      }
+      return;
+    }
+    if (result.type === "field") {
+      const target = result.key === bodyUndoKey() ? editor : nativeFieldForKey(result.key);
+      if (target) applyFieldValue(target, result.value, result.selection);
+      return;
+    }
+    applyPageStateStep(result.step, direction);
+    undoManager.moveState(page, currentUndoPage(), result.step);
+  }
+
+  function applyPageStateStep(step: StateStep, direction: "undo" | "redo") {
+    const next = applyStateStep(capturePageState(), step, direction);
+    if (step.changes.storyboardCards) storyboardCards = next.storyboardCards as StoryboardCard[];
+    if (step.changes.storyboardDrawings) storyboardDrawings = next.storyboardDrawings as StoryboardDrawing[];
+    if (step.changes.storyboardRows) storyboardRows = next.storyboardRows as StoryboardRow[];
+    if (step.changes.timelineNodes) timelineNodes = next.timelineNodes as TimelineNode[];
+    if (step.changes.publishOptions) publishOptions = next.publishOptions as PublishOptions;
+    if (step.changes.chapters) chapters = next.chapters as ChapterData[];
+    if (step.changes.documents) documents = next.documents as DocumentData[];
+    if (!storyboardDrawings.some((drawing) => drawing.id === selectedDrawingId)) selectedDrawingId = null;
+    if (!documents.some((doc) => doc.id === activeDocumentId && !doc.trashed)) {
+      const fallback = documents.find((doc) => !doc.trashed);
+      if (fallback) {
+        openDocument(fallback.id);
+      } else {
+        activeDocumentId = "";
+        title = "";
+        setEditorContent("<p><br></p>");
+        setMarkdownSource("");
+      }
+    }
+    persist();
+    refreshPageStateBaseline();
+  }
+
+  function handleHistoryShortcut(event: KeyboardEvent) {
+    const isApple = /Mac|iPhone|iPad/.test(navigator.platform);
+    if (event.altKey || (isApple ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLowerCase();
+    const direction = key === "z" ? (event.shiftKey ? "redo" : "undo")
+      : key === "y" && !event.shiftKey ? "redo"
+      : null;
+    if (!direction) return;
+    const element = event.target instanceof Element ? event.target : null;
+    if (element?.closest(".cm-editor")) return;
+    const target = undoTextTarget(event.target);
+    if (target) {
+      event.preventDefault();
+      runFieldHistory(target, direction);
+    } else if (isNativeTextField(event.target)) {
+      // Password fields have no history, so that passphrases stay out of memory.
+      event.preventDefault();
+    } else if (!document.querySelector("dialog[open]")) {
+      event.preventDefault();
+      runPageHistory(direction);
+    }
+  }
+
+  function handleUndoBeforeInput(event: InputEvent) {
+    const target = undoTextTarget(event.target);
+    if (!target) return;
+    if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
+      event.preventDefault();
+      runFieldHistory(target, event.inputType === "historyUndo" ? "undo" : "redo");
+      return;
+    }
+    commitPageState();
+    const key = undoKeyFor(target);
+    const caret = target === editor ? encodeSelection(editor) : nativeSelection(target as NativeTextField);
+    if (target === editor) {
+      if (!undoManager.has(key)) undoManager.sync(key, cleanHtml(editor.innerHTML));
+    } else {
+      undoManager.sync(key, (target as NativeTextField).value);
+    }
+    pendingEdit = {
+      kind: editKindFromInputType(event.inputType, event.isComposing),
+      caretMoved: lastEditCaret?.key !== key || lastEditCaret.caret !== JSON.stringify(caret),
+      before: caret
+    };
+  }
+
+  function recordFieldEdit(target: NativeTextField | HTMLElement, value: string, after: FieldSelection) {
+    const key = undoKeyFor(target);
+    const edit = pendingEdit ?? { kind: "other" as const, caretMoved: true, before: after };
+    pendingEdit = null;
+    undoManager.record(key, undoPageFor(target), value, { ...edit, time: Date.now(), after });
+    lastEditCaret = { key, caret: JSON.stringify(after) };
+  }
+
+  // Runs after the field's own handlers, so the baseline includes what they wrote to state.
+  function handleUndoInput(event: Event) {
+    const target = undoTextTarget(event.target);
+    if (!target) return;
+    if (!applyingUndoHistory && target !== editor) {
+      recordFieldEdit(target, (target as NativeTextField).value, nativeSelection(target as NativeTextField));
+    }
+    refreshPageStateBaseline();
+  }
+
+  $effect(() => {
+    const handlePointerDown = () => {
+      pointerIsDown = true;
+      focusAtPointerDown = document.activeElement;
+    };
+    const handlePointerEnd = () => {
+      pointerIsDown = false;
+      setTimeout(() => {
+        const step = commitPageState(true);
+        // A dragged box leaves focus in the last text field, so without this
+        // blur the next undo would apply to that field instead of the page.
+        const active = document.activeElement;
+        if (step && active instanceof HTMLElement && active === focusAtPointerDown && undoTextTarget(active)) active.blur();
+      });
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("pointerup", handlePointerEnd, true);
+    window.addEventListener("pointercancel", handlePointerEnd, true);
+    window.addEventListener("beforeinput", handleUndoBeforeInput, true);
+    window.addEventListener("input", handleUndoInput);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("pointerup", handlePointerEnd, true);
+      window.removeEventListener("pointercancel", handlePointerEnd, true);
+      window.removeEventListener("beforeinput", handleUndoBeforeInput, true);
+      window.removeEventListener("input", handleUndoInput);
+    };
+  });
 
   function runCommand(command: string, value?: string) {
     editor?.focus();
@@ -4179,98 +5157,105 @@
     void syncFadeParagraphsMenu(fadeOtherParagraphs);
     void syncZenModeMenu(zenMode);
 
+    void initializeVault();
+  });
+
+  async function initializeVault() {
     try {
+      await initVaultStorage();
       let loadedProject = false;
       const vault = loadVault();
       if (vault && vault.projects.length > 0) {
         projects = vault.projects;
         const selectedProject = projects.find((project) =>
           project.id === vault.activeProjectId && !project.trashed
-        ) ?? projects.find((project) => !project.trashed);
+        ) ?? projects.find((project) => !project.trashed)
+          ?? projects.find((project) => project.id === vault.activeProjectId)
+          ?? projects[0];
         if (selectedProject) {
           loadProject(selectedProject);
           loadedProject = true;
         }
       }
       if (!loadedProject) {
-      storyboardRows = [{ id: crypto.randomUUID(), title: "Timeline" }];
-      const storedDocuments = localStorage.getItem(storageKey);
-      const storedChapters = localStorage.getItem(chaptersStorageKey);
-      const savedActiveId = localStorage.getItem(activeStorageKey);
-      let loadedLegacyDocument = false;
-      if (storedDocuments) {
-        const parsed: unknown = JSON.parse(storedDocuments);
-        if (Array.isArray(parsed)) {
-          documents = parsed.filter((item): item is DocumentData =>
-            typeof item === "object" &&
-            item !== null &&
-            typeof item.id === "string" &&
-            typeof item.title === "string" &&
-            typeof item.content === "string"
-          ).map((doc) => migrateLegacyDocument({
-            ...doc,
-            content: cleanHtml(doc.content)
-          }));
-        }
-      } else {
-        const legacySaved = localStorage.getItem(legacyStorageKey);
-        if (legacySaved) {
-          const parsed: unknown = JSON.parse(legacySaved);
-          if (typeof parsed === "object" && parsed !== null) {
-            const legacyDoc = parsed as { title?: unknown; content?: unknown };
-            if (typeof legacyDoc.title === "string" && typeof legacyDoc.content === "string") {
-              documents = [{
-                id: "welcome",
-                title: legacyDoc.title,
-                content: cleanHtml(legacyDoc.content)
-              }];
-              loadedLegacyDocument = true;
+        storyboardRows = [{ id: crypto.randomUUID(), title: "Timeline" }];
+        const storedDocuments = localStorage.getItem(storageKey);
+        const storedChapters = localStorage.getItem(chaptersStorageKey);
+        const savedActiveId = localStorage.getItem(activeStorageKey);
+        let loadedLegacyDocument = false;
+        if (storedDocuments) {
+          const parsed: unknown = JSON.parse(storedDocuments);
+          if (Array.isArray(parsed)) {
+            documents = parsed.filter((item): item is DocumentData =>
+              typeof item === "object" &&
+              item !== null &&
+              typeof item.id === "string" &&
+              typeof item.title === "string" &&
+              typeof item.content === "string"
+            ).map((doc) => migrateLegacyDocument({
+              ...doc,
+              content: cleanHtml(doc.content)
+            }));
+          }
+        } else {
+          const legacySaved = localStorage.getItem(legacyStorageKey);
+          if (legacySaved) {
+            const parsed: unknown = JSON.parse(legacySaved);
+            if (typeof parsed === "object" && parsed !== null) {
+              const legacyDoc = parsed as { title?: unknown; content?: unknown };
+              if (typeof legacyDoc.title === "string" && typeof legacyDoc.content === "string") {
+                documents = [{
+                  id: "welcome",
+                  title: legacyDoc.title,
+                  content: cleanHtml(legacyDoc.content)
+                }];
+                loadedLegacyDocument = true;
+              }
             }
           }
         }
-      }
-      if (storedChapters) {
-        const parsed: unknown = JSON.parse(storedChapters);
-        if (Array.isArray(parsed)) {
-          chapters = parsed.filter((item): item is ChapterData =>
-            typeof item === "object" &&
-            item !== null &&
-            typeof item.id === "string" &&
-            typeof item.title === "string" &&
-            typeof item.expanded === "boolean"
-          ).map((chapter) => ({
-            ...chapter,
-            summary: (typeof chapter.summary === "string" ? chapter.summary : "").slice(0, 4000)
-          }));
+        if (storedChapters) {
+          const parsed: unknown = JSON.parse(storedChapters);
+          if (Array.isArray(parsed)) {
+            chapters = parsed.filter((item): item is ChapterData =>
+              typeof item === "object" &&
+              item !== null &&
+              typeof item.id === "string" &&
+              typeof item.title === "string" &&
+              typeof item.expanded === "boolean"
+            ).map((chapter) => ({
+              ...chapter,
+              summary: (typeof chapter.summary === "string" ? chapter.summary : "").slice(0, 4000)
+            }));
+          }
         }
-      }
-      const migratedScenes = documents.some((doc) => !doc.space && !doc.chapterId);
-      if (chapters.length === 0 && migratedScenes) {
-        const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
-        chapters = [chapter];
-        documents = documents.map((doc) => !doc.space && !doc.chapterId ? { ...doc, chapterId: chapter.id } : doc);
-      }
-      if (documents.length === 0 && storedDocuments === null && !loadedLegacyDocument) {
-        const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
-        chapters = [chapter];
-        documents = [{ id: "welcome", title, content: starterContent, chapterId: chapter.id }];
-      }
-      const active = documents.find((doc) => doc.id === savedActiveId && !doc.trashed)
-        ?? documents.find((doc) => !doc.trashed);
-      if (active) {
-        activeDocumentId = active.id;
-        title = active.title;
-        setEditorContent(active.content);
-        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
-      } else {
-        activeDocumentId = "";
-        title = "";
-        setEditorContent("<p><br></p>");
-        setMarkdownSource("");
-      }
-      activeProjectId = crypto.randomUUID();
-      projects = [currentProjectData()];
-      persistProjectCollection();
+        const migratedScenes = documents.some((doc) => !doc.space && !doc.chapterId);
+        if (chapters.length === 0 && migratedScenes) {
+          const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
+          chapters = [chapter];
+          documents = documents.map((doc) => !doc.space && !doc.chapterId ? { ...doc, chapterId: chapter.id } : doc);
+        }
+        if (documents.length === 0 && storedDocuments === null && !loadedLegacyDocument) {
+          const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
+          chapters = [chapter];
+          documents = [{ id: "welcome", title, content: starterContent, chapterId: chapter.id }];
+        }
+        const active = documents.find((doc) => doc.id === savedActiveId && !doc.trashed)
+          ?? documents.find((doc) => !doc.trashed);
+        if (active) {
+          activeDocumentId = active.id;
+          title = active.title;
+          setEditorContent(active.content);
+          setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+        } else {
+          activeDocumentId = "";
+          title = "";
+          setEditorContent("<p><br></p>");
+          setMarkdownSource("");
+        }
+        activeProjectId = crypto.randomUUID();
+        projects = [currentProjectData()];
+        persistProjectCollection();
       }
     } catch {
       saveState = "Could not load saved document";
@@ -4281,8 +5266,10 @@
     }
     refreshCounts();
     lastEditorWordCount = wordCount;
+    refreshPageStateBaseline();
     void syncNativeProjectMenu();
-  });
+    void refreshStorageUsage();
+  }
 
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
@@ -4291,7 +5278,53 @@
     if (markdownTypewriterFrame !== undefined) cancelAnimationFrame(markdownTypewriterFrame);
     if (richTextFadeFrame !== undefined) cancelAnimationFrame(richTextFadeFrame);
     persistNow();
+    void flushVaultStorage();
     themeMediaQuery?.removeEventListener("change", handleSystemThemeChange);
+  });
+
+  onMount(() => {
+    const unsubscribe = onVaultStorageError((error) => handleStorageError(error));
+    const flush = () => {
+      void flushVaultStorage().catch(() => undefined);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  });
+
+  onMount(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { isTauri } = await import("@tauri-apps/api/core");
+        if (!isTauri() || disposed) return;
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+          event.preventDefault();
+          try {
+            await flushVaultStorage();
+          } catch (error) {
+            console.error("Could not flush the vault before closing.", error);
+          } finally {
+            await getCurrentWindow().destroy();
+          }
+        });
+      } catch (error) {
+        console.error("Could not register the window close handler.", error);
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   });
 
   onMount(() => {
@@ -4305,14 +5338,43 @@
 
   onMount(() => {
     const savedSync = loadSyncState();
-    syncFolder = savedSync?.folder ?? "";
-    syncMode = savedSync?.mode ?? "encrypted-file";
+    if (savedSync) {
+      syncProviderType = savedSync.provider;
+      syncFolder = savedSync.folder;
+      syncMode = savedSync.mode;
+      googleDriveAccessToken = savedSync.googleDriveAccessToken;
+      googleDriveRefreshToken = savedSync.googleDriveRefreshToken;
+      googleDriveTokenExpiry = savedSync.googleDriveTokenExpiry;
+      googleDriveEmail = savedSync.googleDriveEmail;
+      googleDriveAuthenticated = Boolean(googleDriveAccessToken) && !isTokenExpired({
+        accessToken: googleDriveAccessToken,
+        refreshToken: googleDriveRefreshToken,
+        expiry: googleDriveTokenExpiry,
+        email: googleDriveEmail
+      });
+      // Refresh an expired access token in the background so the user does not
+      // have to reconnect every hour.
+      if (savedSync.provider === "googledrive"
+        && !googleDriveAuthenticated
+        && googleDriveRefreshToken) {
+        void googleDriveAccessTokenForRequest().catch((error) => {
+          console.error("Could not refresh the Google Drive session.", error);
+          googleDriveAuthenticated = false;
+          syncStatus = "Google Drive session expired. Please reconnect.";
+        });
+      }
+    }
     void import("@tauri-apps/api/core")
       .then(({ isTauri }) => {
         desktopRuntime = isTauri();
+        // On mobile (not desktop), default to Google Drive
+        if (!isTauri()) {
+          syncProviderType = "googledrive";
+        }
       })
       .catch(() => {
         desktopRuntime = false;
+        syncProviderType = "googledrive";
       });
   });
 
@@ -4408,20 +5470,20 @@
         {/each}
       </select>
       <div class="project-identity-actions">
-        <button aria-label="Project settings" title="Project settings" onclick={openProjectSettings}>⚙</button>
+        <button aria-label="Project settings" title="Project settings" onclick={openProjectSettings}><Settings size={14} aria-hidden="true" /></button>
         <button
           aria-label="Move current project to Trash"
           title={liveProjects.length > 1 ? "Move project to Trash" : "The last project cannot be moved to Trash"}
           disabled={liveProjects.length <= 1}
           onclick={trashActiveProject}
-        >×</button>
+        ><Trash2 size={14} aria-hidden="true" /></button>
         <button
           aria-label="Import EPUB"
           title="Import EPUB…"
           disabled={epubImportBusy}
           onclick={triggerEpubImport}
-        >⤓</button>
-        <button aria-label="Create project" title="Create project" onclick={createProject}>+</button>
+        ><Download size={14} aria-hidden="true" /></button>
+        <button aria-label="Create project" title="Create project" onclick={createProject}><Plus size={14} aria-hidden="true" /></button>
       </div>
       <span class="author-name">{authorName ? `by ${authorName}` : "Add author name"}</span>
     </div>
@@ -4429,7 +5491,7 @@
     <div class="sidebar-tree">
       <div class="tree-heading">
         <span class="nav-label">CHAPTERS</span>
-        <button class="tree-add" aria-label="Add chapter" title="Add chapter" onclick={() => createChapter()}>+</button>
+        <button class="tree-add" aria-label="Add chapter" title="Add chapter" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /></button>
       </div>
       <div class="chapter-list">
         {#each liveChapters as chapter (chapter.id)}
@@ -4448,7 +5510,7 @@
                 aria-label="Drag to reorder {chapterLabel(chapter)}"
                 title="Drag to reorder"
                 onpointerdown={(event) => startChapterDrag(event, chapter.id)}
-              >⠿</button>
+              ><GripVertical size={14} aria-hidden="true" /></button>
               {#if editingChapterId === chapter.id}
                   <input
                     bind:this={chapterNameInput}
@@ -4465,17 +5527,17 @@
                   />
               {:else}
                 <button class="chapter-toggle" aria-label="{chapter.expanded ? 'Collapse' : 'Expand'} {chapterLabel(chapter)}" aria-expanded={chapter.expanded} onclick={() => toggleChapter(chapter.id)}>
-                  <span class:rotated={chapter.expanded} class="chevron">›</span>
-                  <svg class="folder-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.8 5.5a1.4 1.4 0 0 1 1.4-1.4h4l1.6 1.7h6a1.4 1.4 0 0 1 1.4 1.4v7.3a1.4 1.4 0 0 1-1.4 1.4H4.2a1.4 1.4 0 0 1-1.4-1.4V5.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                  <span class:rotated={chapter.expanded} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+                  <span class="folder-icon"><Folder size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
                   <span class="tree-name">{chapterLabel(chapter)}</span>
                 </button>
               {/if}
               <div class="chapter-actions">
-                <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}>✎</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}>↑</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}>↓</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} to Trash" title="Move chapter and scenes to Trash" onclick={() => trashChapter(chapter.id)}>×</button>
-                <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}>+</button>
+                <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}><Pencil size={13} aria-hidden="true" /></button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}><ArrowUp size={13} aria-hidden="true" /></button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}><ArrowDown size={13} aria-hidden="true" /></button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} to Trash" title="Move chapter and scenes to Trash" onclick={() => trashChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}><Plus size={13} aria-hidden="true" /></button>
               </div>
             </div>
             {#if chapter.expanded}
@@ -4486,7 +5548,7 @@
                       <span class="scene-mark">¶</span>
                       <span class="tree-name">{doc.title || "Untitled scene"}</span>
                     </button>
-                    <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}>×</button>
+                    <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
                   </div>
                 {/each}
                 {#if !documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed)}
@@ -4497,7 +5559,7 @@
           </div>
         {/each}
         {#if liveChapters.length === 0}
-          <button class="empty-action" onclick={() => createChapter()}>+ Add your first chapter</button>
+          <button class="empty-action" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /> Add your first chapter</button>
         {/if}
       </div>
 
@@ -4506,14 +5568,14 @@
       <div class="space-group">
         <div class="space-heading">
           <button class="space-toggle" aria-expanded={expandedSpaces.Wiki} onclick={() => expandedSpaces.Wiki = !expandedSpaces.Wiki}>
-            <span class:rotated={expandedSpaces.Wiki} class="chevron">›</span>
-            <span class="space-icon" aria-hidden="true">▤</span>
+            <span class:rotated={expandedSpaces.Wiki} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+            <span class="space-icon"><FileText size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
             <span class="tree-name">Wiki</span>
           </button>
-          <button class="row-add research-add" aria-label="Add folder to Wiki" title="Add folder" onclick={() => createResearchFolder()}>▱</button>
-          <button class="row-add research-add" aria-label="Add file to Wiki" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}>↥</button>
-          <button class="row-add research-add" aria-label="Add link to Wiki" title="Add web link" onclick={() => openResearchLinkDialog()}>↗</button>
-          <button class="row-add research-add" aria-label="Add page to Wiki" title="Add page" onclick={() => createSpaceDocument("Wiki")}>+</button>
+          <button class="row-add research-add" aria-label="Add folder to Wiki" title="Add folder" onclick={() => createResearchFolder()}><FolderPlus size={13} aria-hidden="true" /></button>
+          <button class="row-add research-add" aria-label="Add file to Wiki" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}><Upload size={13} aria-hidden="true" /></button>
+          <button class="row-add research-add" aria-label="Add link to Wiki" title="Add web link" onclick={() => openResearchLinkDialog()}><LinkIcon size={13} aria-hidden="true" /></button>
+          <button class="row-add research-add" aria-label="Add page to Wiki" title="Add page" onclick={() => createSpaceDocument("Wiki")}><Plus size={13} aria-hidden="true" /></button>
         </div>
         {#if expandedSpaces.Wiki}
           <div class="space-items">
@@ -4547,18 +5609,18 @@
                       aria-expanded={expandedResearchFolders[item.folder.id] !== false}
                       onclick={() => toggleResearchFolder(item.folder.id)}
                     >
-                      <span class:rotated={expandedResearchFolders[item.folder.id] !== false} class="chevron">›</span>
-                      <span class="note-folder-icon" aria-hidden="true">▱</span>
+                      <span class:rotated={expandedResearchFolders[item.folder.id] !== false} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+                      <span class="note-folder-icon"><Folder size={13} color="var(--text-muted)" aria-hidden="true" /></span>
                       <span class="tree-name">{item.folder.title}</span>
                     </button>
                   {/if}
                   <div class="note-folder-actions">
-                    <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}>▱+</button>
-                    <button class="chapter-action" aria-label="Add page to {item.folder.title}" title="Add page" onclick={() => createSpaceDocument("Wiki", item.folder.id)}>+</button>
-                    <button class="chapter-action" aria-label="Add file to {item.folder.title}" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles(item.folder.id)}>↥</button>
-                    <button class="chapter-action" aria-label="Add link to {item.folder.title}" title="Add web link" onclick={() => openResearchLinkDialog(item.folder.id)}>↗</button>
-                    <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}>✎</button>
-                    <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}>×</button>
+                    <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}><FolderPlus size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Add page to {item.folder.title}" title="Add page" onclick={() => createSpaceDocument("Wiki", item.folder.id)}><Plus size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Add file to {item.folder.title}" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles(item.folder.id)}><Upload size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Add link to {item.folder.title}" title="Add web link" onclick={() => openResearchLinkDialog(item.folder.id)}><LinkIcon size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}><Pencil size={13} aria-hidden="true" /></button>
+                    <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}><Trash2 size={13} aria-hidden="true" /></button>
                   </div>
                 </div>
               {:else if item.kind === "document"}
@@ -4580,7 +5642,7 @@
                       {/each}
                     </select>
                   {/if}
-                  <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}>×</button>
+                  <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else if item.kind === "file"}
                 <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
@@ -4589,7 +5651,13 @@
                     title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
                     onclick={() => openResearchFile(item.item)}
                   >
-                    <span class="scene-mark research-file-mark">{researchFileGlyph(item.item)}</span>
+                    {#if item.item.mimeType === "application/pdf"}
+                      <span class="scene-mark research-file-mark">PDF</span>
+                    {:else if item.item.mimeType.startsWith("image/")}
+                      <span class="scene-mark research-file-mark"><ImageIcon size={14} aria-hidden="true" /></span>
+                    {:else}
+                      <span class="scene-mark research-file-mark"><FileText size={14} aria-hidden="true" /></span>
+                    {/if}
                     <span class="tree-name">{researchItemTitle(item.item)}</span>
                   </button>
                   {#if researchFolderChoices.length > 0}
@@ -4606,9 +5674,9 @@
                     </select>
                   {/if}
                   {#if desktopRuntime}
-                    <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}>⌖</button>
+                    <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}><Folder size={13} aria-hidden="true" /></button>
                   {/if}
-                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}>×</button>
+                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
@@ -4617,7 +5685,7 @@
                     title={researchItemMeta(item.item)}
                     onclick={() => openResearchLink(item.item)}
                   >
-                    <span class="scene-mark research-link-mark">↗</span>
+                    <span class="scene-mark research-link-mark"><ExternalLink size={14} aria-hidden="true" /></span>
                     <span class="tree-name">{researchItemTitle(item.item)}</span>
                   </button>
                   {#if researchFolderChoices.length > 0}
@@ -4633,7 +5701,7 @@
                       {/each}
                     </select>
                   {/if}
-                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}>×</button>
+                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {/if}
             {/each}
@@ -4651,8 +5719,8 @@
       <div class="space-group trash-group">
         <div class="space-heading">
           <button class="space-toggle" aria-expanded={expandedSpaces.Trash} onclick={() => expandedSpaces.Trash = !expandedSpaces.Trash}>
-            <span class:rotated={expandedSpaces.Trash} class="chevron">›</span>
-            <span class="space-icon" aria-hidden="true">⌫</span>
+            <span class:rotated={expandedSpaces.Trash} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+            <span class="space-icon"><Trash2 size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
             <span class="tree-name">Trash</span>
             <span class="trash-count">{trashCount || ""}</span>
           </button>
@@ -4662,21 +5730,21 @@
             {#each chapters.filter((chapter) => chapter.trashed) as chapter (chapter.id)}
               <div class="document-row">
                 <span class="document-select trashed-document">
-                  <span class="scene-mark">▱</span>
+                  <span class="scene-mark"><Folder size={14} aria-hidden="true" /></span>
                   <span class="tree-name">{chapterLabel(chapter)}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore {chapterLabel(chapter)} and its scenes" title="Restore chapter and scenes" onclick={() => restoreChapter(chapter.id)}>↶</button>
-                <button class="row-action delete-action" aria-label="Permanently delete {chapterLabel(chapter)} and its scenes" title="Delete chapter and scenes permanently" onclick={() => permanentlyDeleteChapter(chapter.id)}>×</button>
+                <button class="row-action restore-action" aria-label="Restore {chapterLabel(chapter)} and its scenes" title="Restore chapter and scenes" onclick={() => restoreChapter(chapter.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label="Permanently delete {chapterLabel(chapter)} and its scenes" title="Delete chapter and scenes permanently" onclick={() => permanentlyDeleteChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#each projects.filter((project) => project.trashed) as project (project.id)}
               <div class="document-row">
                 <span class="document-select trashed-document">
-                  <span class="scene-mark">▣</span>
+                  <span class="scene-mark"><BookOpen size={14} aria-hidden="true" /></span>
                   <span class="tree-name">{project.name}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore project {project.name}" title="Restore project" onclick={() => restoreProject(project.id)}>↶</button>
-                <button class="row-action delete-action" aria-label="Permanently delete project {project.name}" title="Delete project permanently" onclick={() => permanentlyDeleteProject(project.id)}>×</button>
+                <button class="row-action restore-action" aria-label="Restore project {project.name}" title="Restore project" onclick={() => restoreProject(project.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label="Permanently delete project {project.name}" title="Delete project permanently" onclick={() => permanentlyDeleteProject(project.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#each documents.filter((doc) => doc.trashed && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)) as doc (doc.id)}
@@ -4685,8 +5753,8 @@
                   <span class="scene-mark">¶</span>
                   <span class="tree-name">{doc.title || "Untitled"}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore {doc.title}" title="Restore" onclick={() => restoreDocument(doc.id)}>↶</button>
-                <button class="row-action delete-action" aria-label="Permanently delete {doc.title}" title="Delete permanently" onclick={() => permanentlyDelete(doc.id)}>×</button>
+                <button class="row-action restore-action" aria-label="Restore {doc.title}" title="Restore" onclick={() => restoreDocument(doc.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label="Permanently delete {doc.title}" title="Delete permanently" onclick={() => permanentlyDelete(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#if trashCount === 0}
@@ -4703,7 +5771,7 @@
         aria-label="Settings"
         onclick={openSettings}
       >
-        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3.2a1.2 1.2 0 0 1 2.3-.5l.5 1.2a1.2 1.2 0 0 0 1.7.6l1.1-.6a1.2 1.2 0 0 1 1.7 1.7l-.6 1.1a1.2 1.2 0 0 0 .6 1.7l1.2.5a1.2 1.2 0 0 1-.5 2.3l-1.3.1a1.2 1.2 0 0 0-1.1 1.4l.2 1.3a1.2 1.2 0 0 1-2 1l-1-.9a1.2 1.2 0 0 0-1.8.2l-.7 1.1a1.2 1.2 0 0 1-2.2-.8l.3-1.3a1.2 1.2 0 0 0-1-1.4l-1.3-.2a1.2 1.2 0 0 1-.3-2.3l1.2-.5a1.2 1.2 0 0 0 .5-1.7l-.7-1.1a1.2 1.2 0 0 1 1.6-1.7l1.2.6a1.2 1.2 0 0 0 1.7-.6L10 3.2Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.2" stroke="currentColor" stroke-width="1.2"/></svg>
+        <Settings size={15} aria-hidden="true" />
         <span>Settings</span>
       </button>
       <div class="sync-status"><span class="sync-dot"></span> Your writing is private</div>
@@ -4711,6 +5779,16 @@
   </aside>
 
   <main class="main-panel" class:left-hidden={!leftSidebarVisible} class:right-hidden={!rightSidebarVisible}>
+    {#if storageError}
+      <div class="storage-banner" role="alert">
+        <span class="storage-banner-message">{storageError}</span>
+        <span class="storage-banner-actions">
+          <button type="button" class="data-button" onclick={exportDataBundle}>Export backup</button>
+          <button type="button" class="data-button" onclick={openSettings}>Settings</button>
+          <button type="button" class="storage-banner-dismiss" aria-label="Dismiss storage warning" onclick={() => storageError = ""}><X size={14} aria-hidden="true" /></button>
+        </span>
+      </div>
+    {/if}
     <section class="writing-area" id="editor">
       <div class="workspace-controls" aria-label="Workspace panels">
         <div class="workspace-modes" role="tablist" aria-label="Workspace view">
@@ -4721,17 +5799,21 @@
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
         <div class="panel-toggles">
+          <button class="panel-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
+            <Columns2 size={15} aria-hidden="true" />
+            <span>Split</span>
+          </button>
           <button class="panel-toggle" aria-label={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} title={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} aria-pressed={leftSidebarVisible} onclick={() => leftSidebarVisible = !leftSidebarVisible}>
-            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.5" width="14.4" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M7.3 3.8v12.4" stroke="currentColor" stroke-width="1.3"/></svg>
+            <PanelLeft size={15} aria-hidden="true" />
             <span>Chapters</span>
           </button>
           <button class="panel-toggle" aria-label={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} title={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} aria-pressed={rightSidebarVisible} onclick={() => rightSidebarVisible = !rightSidebarVisible}>
-            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.5" width="14.4" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M12.7 3.8v12.4m-6.8-6.1 2.1-2.2 2.2 2.2 2.4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <PanelRight size={15} aria-hidden="true" />
             <span>Progress</span>
           </button>
         </div>
       </div>
-      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode}>
+      <div bind:this={editorPanel} class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode} class:split-open={splitPanes.length > 0} style={`--split-editor-basis: ${splitEditorBasis}px`}>
       <div
         class="editor-column"
         bind:this={editorColumn}
@@ -4773,6 +5855,7 @@
 
         <input
           class="title-input"
+          data-undo-key={`title:${activeDocumentId}`}
           aria-label="Document title"
           placeholder="Untitled"
           bind:value={title}
@@ -4796,17 +5879,18 @@
           <button class="tool-button underline" aria-label="Underline" title="Underline" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("underline")}>U</button>
           <button class="tool-button strike" aria-label="Strikethrough" title="Strikethrough" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("strikeThrough")}>S</button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button" aria-label="Bulleted list" title="Bulleted list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertUnorderedList")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 5h8M8 10h8M8 15h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="4.5" cy="5" r=".8" fill="currentColor"/><circle cx="4.5" cy="10" r=".8" fill="currentColor"/><circle cx="4.5" cy="15" r=".8" fill="currentColor"/></svg></button>
-          <button class="tool-button" aria-label="Numbered list" title="Numbered list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertOrderedList")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 5h8M8 10h8M8 15h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 4.2h1v2H4m-.2 3.5h1.4l-1.4 1.6h1.4m-1.6 3.5h1.6l-1.6 1.6h1.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Bulleted list" title="Bulleted list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertUnorderedList")}><List size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Numbered list" title="Numbered list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertOrderedList")}><ListOrdered size={16} aria-hidden="true" /></button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button" aria-label="Add link" title="Add link" onpointerdown={(event) => event.preventDefault()} onclick={addLink}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m8.2 11.8 3.6-3.6m-5 5-1.2 1.2a2.55 2.55 0 0 1-3.6-3.6l3-3a2.55 2.55 0 0 1 3.6 0m2.2-2.6 1.2-1.2a2.55 2.55 0 0 1 3.6 3.6l-3 3a2.55 2.55 0 0 1-3.6 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
-          <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("undo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M7.5 6 4 9.5 7.5 13M4.5 9.5h6a5 5 0 0 1 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Add link" title="Add link" onpointerdown={(event) => event.preventDefault()} onclick={addLink}><LinkIcon size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "undo")}><Undo2 size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "redo")}><Redo2 size={16} aria-hidden="true" /></button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.3" width="14.4" height="13.4" rx="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.4" r="1.4" stroke="currentColor" stroke-width="1.2"/><path d="m4.2 14.8 4-4 2.5 2.5 2-2 3.1 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4.2 4.6h11.6a1.2 1.2 0 0 1 1.2 1.2v6.6a1.2 1.2 0 0 1-1.2 1.2H9.6l-3.4 2.8v-2.8H4.2a1.2 1.2 0 0 1-1.2-1.2V5.8a1.2 1.2 0 0 1 1.2-1.2Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
-          <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><span aria-hidden="true" class="math-tool-mark">Σ</span></button>
-          <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.2" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="11.6" y="12.6" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M8.4 5.3h1.8a2 2 0 0 1 2 2v5.3m0 0-1.8-1.8m1.8 1.8 1.8-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><ImagePlus size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><MessageSquareText size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
         </div>
         {/if}
 
@@ -4871,12 +5955,48 @@
           <span class="footer-actions">
             <span class="save-indicator"><span class:unsaved={saveState !== "All changes saved"} class="save-dot"></span>{saveState}</span>
             <button class="export-button" onclick={exportDocument}>
-              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3.5v9m0 0 3.2-3.2M10 12.5 6.8 9.3M4.5 13v3.5h11V13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <Download size={16} aria-hidden="true" />
               Export
             </button>
           </span>
         </footer>
       </div>
+      {#if splitPanes.length > 0}
+        <div
+          class="split-resizer"
+          role="slider"
+          tabindex="0"
+          aria-label="Resize editor and reference panes"
+          aria-orientation="vertical"
+          aria-valuemin="360"
+          aria-valuemax={Math.max(360, (editorPanel?.clientWidth ?? 644) - 284)}
+          aria-valuenow={Math.round(splitEditorBasis)}
+          title="Drag to resize editor and reference panes"
+          onpointerdown={startSplitResize}
+          onpointermove={moveSplitResize}
+          onpointerup={finishSplitResize}
+          onpointercancel={finishSplitResize}
+          onlostpointercapture={() => { splitResize = null; }}
+          onkeydown={handleSplitResizeKeydown}
+        ></div>
+        <div class="split-panes" style={`--panes: ${splitPanes.length}`}>
+          {#each splitPanes as pane (pane.id)}
+            <SplitPane
+              target={pane.target}
+              groups={splitGroups}
+              {documents}
+              files={splitFiles}
+              canAdd={canAddSplitPane(splitPanes)}
+              readBytes={readResearchBytes}
+              openExternally={(file) => void openResearchFile(file, { external: true })}
+              openUrl={openExternalUrl}
+              onTarget={(value) => { splitPanes = setSplitTarget(splitPanes, pane.id, value); }}
+              onAdd={() => { splitPanes = addSplitPane(splitPanes, crypto.randomUUID()); }}
+              onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
+            />
+          {/each}
+        </div>
+      {/if}
       </div>
         {#if workspaceView === "outline"}
           <OutlineView
@@ -4897,18 +6017,18 @@
             <section class="board-source-group">
               <h3>Cards</h3>
               <div class="board-source">
-                <button class="source-drag-handle" aria-label="Drag a blank card onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}>⠿</button>
-                <span class="source-icon">▢</span><span class="source-name">Blank card</span>
-                <button class="source-add" aria-label="Add a blank card near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("blank", "")}>+</button>
+                <button class="source-drag-handle" aria-label="Drag a blank card onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}><GripVertical size={14} aria-hidden="true" /></button>
+                <Square size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">Blank card</span>
+                <button class="source-add" aria-label="Add a blank card near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("blank", "")}><Plus size={13} aria-hidden="true" /></button>
               </div>
             </section>
             <section class="board-source-group">
               <h3>Chapters</h3>
               {#each liveChapters as chapter (chapter.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}>⠿</button>
-                  <span class="source-icon">▱</span><span class="source-name">{chapterLabel(chapter)}</span>
-                  <button class="source-add" aria-label="Add {chapterLabel(chapter)} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("chapter", chapter.id)}>+</button>
+                  <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <Folder size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{chapterLabel(chapter)}</span>
+                  <button class="source-add" aria-label="Add {chapterLabel(chapter)} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("chapter", chapter.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <p class="board-source-empty">No chapters yet</p>
@@ -4918,9 +6038,9 @@
               <h3>Scenes</h3>
               {#each documents.filter((doc) => doc.chapterId && !doc.trashed) as doc (doc.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled scene'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}>⠿</button>
-                  <span class="source-icon">¶</span><span class="source-name">{doc.title || "Untitled scene"}</span>
-                  <button class="source-add" aria-label="Add {doc.title || 'Untitled scene'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("scene", doc.id)}>+</button>
+                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled scene'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <FileText size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{doc.title || "Untitled scene"}</span>
+                  <button class="source-add" aria-label="Add {doc.title || 'Untitled scene'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("scene", doc.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <p class="board-source-empty">No scenes yet</p>
@@ -4930,10 +6050,10 @@
               <h3>Wiki</h3>
               {#each documents.filter((doc) => doc.space === "Wiki" && !doc.trashed) as doc (doc.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "Wiki", doc.id)}>⠿</button>
-                  <span class="source-icon">▤</span>
+                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "Wiki", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <BookOpen size={16} color="var(--eyebrow)" aria-hidden="true" />
                   <span class="source-name">{doc.title || "Untitled"}</span>
-                  <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("Wiki", doc.id)}>+</button>
+                  <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("Wiki", doc.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <p class="board-source-empty">No wiki pages yet</p>
@@ -4945,11 +6065,12 @@
               <div><span class="board-eyebrow">PLAN YOUR STORY</span><h1>Storyboard</h1></div>
               <div class="storyboard-header-actions">
                 <span class="board-card-count">{storyboardCards.length} {storyboardCards.length === 1 ? "card" : "cards"}</span>
-                <button class="add-timeline-row" onclick={() => addStoryboardCard("blank", "")}>+ Add blank card</button>
+                <button class="add-timeline-row" onclick={() => addStoryboardCard("blank", "")}><Plus size={14} aria-hidden="true" /> Add blank card</button>
               </div>
             </header>
             <div class="storyboard-drawing-toolbar" role="toolbar" aria-label="Diagram drawing tools">
               {#each storyboardDrawingTools as item (item.tool)}
+                {@const Icon = item.icon}
                 <button
                   class="drawing-tool"
                   class:active={activeDrawingTool === item.tool}
@@ -4957,7 +6078,7 @@
                   aria-pressed={activeDrawingTool === item.tool}
                   title={`${item.label} tool`}
                   onclick={() => { activeDrawingTool = item.tool; }}
-                ><span class="drawing-tool-glyph">{item.glyph}</span><span>{item.label}</span></button>
+                ><Icon size={15} aria-hidden="true" /><span>{item.label}</span></button>
               {/each}
               {#if activeDrawingTool === "text" || selectedStoryboardTextDrawing()}
                 <label class="drawing-font-size">
@@ -5047,6 +6168,7 @@
                       <textarea
                         id={`storyboard-drawing-text-${drawing.id}`}
                         class="storyboard-text-editor"
+                        data-undo-key={`label:${drawing.id}`}
                         style:font-size={`${drawing.fontSize}px`}
                         aria-label="Diagram text"
                         placeholder="Type a label…"
@@ -5058,7 +6180,7 @@
                         onblur={() => finishStoryboardTextEdit(drawing.id)}
                       ></textarea>
                       {#if selectedDrawingId === drawing.id}
-                        <button class="drawing-move-handle" aria-label="Move text label" title="Drag to move" onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}>⠿</button>
+                        <button class="drawing-move-handle" aria-label="Move text label" title="Drag to move" onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}><GripVertical size={14} aria-hidden="true" /></button>
                         <button class="drawing-resize-handle" aria-label="Resize text area" title="Drag to resize" onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
                       {/if}
                     </div>
@@ -5091,13 +6213,14 @@
                         title="Drag to move; arrow keys to nudge"
                         onpointerdown={(event) => startStoryboardDrag(event, "board-card", card.id)}
                         onkeydown={(event) => handleStoryboardCardKeydown(event, card.id)}
-                      >⠿</button>
+                      ><GripVertical size={14} aria-hidden="true" /></button>
                       <span class="card-kind">{card.kind === "blank" ? "blank" : card.kind}</span>
-                      <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}>×</button>
+                      <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}><X size={14} aria-hidden="true" /></button>
                     </div>
-                    <input class="board-card-title" aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
+                    <input class="board-card-title" data-undo-key={`card-title:${card.id}`} aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
                     <textarea
                       class="board-card-note"
+                      data-undo-key={card.kind === "chapter" ? `chapter-summary:${card.sourceId}` : `card-note:${card.id}`}
                       aria-label={card.kind === "chapter" ? `Chapter summary for ${card.title}` : `Planning notes for ${card.title}`}
                       placeholder={card.kind === "chapter" ? "Chapter summary — synced with Outline" : "Write a note about this story element…"}
                       value={card.note}
@@ -5156,7 +6279,7 @@
           <span class="progress-eyebrow">YOUR WRITING</span>
           <h2>Progress</h2>
         </div>
-        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => rightSidebarVisible = false}>×</button>
+        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => rightSidebarVisible = false}><X size={15} aria-hidden="true" /></button>
       </div>
 
       <section class="progress-section project-progress">
@@ -5227,8 +6350,8 @@
         <div class="calendar-heading">
           <strong>{viewedMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</strong>
           <div class="calendar-navigation">
-            <button aria-label="Previous month" onclick={() => changeViewedMonth(-1)}>‹</button>
-            <button aria-label="Next month" onclick={() => changeViewedMonth(1)}>›</button>
+            <button aria-label="Previous month" onclick={() => changeViewedMonth(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
+            <button aria-label="Next month" onclick={() => changeViewedMonth(1)}><ChevronRight size={14} aria-hidden="true" /></button>
           </div>
         </div>
         <div class="calendar-grid" role="grid" aria-label="Writing activity calendar">
@@ -5264,7 +6387,7 @@
 }}>
   <div class="settings-header">
     <div><span class="settings-kicker">WIKI FILE</span><h2>{researchMarkdownTitle}</h2></div>
-    <button class="close-settings" aria-label="Close Markdown preview" onclick={() => researchMarkdownDialog.close()}>×</button>
+    <button class="close-settings" aria-label="Close Markdown preview" onclick={() => researchMarkdownDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <article class="research-markdown-content">{@html researchMarkdownHtml}</article>
 </dialog>
@@ -5274,7 +6397,7 @@
 }}>
   <div class="settings-header">
     <div><span class="settings-kicker">PROSECRAFT</span><h2>Settings</h2></div>
-    <button class="close-settings" aria-label="Close settings" onclick={() => settingsDialog.close()}>×</button>
+    <button class="close-settings" aria-label="Close settings" onclick={() => settingsDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body">
     <section class="preference-section">
@@ -5390,6 +6513,13 @@
     <section class="preference-section">
       <div class="preference-heading"><strong>Data</strong><span>Back up or move your projects between devices</span></div>
       <div class="data-group">
+        <span class="data-group-label">Local storage</span>
+        <p class="data-help">Projects are stored in this app's local database. {storageUsageText()}</p>
+        {#if storageError}
+          <p class="data-help storage-warning">{storageError}</p>
+        {/if}
+      </div>
+      <div class="data-group">
         <span class="data-group-label">Plain backup (unencrypted)</span>
         <div class="data-actions">
           <button type="button" class="data-button" onclick={exportDataBundle}>Export backup</button>
@@ -5415,63 +6545,93 @@
         </div>
         <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
       </div>
-      {#if desktopRuntime}
-        <div class="data-group">
-          <span class="data-group-label">Device sync</span>
-          <p class="data-help">Keep this device in sync through a folder your devices already share, such as a Nextcloud folder.</p>
-          <div class="sync-mode-options" role="radiogroup" aria-label="Sync method">
-            <label class="sync-mode-option" class:selected={syncMode === "encrypted-file"}>
+      <div class="data-group">
+        <span class="data-group-label">Device sync</span>
+        <p class="data-help">
+          {syncProviderType === "folder"
+            ? "Keep this device in sync through a folder your devices already share, such as a Nextcloud folder."
+            : "Keep this device in sync through Google Drive. Projects are encrypted with your passphrase before they are stored in your app data folder."}
+        </p>
+        {#if desktopRuntime}
+          <div class="sync-provider-selector">
+            <label>
               <input
                 type="radio"
-                name="sync-method"
-                value="encrypted-file"
-                checked={syncMode === "encrypted-file"}
-                onchange={() => setSyncMode("encrypted-file")}
+                name="sync-provider"
+                value="folder"
+                checked={syncProviderType === "folder"}
+                onchange={() => handleSyncProviderChange("folder")}
                 disabled={syncBusy}
               />
-              <span class="sync-mode-copy">
-                <strong>Single encrypted file</strong>
-                <span>All projects in one passphrase-protected file. Best for cloud folders and WebDAV.</span>
-              </span>
+              <span>Local folder</span>
             </label>
-            <label class="sync-mode-option" class:selected={syncMode === "open-folder"}>
+            <label>
               <input
                 type="radio"
-                name="sync-method"
-                value="open-folder"
-                checked={syncMode === "open-folder"}
-                onchange={() => setSyncMode("open-folder")}
+                name="sync-provider"
+                value="googledrive"
+                checked={syncProviderType === "googledrive"}
+                onchange={() => handleSyncProviderChange("googledrive")}
                 disabled={syncBusy}
               />
-              <span class="sync-mode-copy">
-                <strong>Open folder</strong>
-                <span>Plain Markdown and JSON, one folder per project. Not encrypted.</span>
-              </span>
+              <span>Google Drive</span>
             </label>
-            {#if syncMode === "encrypted-folder"}
-              <label class="sync-mode-option selected">
-                <input
-                  type="radio"
-                  name="sync-method"
-                  value="encrypted-folder"
-                  checked
-                  onchange={() => setSyncMode("encrypted-folder")}
-                  disabled={syncBusy}
-                />
-                <span class="sync-mode-copy">
-                  <strong>Encrypted folder (existing layout)</strong>
-                  <span>One encrypted file per project record. Keeps existing sync folders working.</span>
-                </span>
-              </label>
-            {/if}
           </div>
-          {#if syncMode === "open-folder"}
-            <p class="data-warning">This folder is not encrypted. Anyone with access to it can read and edit your writing. Delete scenes in ProseCraft rather than removing their files.</p>
-          {:else if syncMode === "encrypted-file"}
-            <p class="data-help">Writes one <code>prosecraft-sync.prosecraft</code> file. Projects are encrypted with your passphrase before they are written.</p>
-          {:else}
-            <p class="data-help">Writes <code>vault.json</code> and one encrypted file per project record.</p>
+        {/if}
+        <div class="sync-mode-options" role="radiogroup" aria-label="Sync method">
+          <label class="sync-mode-option" class:selected={syncMode === "encrypted-file"}>
+            <input
+              type="radio"
+              name="sync-method"
+              value="encrypted-file"
+              checked={syncMode === "encrypted-file"}
+              onchange={() => setSyncMode("encrypted-file")}
+              disabled={syncBusy}
+            />
+            <span class="sync-mode-copy">
+              <strong>Single encrypted file</strong>
+              <span>All projects in one passphrase-protected file. Best for cloud folders and Google Drive.</span>
+            </span>
+          </label>
+          <label class="sync-mode-option" class:selected={syncMode === "open-folder"}>
+            <input
+              type="radio"
+              name="sync-method"
+              value="open-folder"
+              checked={syncMode === "open-folder"}
+              onchange={() => setSyncMode("open-folder")}
+              disabled={syncBusy}
+            />
+            <span class="sync-mode-copy">
+              <strong>Open folder</strong>
+              <span>Plain Markdown and JSON, one folder per project. Not encrypted.</span>
+            </span>
+          </label>
+          {#if syncMode === "encrypted-folder"}
+            <label class="sync-mode-option selected">
+              <input
+                type="radio"
+                name="sync-method"
+                value="encrypted-folder"
+                checked
+                onchange={() => setSyncMode("encrypted-folder")}
+                disabled={syncBusy}
+              />
+              <span class="sync-mode-copy">
+                <strong>Encrypted folder (existing layout)</strong>
+                <span>One encrypted file per project record. Keeps existing sync folders working.</span>
+              </span>
+            </label>
           {/if}
+        </div>
+        {#if syncMode === "open-folder"}
+          <p class="data-warning">This sync location is not encrypted. Anyone with access to it can read and edit your writing. Delete scenes in ProseCraft rather than removing their files.</p>
+        {:else if syncMode === "encrypted-file"}
+          <p class="data-help">Writes one <code>prosecraft-sync.prosecraft</code> file. Projects are encrypted with your passphrase before they are written.</p>
+        {:else}
+          <p class="data-help">Writes <code>vault.json</code> and one encrypted file per project record.</p>
+        {/if}
+        {#if syncProviderType === "folder"}
           <div class="sync-folder-row">
             <span class="sync-folder-path" title={syncFolder}>{syncFolder || "No folder chosen"}</span>
             <button type="button" class="data-button" onclick={chooseSyncFolder} disabled={syncBusy}>Choose folder…</button>
@@ -5497,12 +6657,75 @@
               >
                 {syncBusy ? "Syncing…" : "Sync now"}
               </button>
-              <button type="button" class="data-button" onclick={forgetSyncFolder} disabled={syncBusy}>Forget folder</button>
+              <button type="button" class="data-button" onclick={forgetSyncSettings} disabled={syncBusy}>Forget folder</button>
             </div>
           {/if}
-          {#if syncStatus}<p class="data-status" role="status">{syncStatus}</p>{/if}
-        </div>
-      {/if}
+        {:else}
+          <div class="google-drive-config">
+            {#if googleDriveConfigured}
+              <p class="google-drive-status">
+                {googleDriveAuthenticated
+                  ? `Connected as ${googleDriveEmail || "your Google account"}`
+                  : "Google Drive is connected. The access token will be refreshed when you sync."}
+              </p>
+            {:else if googleDriveCodeVerifier}
+              <p class="data-help">Paste the authorization code (or the full redirect URL) from your browser below:</p>
+              <input
+                class="preference-select"
+                type="text"
+                aria-label="Authorization code"
+                placeholder="Paste authorization code here"
+                bind:value={googleDriveAuthCode}
+                disabled={syncBusy}
+              />
+              <div class="data-actions">
+                <button type="button" class="data-button" onclick={exchangeAuthCode} disabled={syncBusy || !googleDriveAuthCode}>
+                  Complete connection
+                </button>
+                <button type="button" class="data-button" onclick={cancelGoogleDriveAuth} disabled={syncBusy}>
+                  Cancel
+                </button>
+              </div>
+            {:else if googleDriveAuthorizing}
+              <p class="data-help">Finish approving access in your browser. This window will update automatically.</p>
+              <div class="data-actions">
+                <button type="button" class="data-button" onclick={cancelGoogleDriveAuth}>
+                  Cancel
+                </button>
+              </div>
+            {:else}
+              <div class="data-actions">
+                <button type="button" class="data-button" onclick={connectGoogleDrive} disabled={syncBusy}>Connect to Google Drive</button>
+              </div>
+            {/if}
+          </div>
+          {#if googleDriveConfigured}
+            {#if syncMode !== "open-folder"}
+              <input
+                class="preference-select passphrase-input"
+                type="password"
+                aria-label="Sync passphrase"
+                placeholder="Sync passphrase"
+                autocomplete="current-password"
+                bind:value={syncPassphrase}
+                disabled={syncBusy}
+              />
+            {/if}
+            <div class="data-actions">
+              <button
+                type="button"
+                class="data-button"
+                onclick={runSync}
+                disabled={syncBusy || (syncMode !== "open-folder" && syncPassphrase.length < 8)}
+              >
+                {syncBusy ? "Syncing…" : "Sync now"}
+              </button>
+              <button type="button" class="data-button" onclick={disconnectGoogleDrive} disabled={syncBusy}>Disconnect Google Drive</button>
+            </div>
+          {/if}
+        {/if}
+        {#if syncStatus}<p class="data-status" role="status">{syncStatus}</p>{/if}
+      </div>
       <div class="data-group">
         <span class="data-group-label">Wiki files</span>
         {#if desktopRuntime}
@@ -5561,7 +6784,7 @@
         <span class="settings-kicker">PROSECRAFT</span>
         <h2>{passphraseMode === "export" ? "Encrypt backup" : "Unlock backup"}</h2>
       </div>
-      <button class="close-settings" aria-label="Close passphrase dialog" type="button" disabled={passphraseBusy} onclick={() => passphraseDialog.close()}>×</button>
+      <button class="close-settings" aria-label="Close passphrase dialog" type="button" disabled={passphraseBusy} onclick={() => passphraseDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
@@ -5619,7 +6842,7 @@
   <form onsubmit={saveProjectSettings}>
     <div class="settings-header">
       <div><span class="settings-kicker">PROSECRAFT</span><h2>Project Settings</h2></div>
-      <button class="close-settings" aria-label="Close project settings" type="button" onclick={() => projectSettingsDialog.close()}>×</button>
+      <button class="close-settings" aria-label="Close project settings" type="button" onclick={() => projectSettingsDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
@@ -5691,13 +6914,56 @@
   </div>
 </dialog>
 
+<dialog class="settings-dialog snapshots-dialog" bind:this={snapshotsDialog} onclick={(event) => {
+  if (event.target === snapshotsDialog) snapshotsDialog.close();
+}}>
+  <div class="settings-header">
+    <div><span class="settings-kicker">SCENE</span><h2>Snapshots</h2></div>
+    <button class="close-settings" aria-label="Close snapshots" type="button" onclick={() => snapshotsDialog.close()}><X size={15} aria-hidden="true" /></button>
+  </div>
+  <div class="settings-body">
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Save this version</strong><span>Keeps a copy of “{title || "Untitled"}” as it is now. Up to ten are kept per scene.</span></div>
+      <form class="snapshot-form" onsubmit={takeSnapshot}>
+        <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" bind:value={snapshotNote} aria-label="Snapshot note" />
+        <button class="data-button" type="submit">Take snapshot</button>
+      </form>
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Earlier versions</strong><span>Restoring first saves the current text, so you can go back.</span></div>
+      {#if activeSnapshots.length === 0}
+        <p class="data-help">No snapshots of this scene yet.</p>
+      {:else}
+        <ul class="snapshot-list">
+          {#each activeSnapshots as snapshot (snapshot.id)}
+            <li class="snapshot-item">
+              <div class="snapshot-meta">
+                <strong>{snapshotLabel(snapshot)}</strong>
+                <span>{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+              </div>
+              <div class="snapshot-actions">
+                <button class="data-button" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
+                <button class="data-button" type="button" onclick={() => restoreSnapshot(snapshot.id)}>Restore</button>
+                <button class="data-button danger-button" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
+              </div>
+              {#if snapshotPreviewId === snapshot.id}
+                <div class="snapshot-preview">{@html cleanHtml(snapshot.content)}</div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  </div>
+</dialog>
+
 <dialog class="settings-dialog research-link-dialog" bind:this={researchLinkDialog} onclick={(event) => {
   if (event.target === researchLinkDialog) researchLinkDialog.close();
 }}>
   <form onsubmit={saveResearchLink}>
     <div class="settings-header">
       <div><span class="settings-kicker">WIKI</span><h2>Add web link</h2></div>
-      <button class="close-settings" aria-label="Close link dialog" type="button" onclick={() => researchLinkDialog.close()}>×</button>
+      <button class="close-settings" aria-label="Close link dialog" type="button" onclick={() => researchLinkDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
@@ -5746,7 +7012,7 @@
         <span class="settings-kicker">{richDialogKind === "diagram" ? "DIAGRAM" : "EQUATION"}</span>
         <h2>{richEditTarget ? "Edit" : "Insert"} {richDialogKind === "diagram" ? "diagram" : "equation"}</h2>
       </div>
-      <button class="close-settings" aria-label="Close equation and diagram editor" type="button" onclick={closeRichDialog}>×</button>
+      <button class="close-settings" aria-label="Close equation and diagram editor" type="button" onclick={closeRichDialog}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body rich-dialog-body">
       {#if richDialogKind === "math"}
@@ -6059,7 +7325,7 @@
   .chapter-action:disabled { opacity: .18; cursor: default; }
   .chapter-name-input { min-width: 0; flex: 1; padding: 2px 3px; border: 1px solid var(--border-control); border-radius: 3px; background: var(--control-bg); color: var(--text-primary); font-size: 10px; }
   .chapter-name-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .chevron { display: inline-block; width: 11px; color: var(--text-faint); font-size: 17px; line-height: 1; transform: rotate(0deg); transition: transform .12s ease; }
+  .chevron { display: inline-block; width: 14px; flex: 0 0 auto; color: var(--text-faint); font-size: 17px; line-height: 1; transform: rotate(0deg); transition: transform .12s ease; }
   .chevron.rotated { transform: rotate(90deg); }
   .folder-icon { width: 15px; height: 15px; flex: 0 0 auto; color: var(--text-muted); }
   .tree-name { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
@@ -6109,7 +7375,6 @@
   .sidebar-footer { flex: 0 0 auto; padding-top: 8px; }
   .settings-button { display: flex; width: 100%; height: 34px; align-items: center; gap: 9px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; font-size: 10px; }
   .settings-button:hover { background: var(--hover-bg); color: var(--text-primary); }
-  .settings-button svg { width: 15px; height: 15px; flex: 0 0 auto; }
   .sync-status { display: flex; align-items: center; gap: 7px; padding: 0 8px 13px; color: var(--text-muted); font-size: 10px; }
   .sync-dot, .save-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
@@ -6172,12 +7437,17 @@
   .main-panel { display: flex; min-width: 0; min-height: 100vh; flex: 1; flex-direction: column; margin-right: 286px; margin-left: 258px; transition: margin .18s ease; }
   .main-panel.left-hidden { margin-left: 0; }
   .main-panel.right-hidden { margin-right: 0; }
+  .storage-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-control); background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
+  .storage-banner-message { min-width: 0; }
+  .storage-banner-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+  .storage-banner-dismiss { width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; line-height: 1; }
+  .storage-banner-dismiss:hover { background: var(--hover-bg); color: var(--text-heading); }
+  .storage-warning { color: var(--danger); }
   .save-indicator { display: flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 10px; }
   .save-dot.unsaved { background: var(--warning); }
-  .export-button svg { width: 16px; height: 16px; }
   .export-button { display: flex; height: 30px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 11px; }
   .export-button:hover { background: var(--control-hover); }
-  .writing-area { display: flex; flex: 1; flex-direction: column; align-items: center; padding: 15px 32px 44px; }
+  .writing-area { display: flex; flex: 1; flex-direction: column; align-items: center; padding: 15px 32px 44px; container: writing-area / inline-size; }
   .workspace-controls {
     position: sticky;
     top: 0;
@@ -6198,11 +7468,26 @@
   .workspace-mode.active { background: var(--selected-bg); color: var(--selected-text); font-weight: 600; }
   .panel-toggle { display: inline-flex; height: 28px; align-items: center; gap: 6px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; }
   .panel-toggle:hover { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
-  .panel-toggle svg { width: 15px; height: 15px; }
   .editor-panel { display: flex; width: 100%; justify-content: center; }
   .editor-panel.typewriter-mode { padding-bottom: 50vh; }
   .editor-panel-hidden { display: none; }
   .editor-column { position: relative; width: min(100%, 690px); }
+  .editor-panel.split-open { align-items: flex-start; justify-content: flex-start; gap: 8px; }
+  /* The editor gives up width first (down to 360px); the panes then share what is left and scroll sideways. */
+  .editor-panel.split-open .editor-column { width: auto; min-width: 360px; flex: 0 1 var(--split-editor-basis); }
+  .editor-panel.split-open .toolbar { flex-wrap: wrap; }
+  .split-resizer { position: relative; z-index: 1; width: 8px; min-width: 8px; align-self: stretch; padding: 0; border: 0; background: transparent; cursor: col-resize; touch-action: none; }
+  .split-resizer::after { position: absolute; inset: 0 3px; border-radius: 3px; background: var(--border); content: ""; opacity: 0; transition: opacity .12s; }
+  .split-resizer:hover::after, .split-resizer:focus-visible::after, .split-resizer:active::after { opacity: 1; }
+  .split-resizer:focus-visible { outline: none; }
+  .split-panes { position: sticky; top: 64px; display: flex; min-width: 0; flex: 1 1 calc(var(--panes) * 300px + (var(--panes) - 1) * 14px); gap: 14px; overflow-x: auto; }
+  .panel-toggle.active { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
+  @container writing-area (max-width: 700px) {
+    .editor-panel.split-open { flex-direction: column; align-items: center; }
+    .editor-panel.split-open .editor-column { width: min(100%, 690px); flex: none; }
+    .split-resizer { display: none; }
+    .split-panes { position: static; width: min(100%, 690px); flex: none; flex-direction: column; overflow: visible; }
+  }
   .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
   .document-meta { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 10px; }
   .document-type { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 650; letter-spacing: .8px; }
@@ -6215,7 +7500,6 @@
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
   .tool-button:hover { background: var(--toolbar-hover); color: var(--selected-text); }
-  .tool-button svg { width: 16px; height: 16px; }
   .italic { font-family: Georgia, serif; font-style: italic; }
   .underline { text-decoration: underline; text-underline-offset: 2px; }
   .strike { text-decoration: line-through; }
@@ -6224,7 +7508,6 @@
   .image-insert-button { margin-left: auto; }
   .document-meta .markdown-mode-toggle + .image-insert-button { margin-left: 0; }
   .image-tool-button { font-size: 17px; }
-  .math-tool-mark { font-family: Georgia, serif; font-size: 16px; line-height: 1; }
   .image-insert-error { margin: 8px 0 0; color: var(--danger, #b42318); font-size: 11px; }
   .image-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 12px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
   .image-edit-label { margin: 0 4px; color: var(--text-muted); font-size: 10px; }
@@ -6307,7 +7590,6 @@
   .source-add { font-size: 16px; }
   .source-drag-handle:hover, .source-add:hover { background: var(--selected-bg); color: var(--selected-text); }
   .source-name { overflow: hidden; min-width: 0; flex: 1; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-  .source-icon { width: 14px; flex: 0 0 auto; color: var(--eyebrow); font-family: Georgia, serif; text-align: center; }
   .board-source-empty { margin: 5px 3px; color: var(--text-muted); font-size: 9px; }
   .storyboard-canvas { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; padding: 18px 20px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
   .storyboard-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid var(--border-soft); }
@@ -6320,7 +7602,6 @@
   .drawing-tool, .drawing-delete { display: inline-flex; min-height: 28px; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
   .drawing-tool { min-width: 54px; }
   .drawing-tool.active { border-color: var(--accent); background: var(--selected-bg); color: var(--selected-text); }
-  .drawing-tool-glyph { font-size: 13px; font-weight: 600; }
   .drawing-font-size { display: inline-flex; min-height: 28px; align-items: center; gap: 6px; padding: 0 7px; color: var(--text-muted); font-size: 9px; }
   .drawing-font-size input { width: 90px; accent-color: var(--accent); }
   .drawing-font-size output { min-width: 24px; color: var(--text-nav); font-variant-numeric: tabular-nums; }
@@ -6452,6 +7733,15 @@
   .comment-meta { color: var(--text-muted); font-size: 10px; }
   .comment-actions { display: flex; gap: 6px; }
   .comment-resolved-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 10px; }
+  .snapshot-form { display: flex; gap: 8px; }
+  .snapshot-form input { min-width: 0; flex: 1; }
+  .snapshot-list { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 10px; list-style: none; }
+  .snapshot-item { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .snapshot-meta { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+  .snapshot-meta span { color: var(--text-muted); }
+  .snapshot-actions { display: flex; margin-top: 8px; gap: 6px; }
+  .snapshot-preview { max-height: 200px; overflow: auto; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; line-height: 1.6; }
+  .snapshot-preview :global(img) { max-width: 100%; }
   .data-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .data-file-input { display: none; }
   .data-status { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; }
@@ -6468,6 +7758,11 @@
   .sync-mode-copy span { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
   .data-warning { margin: 0 0 8px; color: var(--danger); font-size: 10px; line-height: 1.5; }
   .sync-folder-path { flex: 1; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .sync-provider-selector { display: flex; gap: 16px; margin-bottom: 12px; }
+  .sync-provider-selector label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-primary); cursor: pointer; }
+  .sync-provider-selector input[type="radio"] { margin: 0; }
+  .google-drive-config { margin-bottom: 8px; }
+  .google-drive-status { color: var(--text-muted); font-size: 10px; margin-bottom: 8px; }
   .passphrase-input { margin-bottom: 8px; }
   .passphrase-input:last-of-type { margin-bottom: 0; }
   .passphrase-hint-note { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
@@ -6542,6 +7837,7 @@
     pointer-events: none;
   }
   .app-shell.zen-hidden .main-panel { margin-right: 0; margin-left: 0; }
+  .app-shell.zen-hidden .split-panes,
   .app-shell.zen-hidden .workspace-controls,
   .app-shell.zen-hidden .document-meta,
   .app-shell.zen-hidden .title-input,

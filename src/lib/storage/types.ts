@@ -26,6 +26,16 @@ export type TextComment = {
   createdAt: number;
   resolved: boolean;
 };
+/** A saved copy of one document's text. `before-restore` ones are made automatically so a restore can be undone. */
+export type DocumentSnapshot = {
+  id: string;
+  documentId: string;
+  createdAt: number;
+  title: string;
+  content: string;
+  note?: string;
+  reason: "manual" | "before-restore";
+};
 export type StoryboardKind = "chapter" | "scene" | "blank" | SpaceName;
 export type StoryboardRow = { id: string; title: string };
 export type StoryboardCard = {
@@ -110,6 +120,8 @@ export type ProjectData = {
   publishOptions?: PublishOptions;
   /** Notes on passages of text, for example from a co-author, a proofreader or an agent. */
   comments?: TextComment[];
+  /** Saved earlier versions of document text, newest per document capped by `MAX_SNAPSHOTS_PER_DOCUMENT`. */
+  snapshots?: DocumentSnapshot[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */
