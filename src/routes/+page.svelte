@@ -29,6 +29,14 @@
     type SplitGroup,
     type SplitPaneState
   } from "$lib/split";
+  import {
+    addSnapshot,
+    createSnapshot,
+    dropOrphanSnapshots,
+    normalizeSnapshots,
+    removeSnapshot,
+    snapshotsForDocument
+  } from "$lib/snapshots";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -143,6 +151,7 @@
   import type { SyncMode, SyncProvider, SyncStamp } from "$lib/storage/sync/types";
   import type {
     ActivityRecord,
+    DocumentSnapshot,
     ProjectData,
     StoryboardCard,
     StoryboardDrawing,
@@ -359,6 +368,10 @@
   let researchFolders = $state<BinderFolder[]>([]);
   let researchItems = $state<ResearchItem[]>([]);
   let splitPanes = $state<SplitPaneState[]>([]);
+  let snapshots = $state<DocumentSnapshot[]>([]);
+  let snapshotsDialog: HTMLDialogElement;
+  let snapshotNote = $state("");
+  let snapshotPreviewId = $state<string | null>(null);
   let expandedResearchFolders = $state<Record<string, boolean>>({});
   let researchStatus = $state("");
   let researchSettingsStatus = $state("");
@@ -683,7 +696,8 @@
       researchFolderName,
       researchFolders,
       researchItems,
-      publishOptions
+      publishOptions,
+      snapshots: dropOrphanSnapshots(snapshots, new Set(documents.map((doc) => doc.id)))
     };
   }
 
@@ -783,6 +797,8 @@
     researchFolderNameDraft = "";
     const researchFolderIds = new Set(researchFolders.map((folder) => folder.id));
     researchItems = normalizeResearchItems(project.researchItems, researchFolderIds);
+    snapshots = normalizeSnapshots(project.snapshots);
+    snapshotPreviewId = null;
     documents = project.documents.map((doc) => {
       if (doc.space !== "Wiki" || !doc.folderId) return doc;
       if (researchFolderIds.has(doc.folderId)) return doc;
@@ -2887,6 +2903,72 @@
     saveState = "Saving…";
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(persistNow, 350);
+  }
+
+  const activeSnapshots = $derived(snapshotsForDocument(snapshots, activeDocumentId));
+
+  function openSnapshots() {
+    if (!activeDocumentId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    snapshotNote = "";
+    snapshotPreviewId = null;
+    snapshotsDialog.showModal();
+  }
+
+  function takeSnapshot(event: SubmitEvent) {
+    event.preventDefault();
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const current = documents.find((doc) => doc.id === activeDocumentId);
+    if (!current) return;
+    snapshots = addSnapshot(snapshots, createSnapshot(current, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "manual",
+      note: snapshotNote
+    }));
+    snapshotNote = "";
+    persistNow();
+  }
+
+  function restoreSnapshot(id: string) {
+    const snapshot = snapshots.find((entry) => entry.id === id);
+    if (!snapshot || snapshot.documentId !== activeDocumentId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const current = documents.find((doc) => doc.id === snapshot.documentId);
+    if (!current) return;
+    // Keep what is being replaced, so a restore can itself be undone.
+    snapshots = addSnapshot(snapshots, createSnapshot(current, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "before-restore"
+    }));
+    const restored = cleanHtml(snapshot.content);
+    documents = documents.map((doc) => {
+      if (doc.id !== snapshot.documentId) return doc;
+      const { markdownSource: _discarded, ...rest } = doc;
+      return { ...rest, content: restored };
+    });
+    setEditorContent(restored);
+    setMarkdownSource(htmlToMarkdown(restored));
+    refreshCounts();
+    lastEditorWordCount = wordCount;
+    snapshotPreviewId = null;
+    persistNow();
+    snapshotsDialog.close();
+  }
+
+  function deleteSnapshot(id: string) {
+    snapshots = removeSnapshot(snapshots, id);
+    if (snapshotPreviewId === id) snapshotPreviewId = null;
+    persistNow();
+  }
+
+  function snapshotLabel(snapshot: DocumentSnapshot): string {
+    const when = new Date(snapshot.createdAt).toLocaleString();
+    return snapshot.reason === "before-restore" ? `${when} (before a restore)` : when;
   }
 
   function openDocument(id: string) {
@@ -5158,6 +5240,7 @@
           <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <span class="toolbar-divider"></span>
           <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.3" width="14.4" height="13.4" rx="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.4" r="1.4" stroke="currentColor" stroke-width="1.2"/><path d="m4.2 14.8 4-4 2.5 2.5 2-2 3.1 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="6.6" stroke="currentColor" stroke-width="1.3"/><path d="M10 6.4V10l2.6 1.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><span aria-hidden="true" class="math-tool-mark">Σ</span></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.2" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="11.6" y="12.6" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M8.4 5.3h1.8a2 2 0 0 1 2 2v5.3m0 0-1.8-1.8m1.8 1.8 1.8-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
@@ -6109,6 +6192,49 @@
   </form>
 </dialog>
 
+<dialog class="settings-dialog snapshots-dialog" bind:this={snapshotsDialog} onclick={(event) => {
+  if (event.target === snapshotsDialog) snapshotsDialog.close();
+}}>
+  <div class="settings-header">
+    <div><span class="settings-kicker">SCENE</span><h2>Snapshots</h2></div>
+    <button class="close-settings" aria-label="Close snapshots" type="button" onclick={() => snapshotsDialog.close()}>×</button>
+  </div>
+  <div class="settings-body">
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Save this version</strong><span>Keeps a copy of “{title || "Untitled"}” as it is now. Up to ten are kept per scene.</span></div>
+      <form class="snapshot-form" onsubmit={takeSnapshot}>
+        <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" bind:value={snapshotNote} aria-label="Snapshot note" />
+        <button class="data-button" type="submit">Take snapshot</button>
+      </form>
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Earlier versions</strong><span>Restoring first saves the current text, so you can go back.</span></div>
+      {#if activeSnapshots.length === 0}
+        <p class="data-help">No snapshots of this scene yet.</p>
+      {:else}
+        <ul class="snapshot-list">
+          {#each activeSnapshots as snapshot (snapshot.id)}
+            <li class="snapshot-item">
+              <div class="snapshot-meta">
+                <strong>{snapshotLabel(snapshot)}</strong>
+                <span>{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+              </div>
+              <div class="snapshot-actions">
+                <button class="data-button" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
+                <button class="data-button" type="button" onclick={() => restoreSnapshot(snapshot.id)}>Restore</button>
+                <button class="data-button danger-button" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
+              </div>
+              {#if snapshotPreviewId === snapshot.id}
+                <div class="snapshot-preview">{@html cleanHtml(snapshot.content)}</div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  </div>
+</dialog>
+
 <dialog class="settings-dialog research-link-dialog" bind:this={researchLinkDialog} onclick={(event) => {
   if (event.target === researchLinkDialog) researchLinkDialog.close();
 }}>
@@ -6872,6 +6998,17 @@
   .data-group-label { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; }
   .data-button { height: 32px; padding: 0 13px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 11px; }
   .data-button:hover { border-color: var(--accent); color: var(--text-heading); }
+  .danger-button { color: var(--danger); }
+  .danger-button:hover { border-color: var(--danger); color: var(--danger); }
+  .snapshot-form { display: flex; gap: 8px; }
+  .snapshot-form input { min-width: 0; flex: 1; }
+  .snapshot-list { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 10px; list-style: none; }
+  .snapshot-item { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .snapshot-meta { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+  .snapshot-meta span { color: var(--text-muted); }
+  .snapshot-actions { display: flex; margin-top: 8px; gap: 6px; }
+  .snapshot-preview { max-height: 200px; overflow: auto; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; line-height: 1.6; }
+  .snapshot-preview :global(img) { max-width: 100%; }
   .data-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .data-file-input { display: none; }
   .data-status { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; }

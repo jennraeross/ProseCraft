@@ -67,6 +67,7 @@ the release once they succeed.
 - [x] Focus mode
 - [x] Zen mode
 - [x] Split view (the editor plus up to four read-only reference panes)
+- [x] Snapshots of a scene (save, preview and restore earlier versions)
 - [x] LaTeX math (MathJax)
 - [x] Mermaid
 - [ ] MathCAD
