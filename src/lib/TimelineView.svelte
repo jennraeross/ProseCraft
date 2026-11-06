@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { ArrowDown, ArrowUp, CalendarClock, GripVertical, Plus, X } from "@lucide/svelte";
   import { autoResize } from "./auto-resize";
   import {
     TIMELINE_DESCRIPTION_LIMIT,
@@ -114,16 +115,16 @@
       <span class="timeline-count">
         {nodes.length} {nodes.length === 1 ? "moment" : "moments"}
       </span>
-      <button class="timeline-add" type="button" onclick={addNode}>+ Add moment</button>
+      <button class="timeline-add" type="button" onclick={addNode}><Plus size={14} aria-hidden="true" /> Add moment</button>
     </div>
   </header>
 
   {#if nodes.length === 0}
     <div class="timeline-empty">
-      <span class="timeline-empty-mark" aria-hidden="true">◷</span>
+      <CalendarClock size={34} strokeWidth={1.4} color="var(--eyebrow)" aria-hidden="true" />
       <h2>No moments yet</h2>
       <p>Add your first event to begin charting the sequence of your story.</p>
-      <button class="timeline-add" type="button" onclick={addNode}>+ Add moment</button>
+      <button class="timeline-add" type="button" onclick={addNode}><Plus size={14} aria-hidden="true" /> Add moment</button>
     </div>
   {:else}
     <div class="timeline-list">
@@ -148,10 +149,11 @@
               onpointerup={finishDrag}
               onpointercancel={cancelDrag}
               onlostpointercapture={cancelDrag}
-            >⠿</button>
+            ><GripVertical size={15} aria-hidden="true" /></button>
             <input
               bind:this={titleInputs[node.id]}
               class="timeline-title"
+              data-undo-key={`timeline-title:${node.id}`}
               aria-label="Title for timeline moment {index + 1}"
               placeholder="What happens here?"
               maxlength={TIMELINE_TITLE_LIMIT}
@@ -166,7 +168,7 @@
                 title="Move earlier"
                 disabled={index === 0}
                 onclick={() => onMove(node.id, -1)}
-              >↑</button>
+              ><ArrowUp size={14} aria-hidden="true" /></button>
               <button
                 class="timeline-action"
                 type="button"
@@ -174,14 +176,14 @@
                 title="Move later"
                 disabled={index === nodes.length - 1}
                 onclick={() => onMove(node.id, 1)}
-              >↓</button>
+              ><ArrowDown size={14} aria-hidden="true" /></button>
               <button
                 class="timeline-remove"
                 type="button"
                 aria-label="Remove {nodeLabel(node, index)}"
                 title="Remove moment"
                 onclick={() => onRemove(node.id)}
-              >×</button>
+              ><X size={14} aria-hidden="true" /></button>
             </div>
           </div>
           <div class="timeline-when">
@@ -190,6 +192,7 @@
               <input
                 type="text"
                 aria-label="Date for {nodeLabel(node, index)}"
+                data-undo-key={`timeline-date:${node.id}`}
                 placeholder="Day 12, Third Age, 14 May 1842…"
                 maxlength={TIMELINE_WHEN_LIMIT}
                 value={node.date}
@@ -201,6 +204,7 @@
               <input
                 type="text"
                 aria-label="Time for {nodeLabel(node, index)}"
+                data-undo-key={`timeline-time:${node.id}`}
                 placeholder="4:30 PM, dawn, midnight…"
                 maxlength={TIMELINE_WHEN_LIMIT}
                 value={node.time}
@@ -210,6 +214,7 @@
           </div>
           <textarea
             class="timeline-description"
+            data-undo-key={`timeline-description:${node.id}`}
             aria-label="Description for {nodeLabel(node, index)}"
             placeholder="Describe the moment, who is involved, and what changes…"
             maxlength={TIMELINE_DESCRIPTION_LIMIT}
@@ -221,7 +226,7 @@
       {/each}
     </div>
     <button class="timeline-add-card" type="button" onclick={addNode}>
-      <span class="timeline-add-symbol" aria-hidden="true">+</span>
+      <span class="timeline-add-symbol"><Plus size={17} aria-hidden="true" /></span>
       <span><strong>Add moment</strong><small>Place another event on your timeline.</small></span>
     </button>
   {/if}
@@ -270,7 +275,6 @@
   .timeline-add-card strong { display: block; color: var(--text-nav); font-size: 10px; font-weight: 600; }
   .timeline-add-card small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 8px; }
   .timeline-empty { display: flex; min-height: 310px; align-items: center; flex-direction: column; justify-content: center; gap: 6px; padding: 30px; border: 1px dashed var(--border-control); border-radius: 10px; background: var(--surface); text-align: center; }
-  .timeline-empty-mark { color: var(--eyebrow); font-size: 32px; line-height: 1; }
   .timeline-empty h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 21px; font-weight: 500; }
   .timeline-empty p { margin: 0 0 8px; color: var(--text-muted); font-size: 10px; }
   .timeline-add:focus-visible, .timeline-add-card:focus-visible, .timeline-drag:focus-visible, .timeline-action:focus-visible, .timeline-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

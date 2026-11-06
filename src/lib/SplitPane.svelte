@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Plus, X } from "@lucide/svelte";
   import { markdownToHtml } from "$lib/publish/markdown";
   import type { DocumentData, ResearchFile } from "$lib/publish/types";
   import PdfView from "$lib/PdfView.svelte";
@@ -117,8 +118,8 @@
         </optgroup>
       {/each}
     </select>
-    <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to four reference panes"} disabled={!canAdd} onclick={onAdd}>+</button>
-    <button class="split-button" type="button" aria-label="Close this pane" title="Close this pane" onclick={onClose}>×</button>
+    <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to four reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Close this pane" title="Close this pane" onclick={onClose}><X size={14} aria-hidden="true" /></button>
   </div>
   <div class="split-pane-body">
     {#if document}
