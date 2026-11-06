@@ -220,6 +220,34 @@ main {
   text-align: center;
 }
 
+.legal {
+  max-width: 760px;
+  padding-top: 40px;
+}
+
+.legal .eyebrow {
+  margin-bottom: 10px;
+}
+
+.legal h1 {
+  font-size: clamp(38px, 6vw, 56px);
+  line-height: 1.1;
+}
+
+.legal h2 {
+  margin-top: 34px;
+  font-size: 23px;
+}
+
+.legal p {
+  margin: 14px 0 0;
+}
+
+.legal-updated {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .features {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
