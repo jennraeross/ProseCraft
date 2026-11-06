@@ -89,9 +89,13 @@
     createBundleText,
     createEncryptedBundleText,
     currentDeviceId,
+    flushVaultStorage,
     importBundleText,
     importEncryptedBundleText,
+    initVaultStorage,
+    isQuotaExceededError,
     loadVault,
+    onVaultStorageError,
     readStoredProjectRecords,
     saveVault,
     writeStored
@@ -256,6 +260,9 @@
   let lastEditorWordCount = 0;
   let title = $state("The shape of a first draft");
   let saveState = $state("All changes saved");
+  let storageError = $state("");
+  let storageUsage = $state<{ usage: number; quota: number } | null>(null);
+  let saveSequence = 0;
   let themePreference = $state<ThemePreference>("system");
   let resolvedTheme = $state<"light" | "dark">("light");
   let colorScheme = $state<ColorScheme>("prosecraft");
@@ -673,8 +680,64 @@
     projects = currentIndex < 0
       ? [...projects, current]
       : projects.map((project) => project.id === activeProjectId ? current : project);
-    saveVault(projects, activeProjectId);
-    void syncNativeProjectMenu();
+    try {
+      saveVault(projects, activeProjectId);
+      void syncNativeProjectMenu();
+      scheduleSaveState();
+    } catch (error) {
+      handleStorageError(error);
+    }
+  }
+
+  function handleStorageError(error: unknown) {
+    console.error("Could not save changes.", error);
+    saveState = "Could not save changes";
+    storageError = isQuotaExceededError(error)
+      ? "Storage is full. Export a backup now, then remove large images or projects."
+      : "Could not save changes to this device. Export a backup to avoid losing work.";
+  }
+
+  function scheduleSaveState() {
+    const sequence = ++saveSequence;
+    saveState = "Saving…";
+    void flushVaultStorage()
+      .then(() => {
+        if (sequence !== saveSequence) return;
+        saveState = "All changes saved";
+        storageError = "";
+        void refreshStorageUsage();
+      })
+      .catch((error) => {
+        if (sequence !== saveSequence) return;
+        handleStorageError(error);
+      });
+  }
+
+  async function refreshStorageUsage() {
+    try {
+      const estimate = await navigator.storage?.estimate?.();
+      if (estimate && typeof estimate.usage === "number") {
+        storageUsage = { usage: estimate.usage, quota: estimate.quota ?? 0 };
+      }
+    } catch {
+      // Storage estimates are best-effort.
+    }
+  }
+
+  function formatStorageBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
+  function storageUsageText(): string {
+    if (!storageUsage) return "Storage usage is unavailable.";
+    const used = formatStorageBytes(storageUsage.usage);
+    if (storageUsage.quota > 0) {
+      return `${used} used of ${formatStorageBytes(storageUsage.quota)} available.`;
+    }
+    return `${used} used.`;
   }
 
   async function syncNativeProjectMenu() {
@@ -1289,6 +1352,7 @@
     showZenInterface();
     if (settingsDialog && !settingsDialog.open) settingsDialog.showModal();
     void ensureSystemFonts();
+    void refreshStorageUsage();
   }
 
   function openProjectSettings() {
@@ -1392,6 +1456,11 @@
     try {
       if (saveTimer) clearTimeout(saveTimer);
       persistNow();
+      try {
+        await flushVaultStorage();
+      } catch (error) {
+        handleStorageError(error);
+      }
       const text = createBundleText();
       const result = await saveExport({
         blob: new Blob([text], { type: "application/json" }),
@@ -1430,7 +1499,7 @@
       if (encrypted) {
         openEncryptedImport(text);
       } else {
-        importBackupText(text);
+        await importBackupText(text);
       }
     } catch (error) {
       console.error("Could not import a backup.", error);
@@ -1498,6 +1567,7 @@
       projects = [...projects, project];
       loadProject(project);
       saveVault(projects, project.id);
+      await flushVaultStorage();
       void syncNativeProjectMenu();
       const images = manuscript.skippedImages;
       dataStatus = `Imported “${project.name}” — ${project.chapters.length} chapter(s), `
@@ -1518,16 +1588,16 @@
     input.value = "";
     if (!file) return;
     try {
-      importBackupText(await file.text());
+      await importBackupText(await file.text());
     } catch (error) {
       console.error("Could not read a backup.", error);
       dataStatus = "Could not read that backup.";
     }
   }
 
-  function importBackupText(text: string) {
+  async function importBackupText(text: string) {
     try {
-      const result = importBundleText(text);
+      const result = await importBundleText(text);
       dataStatus = `Imported ${result.imported} of ${result.total} project(s). Reloading…`;
       setTimeout(() => location.reload(), 400);
     } catch (error) {
@@ -1593,6 +1663,11 @@
       if (passphraseMode === "export") {
         if (saveTimer) clearTimeout(saveTimer);
         persistNow();
+        try {
+          await flushVaultStorage();
+        } catch (error) {
+          handleStorageError(error);
+        }
         const text = await createEncryptedBundleText(passphrase, passphraseHint.trim() || undefined);
         const result = await saveExport({
           blob: new Blob([text], { type: "application/json" }),
@@ -1981,6 +2056,7 @@
         ? activeProjectId
         : (result.projects[0]?.id ?? "");
       writeStored(result.projects, nextActiveId);
+      await flushVaultStorage();
       projects = result.projects.map((stored) => stored.project);
       const selected = projects.find((project) => project.id === nextActiveId);
       if (selected) {
@@ -2790,12 +2866,7 @@
     documents = documents.map((doc) => doc.id === activeDocumentId
       ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
       : doc);
-    try {
-      persistProjectCollection();
-      saveState = "All changes saved";
-    } catch {
-      saveState = "Could not save changes";
-    }
+    persistProjectCollection();
   }
 
   function persist() {
@@ -4288,98 +4359,105 @@
     void syncFadeParagraphsMenu(fadeOtherParagraphs);
     void syncZenModeMenu(zenMode);
 
+    void initializeVault();
+  });
+
+  async function initializeVault() {
     try {
+      await initVaultStorage();
       let loadedProject = false;
       const vault = loadVault();
       if (vault && vault.projects.length > 0) {
         projects = vault.projects;
         const selectedProject = projects.find((project) =>
           project.id === vault.activeProjectId && !project.trashed
-        ) ?? projects.find((project) => !project.trashed);
+        ) ?? projects.find((project) => !project.trashed)
+          ?? projects.find((project) => project.id === vault.activeProjectId)
+          ?? projects[0];
         if (selectedProject) {
           loadProject(selectedProject);
           loadedProject = true;
         }
       }
       if (!loadedProject) {
-      storyboardRows = [{ id: crypto.randomUUID(), title: "Timeline" }];
-      const storedDocuments = localStorage.getItem(storageKey);
-      const storedChapters = localStorage.getItem(chaptersStorageKey);
-      const savedActiveId = localStorage.getItem(activeStorageKey);
-      let loadedLegacyDocument = false;
-      if (storedDocuments) {
-        const parsed: unknown = JSON.parse(storedDocuments);
-        if (Array.isArray(parsed)) {
-          documents = parsed.filter((item): item is DocumentData =>
-            typeof item === "object" &&
-            item !== null &&
-            typeof item.id === "string" &&
-            typeof item.title === "string" &&
-            typeof item.content === "string"
-          ).map((doc) => migrateLegacyDocument({
-            ...doc,
-            content: cleanHtml(doc.content)
-          }));
-        }
-      } else {
-        const legacySaved = localStorage.getItem(legacyStorageKey);
-        if (legacySaved) {
-          const parsed: unknown = JSON.parse(legacySaved);
-          if (typeof parsed === "object" && parsed !== null) {
-            const legacyDoc = parsed as { title?: unknown; content?: unknown };
-            if (typeof legacyDoc.title === "string" && typeof legacyDoc.content === "string") {
-              documents = [{
-                id: "welcome",
-                title: legacyDoc.title,
-                content: cleanHtml(legacyDoc.content)
-              }];
-              loadedLegacyDocument = true;
+        storyboardRows = [{ id: crypto.randomUUID(), title: "Timeline" }];
+        const storedDocuments = localStorage.getItem(storageKey);
+        const storedChapters = localStorage.getItem(chaptersStorageKey);
+        const savedActiveId = localStorage.getItem(activeStorageKey);
+        let loadedLegacyDocument = false;
+        if (storedDocuments) {
+          const parsed: unknown = JSON.parse(storedDocuments);
+          if (Array.isArray(parsed)) {
+            documents = parsed.filter((item): item is DocumentData =>
+              typeof item === "object" &&
+              item !== null &&
+              typeof item.id === "string" &&
+              typeof item.title === "string" &&
+              typeof item.content === "string"
+            ).map((doc) => migrateLegacyDocument({
+              ...doc,
+              content: cleanHtml(doc.content)
+            }));
+          }
+        } else {
+          const legacySaved = localStorage.getItem(legacyStorageKey);
+          if (legacySaved) {
+            const parsed: unknown = JSON.parse(legacySaved);
+            if (typeof parsed === "object" && parsed !== null) {
+              const legacyDoc = parsed as { title?: unknown; content?: unknown };
+              if (typeof legacyDoc.title === "string" && typeof legacyDoc.content === "string") {
+                documents = [{
+                  id: "welcome",
+                  title: legacyDoc.title,
+                  content: cleanHtml(legacyDoc.content)
+                }];
+                loadedLegacyDocument = true;
+              }
             }
           }
         }
-      }
-      if (storedChapters) {
-        const parsed: unknown = JSON.parse(storedChapters);
-        if (Array.isArray(parsed)) {
-          chapters = parsed.filter((item): item is ChapterData =>
-            typeof item === "object" &&
-            item !== null &&
-            typeof item.id === "string" &&
-            typeof item.title === "string" &&
-            typeof item.expanded === "boolean"
-          ).map((chapter) => ({
-            ...chapter,
-            summary: (typeof chapter.summary === "string" ? chapter.summary : "").slice(0, 4000)
-          }));
+        if (storedChapters) {
+          const parsed: unknown = JSON.parse(storedChapters);
+          if (Array.isArray(parsed)) {
+            chapters = parsed.filter((item): item is ChapterData =>
+              typeof item === "object" &&
+              item !== null &&
+              typeof item.id === "string" &&
+              typeof item.title === "string" &&
+              typeof item.expanded === "boolean"
+            ).map((chapter) => ({
+              ...chapter,
+              summary: (typeof chapter.summary === "string" ? chapter.summary : "").slice(0, 4000)
+            }));
+          }
         }
-      }
-      const migratedScenes = documents.some((doc) => !doc.space && !doc.chapterId);
-      if (chapters.length === 0 && migratedScenes) {
-        const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
-        chapters = [chapter];
-        documents = documents.map((doc) => !doc.space && !doc.chapterId ? { ...doc, chapterId: chapter.id } : doc);
-      }
-      if (documents.length === 0 && storedDocuments === null && !loadedLegacyDocument) {
-        const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
-        chapters = [chapter];
-        documents = [{ id: "welcome", title, content: starterContent, chapterId: chapter.id }];
-      }
-      const active = documents.find((doc) => doc.id === savedActiveId && !doc.trashed)
-        ?? documents.find((doc) => !doc.trashed);
-      if (active) {
-        activeDocumentId = active.id;
-        title = active.title;
-        setEditorContent(active.content);
-        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
-      } else {
-        activeDocumentId = "";
-        title = "";
-        setEditorContent("<p><br></p>");
-        setMarkdownSource("");
-      }
-      activeProjectId = crypto.randomUUID();
-      projects = [currentProjectData()];
-      persistProjectCollection();
+        const migratedScenes = documents.some((doc) => !doc.space && !doc.chapterId);
+        if (chapters.length === 0 && migratedScenes) {
+          const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
+          chapters = [chapter];
+          documents = documents.map((doc) => !doc.space && !doc.chapterId ? { ...doc, chapterId: chapter.id } : doc);
+        }
+        if (documents.length === 0 && storedDocuments === null && !loadedLegacyDocument) {
+          const chapter: ChapterData = { id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" };
+          chapters = [chapter];
+          documents = [{ id: "welcome", title, content: starterContent, chapterId: chapter.id }];
+        }
+        const active = documents.find((doc) => doc.id === savedActiveId && !doc.trashed)
+          ?? documents.find((doc) => !doc.trashed);
+        if (active) {
+          activeDocumentId = active.id;
+          title = active.title;
+          setEditorContent(active.content);
+          setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+        } else {
+          activeDocumentId = "";
+          title = "";
+          setEditorContent("<p><br></p>");
+          setMarkdownSource("");
+        }
+        activeProjectId = crypto.randomUUID();
+        projects = [currentProjectData()];
+        persistProjectCollection();
       }
     } catch {
       saveState = "Could not load saved document";
@@ -4391,7 +4469,8 @@
     refreshCounts();
     lastEditorWordCount = wordCount;
     void syncNativeProjectMenu();
-  });
+    void refreshStorageUsage();
+  }
 
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
@@ -4400,7 +4479,53 @@
     if (markdownTypewriterFrame !== undefined) cancelAnimationFrame(markdownTypewriterFrame);
     if (richTextFadeFrame !== undefined) cancelAnimationFrame(richTextFadeFrame);
     persistNow();
+    void flushVaultStorage();
     themeMediaQuery?.removeEventListener("change", handleSystemThemeChange);
+  });
+
+  onMount(() => {
+    const unsubscribe = onVaultStorageError((error) => handleStorageError(error));
+    const flush = () => {
+      void flushVaultStorage().catch(() => undefined);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  });
+
+  onMount(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { isTauri } = await import("@tauri-apps/api/core");
+        if (!isTauri() || disposed) return;
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+          event.preventDefault();
+          try {
+            await flushVaultStorage();
+          } catch (error) {
+            console.error("Could not flush the vault before closing.", error);
+          } finally {
+            await getCurrentWindow().destroy();
+          }
+        });
+      } catch (error) {
+        console.error("Could not register the window close handler.", error);
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   });
 
   onMount(() => {
@@ -4849,6 +4974,16 @@
   </aside>
 
   <main class="main-panel" class:left-hidden={!leftSidebarVisible} class:right-hidden={!rightSidebarVisible}>
+    {#if storageError}
+      <div class="storage-banner" role="alert">
+        <span class="storage-banner-message">{storageError}</span>
+        <span class="storage-banner-actions">
+          <button type="button" class="data-button" onclick={exportDataBundle}>Export backup</button>
+          <button type="button" class="data-button" onclick={openSettings}>Settings</button>
+          <button type="button" class="storage-banner-dismiss" aria-label="Dismiss storage warning" onclick={() => storageError = ""}>×</button>
+        </span>
+      </div>
+    {/if}
     <section class="writing-area" id="editor">
       <div class="workspace-controls" aria-label="Workspace panels">
         <div class="workspace-modes" role="tablist" aria-label="Workspace view">
@@ -5526,6 +5661,13 @@
     </section>
     <section class="preference-section">
       <div class="preference-heading"><strong>Data</strong><span>Back up or move your projects between devices</span></div>
+      <div class="data-group">
+        <span class="data-group-label">Local storage</span>
+        <p class="data-help">Projects are stored in this app's local database. {storageUsageText()}</p>
+        {#if storageError}
+          <p class="data-help storage-warning">{storageError}</p>
+        {/if}
+      </div>
       <div class="data-group">
         <span class="data-group-label">Plain backup (unencrypted)</span>
         <div class="data-actions">
@@ -6348,6 +6490,12 @@
   .main-panel { display: flex; min-width: 0; min-height: 100vh; flex: 1; flex-direction: column; margin-right: 286px; margin-left: 258px; transition: margin .18s ease; }
   .main-panel.left-hidden { margin-left: 0; }
   .main-panel.right-hidden { margin-right: 0; }
+  .storage-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-control); background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
+  .storage-banner-message { min-width: 0; }
+  .storage-banner-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+  .storage-banner-dismiss { width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; line-height: 1; }
+  .storage-banner-dismiss:hover { background: var(--hover-bg); color: var(--text-heading); }
+  .storage-warning { color: var(--danger); }
   .save-indicator { display: flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 10px; }
   .save-dot.unsaved { background: var(--warning); }
   .export-button svg { width: 16px; height: 16px; }
