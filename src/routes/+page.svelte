@@ -90,6 +90,20 @@
     removeSnapshot,
     snapshotsForDocument
   } from "$lib/snapshots";
+  import {
+    MAX_MARKDOWN_FILES,
+    MAX_MARKDOWN_FILE_BYTES,
+    STORAGE_WARN_CHARS,
+    buildMarkdownProject,
+    estimateStoredChars,
+    isImportableMarkdownPath,
+    listImportFolders,
+    roleOf,
+    type ChapterMode,
+    type FolderRole,
+    type ImportFolder,
+    type MarkdownFile
+  } from "$lib/import/markdown-folder";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -186,6 +200,7 @@
     saveVault,
     writeStored
   } from "$lib/storage/repository";
+  import { getVaultBackend } from "$lib/storage/vault-store";
   import { readEncryptedBundleHint } from "$lib/storage/encrypted-bundle";
   import {
     clearSyncState,
@@ -317,6 +332,17 @@
   let dataStatus = $state("");
   let epubImportInput = $state<HTMLInputElement>();
   let epubImportBusy = $state(false);
+  let markdownFolderInput = $state<HTMLInputElement>();
+  let markdownImportDialog: HTMLDialogElement;
+  let markdownImportFiles = $state<MarkdownFile[]>([]);
+  let markdownImportFolders = $state<ImportFolder[]>([]);
+  let markdownImportRoles = $state<Record<string, FolderRole>>({});
+  let markdownImportMode = $state<ChapterMode>("folders");
+  let markdownImportName = $state("");
+  let markdownImportIgnored = $state(0);
+  let markdownImportBusy = $state(false);
+  // Read when the dialog opens: the storage backend is chosen at startup and does not change reactively.
+  let markdownImportOnLocalStorage = $state(false);
   let encryptedImportInput: HTMLInputElement;
   let passphraseDialog: HTMLDialogElement;
   let passphraseMode = $state<"export" | "import">("export");
@@ -1810,6 +1836,104 @@
       openSettings();
     } finally {
       epubImportBusy = false;
+    }
+  }
+
+  const markdownImportStoredChars = $derived(estimateStoredChars(markdownImportFiles, markdownImportRoles));
+  const markdownImportSelectedCount = $derived(
+    markdownImportFiles.filter((file) => roleOf(file.path, markdownImportRoles) !== "skip").length
+  );
+
+  function triggerMarkdownFolderImport() {
+    if (markdownImportBusy) return;
+    markdownFolderInput?.click();
+  }
+
+  async function handleMarkdownFolder(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const picked = Array.from(input.files ?? []);
+    input.value = "";
+    if (picked.length === 0) return;
+    markdownImportBusy = true;
+    dataStatus = "Reading folder…";
+    try {
+      const rootName = (picked[0].webkitRelativePath || picked[0].name).split("/")[0];
+      const files: MarkdownFile[] = [];
+      let ignored = 0;
+      for (const file of picked) {
+        const path = (file.webkitRelativePath || file.name).split("/").slice(1).join("/") || file.name;
+        if (!isImportableMarkdownPath(path) || file.size > MAX_MARKDOWN_FILE_BYTES) {
+          ignored += 1;
+          continue;
+        }
+        if (files.length >= MAX_MARKDOWN_FILES) throw new Error(`That folder has more than ${MAX_MARKDOWN_FILES} Markdown files.`);
+        files.push({ path, text: await file.text() });
+      }
+      if (files.length === 0) {
+        dataStatus = "No Markdown files found in that folder.";
+        return;
+      }
+      markdownImportFiles = files;
+      markdownImportIgnored = ignored;
+      markdownImportName = rootName;
+      markdownImportFolders = listImportFolders(files);
+      markdownImportRoles = Object.fromEntries(markdownImportFolders.map((folder) => [folder.path, folder.suggested]));
+      markdownImportMode = "folders";
+      dataStatus = "";
+      markdownImportOnLocalStorage = getVaultBackend() === "localstorage";
+      markdownImportDialog.showModal();
+    } catch (error) {
+      console.error("Could not read that folder.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not read that folder.";
+    } finally {
+      markdownImportBusy = false;
+    }
+  }
+
+  async function importMarkdownFolder(event: SubmitEvent) {
+    event.preventDefault();
+    if (markdownImportBusy) return;
+    markdownImportBusy = true;
+    try {
+      const { project, report } = buildMarkdownProject(
+        markdownImportFiles,
+        { roles: markdownImportRoles, chapterMode: markdownImportMode },
+        { name: markdownImportName }
+      );
+      showZenInterface();
+      if (saveTimer) clearTimeout(saveTimer);
+      persistNow();
+      // Save first: if the storage is too small the open project stays as it is.
+      const nextProjects = [...projects, project];
+      try {
+        saveVault(nextProjects, project.id);
+        await flushVaultStorage();
+      } catch (error) {
+        try {
+          saveVault(projects, activeProjectId);
+          await flushVaultStorage();
+        } catch {
+          // The previous state could not be rewritten either.
+        }
+        console.error("Not enough storage for that import.", error);
+        throw new Error(isQuotaExceededError(error)
+          ? "There is not enough storage for that import. Skip some folders and try again."
+          : "Could not save the imported project.");
+      }
+      projects = nextProjects;
+      loadProject(project);
+      void syncNativeProjectMenu();
+      const links = report.linksUnresolved > 0 ? `, ${report.linksUnresolved} link(s) without a target page` : "";
+      dataStatus = `Imported “${project.name}”: ${report.chapters} chapter(s), ${report.scenes} scene(s), `
+        + `${report.wikiPages} wiki page(s)${links}.`;
+      markdownImportFiles = [];
+      markdownImportDialog.close();
+      settingsDialog?.close();
+    } catch (error) {
+      console.error("Could not import that folder.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not import that folder.";
+    } finally {
+      markdownImportBusy = false;
     }
   }
 
@@ -6727,8 +6851,15 @@
             onclick={triggerEpubImport}
             disabled={epubImportBusy}
           >{epubImportBusy ? "Importing…" : "Import EPUB…"}</button>
+          <button
+            type="button"
+            class="data-button"
+            onclick={triggerMarkdownFolderImport}
+            disabled={markdownImportBusy}
+          >Import Markdown folder…</button>
         </div>
         <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
+        <p class="data-help">Creates a new project from a folder of Markdown files (for example an Obsidian vault). You choose which folders are the manuscript and which become wiki pages.</p>
       </div>
       <div class="data-group">
         <span class="data-group-label">Device sync</span>
@@ -6951,6 +7082,15 @@
         bind:this={epubImportInput}
         onchange={handleEpubImport}
       />
+      <input
+        id="markdown-folder-input"
+        class="data-file-input"
+        type="file"
+        multiple
+        {...{ webkitdirectory: true }}
+        bind:this={markdownFolderInput}
+        onchange={handleMarkdownFolder}
+      />
       {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
     </section>
     {#if !preferencesSaved}
@@ -7140,6 +7280,57 @@
       {/if}
     </section>
   </div>
+</dialog>
+
+<dialog class="settings-dialog markdown-import-dialog" bind:this={markdownImportDialog} onclick={(event) => {
+  if (event.target === markdownImportDialog && !markdownImportBusy) markdownImportDialog.close();
+}}>
+  <form onsubmit={(event) => void importMarkdownFolder(event)}>
+    <div class="settings-header">
+      <div><span class="settings-kicker">IMPORT</span><h2>Markdown folder</h2></div>
+      <button class="close-settings" aria-label="Close import" type="button" onclick={() => markdownImportDialog.close()}>×</button>
+    </div>
+    <div class="settings-body">
+      <section class="preference-section">
+        <div class="preference-heading"><strong>Project name</strong><span>{markdownImportFiles.length} Markdown file(s) found{markdownImportIgnored > 0 ? `, ${markdownImportIgnored} other file(s) ignored` : ""}.</span></div>
+        <input class="preference-select" type="text" maxlength="100" bind:value={markdownImportName} aria-label="Project name" required />
+      </section>
+      <section class="preference-section">
+        <div class="preference-heading"><strong>What is in each folder?</strong><span>Manuscript folders become chapters and scenes, wiki folders become wiki pages. A folder with several subfolders (say, several drafts) can be set per subfolder. Hidden folders and folders starting with “_” are skipped.</span></div>
+        <ul class="markdown-folder-list">
+          {#each markdownImportFolders as folder (folder.path)}
+            <li style={`padding-left: ${folder.depth * 16}px`}>
+              <span class="markdown-folder-name">{folder.name} <em>({folder.files})</em></span>
+              <select class="preference-select" aria-label="Use {folder.path} as" bind:value={markdownImportRoles[folder.path]}>
+                <option value="manuscript">Manuscript</option>
+                <option value="wiki">Wiki</option>
+                <option value="skip">Skip</option>
+              </select>
+            </li>
+          {/each}
+        </ul>
+        {#if markdownImportOnLocalStorage}
+          <p class="data-help" class:data-warning={markdownImportStoredChars > STORAGE_WARN_CHARS}>
+            {markdownImportStoredChars > STORAGE_WARN_CHARS
+              ? "This is probably too much for ProseCraft's storage, which holds roughly four million characters in total. Try skipping large folders, such as research cards or older drafts."
+              : `Selected: about ${(markdownImportStoredChars / 1_000_000).toFixed(1)} of roughly 4 million characters of storage.`}
+          </p>
+        {:else}
+          <p class="data-help">{markdownImportSelectedCount} Markdown file(s) selected.</p>
+        {/if}
+      </section>
+      {#if Object.values(markdownImportRoles).includes("manuscript")}
+        <section class="preference-section">
+          <div class="preference-heading"><strong>Chapters</strong><span>Files are ordered by their <code>position</code> header when they all have one, otherwise by name.</span></div>
+          <select class="preference-select" aria-label="How to make chapters" bind:value={markdownImportMode}>
+            <option value="folders">Every folder is a chapter, every file a scene</option>
+            <option value="files">Every file is a chapter</option>
+          </select>
+        </section>
+      {/if}
+    </div>
+    <div class="settings-footer"><span>Nothing in your folder is changed.</span><button class="done-button" type="submit" disabled={markdownImportBusy}>Import</button></div>
+  </form>
 </dialog>
 
 <dialog class="settings-dialog research-link-dialog" bind:this={researchLinkDialog} onclick={(event) => {
@@ -7983,6 +8174,11 @@
   .snapshot-actions { display: flex; margin-top: 8px; gap: 6px; }
   .snapshot-preview { max-height: 200px; overflow: auto; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; line-height: 1.6; }
   .snapshot-preview :global(img) { max-width: 100%; }
+  .markdown-folder-list { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 8px; list-style: none; }
+  .markdown-folder-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .markdown-folder-name { min-width: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .markdown-folder-name em { color: var(--text-muted); font-style: normal; }
+  .markdown-folder-list select { width: auto; flex: none; }
   .data-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .data-file-input { display: none; }
   .data-status { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; }
