@@ -110,6 +110,17 @@ export async function readBrowserResearchFile(
   projectId: string,
   storageKey: string
 ): Promise<string> {
+  const blob = await readBrowserResearchBlob(projectId, storageKey);
+  if (blob.size > MAX_RESEARCH_MARKDOWN_PREVIEW_BYTES) {
+    throw new Error("Markdown files must be 2 MB or smaller to preview.");
+  }
+  return blob.text();
+}
+
+export async function readBrowserResearchBlob(
+  projectId: string,
+  storageKey: string
+): Promise<Blob> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(STORE_NAME, "readonly");
@@ -117,10 +128,7 @@ export async function readBrowserResearchFile(
       transaction.objectStore(STORE_NAME).get(recordKey(projectId, storageKey))
     ) as StoredResearchFile | undefined;
     if (!record) throw new Error("That wiki file is no longer in browser storage.");
-    if (record.blob.size > MAX_RESEARCH_MARKDOWN_PREVIEW_BYTES) {
-      throw new Error("Markdown files must be 2 MB or smaller to preview.");
-    }
-    return await record.blob.text();
+    return record.blob;
   } finally {
     database.close();
   }

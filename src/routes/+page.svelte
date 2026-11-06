@@ -17,6 +17,18 @@
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
+  import SplitPane from "$lib/SplitPane.svelte";
+  import {
+    addSplitPane,
+    canAddSplitPane,
+    docTarget,
+    fileTarget,
+    pruneSplitTargets,
+    removeSplitPane,
+    setSplitTarget,
+    type SplitGroup,
+    type SplitPaneState
+  } from "$lib/split";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -79,6 +91,7 @@
   import {
     deleteBrowserResearchFile,
     openBrowserResearchFile,
+    readBrowserResearchBlob,
     readBrowserResearchFile,
     saveBrowserResearchFile
   } from "$lib/research-files";
@@ -345,6 +358,7 @@
   let researchFolderName = $state("");
   let researchFolders = $state<BinderFolder[]>([]);
   let researchItems = $state<ResearchItem[]>([]);
+  let splitPanes = $state<SplitPaneState[]>([]);
   let expandedResearchFolders = $state<Record<string, boolean>>({});
   let researchStatus = $state("");
   let researchSettingsStatus = $state("");
@@ -3878,10 +3892,73 @@
     return "▤";
   }
 
-  async function openResearchFile(item: ResearchFile) {
+  const splitFiles = $derived(researchItems.flatMap((item) => item.kind === "file" ? [item] : []));
+  const splitGroups = $derived.by((): SplitGroup[] => {
+    const groups: SplitGroup[] = [];
+    for (const chapter of liveChapters) {
+      const options = documents
+        .filter((doc) => doc.chapterId === chapter.id && !doc.trashed)
+        .map((doc) => ({ value: docTarget(doc.id), label: doc.title || "Untitled" }));
+      if (options.length > 0) groups.push({ label: chapter.title || "Untitled chapter", options });
+    }
+    const wikiPages = documents
+      .filter((doc) => doc.space === "Wiki" && !doc.trashed)
+      .map((doc) => ({ value: docTarget(doc.id), label: doc.title || "Untitled" }));
+    if (wikiPages.length > 0) groups.push({ label: "Wiki pages", options: wikiPages });
+    if (splitFiles.length > 0) {
+      groups.push({
+        label: "Wiki files",
+        options: splitFiles.map((item) => ({ value: fileTarget(item.id), label: researchItemTitle(item) }))
+      });
+    }
+    return groups;
+  });
+
+  // Panes keep showing something that was deleted or trashed in the meantime.
+  $effect(() => {
+    const valid = new Set(splitGroups.flatMap((group) => group.options.map((option) => option.value)));
+    if (splitPanes.some((pane) => pane.target && !valid.has(pane.target))) {
+      splitPanes = pruneSplitTargets(splitPanes, valid);
+    }
+  });
+
+  function toggleSplitView() {
+    splitPanes = splitPanes.length > 0 ? [] : addSplitPane([], crypto.randomUUID());
+  }
+
+  async function readResearchBytes(item: ResearchFile): Promise<ArrayBuffer> {
+    if (!desktopRuntime) {
+      return (await readBrowserResearchBlob(activeProjectId, item.storageKey)).arrayBuffer();
+    }
+    const root = await ensureResearchRoot();
+    if (!root) throw new Error("The wiki files folder is unavailable.");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const path = await invoke<string>("research_file_path", {
+      root,
+      projectFolder: ensureResearchFolderName(),
+      storageKey: item.storageKey
+    });
+    return invoke<ArrayBuffer>("read_import_file", { path });
+  }
+
+  async function openExternalUrl(url: string) {
+    try {
+      if (desktopRuntime) {
+        const { openUrl } = await import("@tauri-apps/plugin-opener");
+        await openUrl(url);
+      } else {
+        const opened = window.open(url, "_blank");
+        if (opened) opened.opener = null;
+      }
+    } catch (error) {
+      console.error("Could not open a link.", error);
+    }
+  }
+
+  async function openResearchFile(item: ResearchFile, { external = false } = {}) {
     researchStatus = "";
     try {
-      if (/\.(?:md|markdown)$/i.test(item.fileName)) {
+      if (!external && /\.(?:md|markdown)$/i.test(item.fileName)) {
         let markdownSource: string;
         if (!desktopRuntime) {
           markdownSource = await readBrowserResearchFile(activeProjectId, item.storageKey);
@@ -4994,6 +5071,10 @@
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
         <div class="panel-toggles">
+          <button class="panel-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.5" width="14.4" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M10 3.8v12.4" stroke="currentColor" stroke-width="1.3"/></svg>
+            <span>Split</span>
+          </button>
           <button class="panel-toggle" aria-label={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} title={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} aria-pressed={leftSidebarVisible} onclick={() => leftSidebarVisible = !leftSidebarVisible}>
             <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.5" width="14.4" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M7.3 3.8v12.4" stroke="currentColor" stroke-width="1.3"/></svg>
             <span>Chapters</span>
@@ -5004,7 +5085,7 @@
           </button>
         </div>
       </div>
-      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode}>
+      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode} class:split-open={splitPanes.length > 0}>
       <div
         class="editor-column"
         bind:this={editorColumn}
@@ -5149,6 +5230,25 @@
           </span>
         </footer>
       </div>
+      {#if splitPanes.length > 0}
+        <div class="split-panes" style={`--panes: ${splitPanes.length}`}>
+          {#each splitPanes as pane (pane.id)}
+            <SplitPane
+              target={pane.target}
+              groups={splitGroups}
+              {documents}
+              files={splitFiles}
+              canAdd={canAddSplitPane(splitPanes)}
+              readBytes={readResearchBytes}
+              openExternally={(file) => void openResearchFile(file, { external: true })}
+              openUrl={openExternalUrl}
+              onTarget={(value) => { splitPanes = setSplitTarget(splitPanes, pane.id, value); }}
+              onAdd={() => { splitPanes = addSplitPane(splitPanes, crypto.randomUUID()); }}
+              onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
+            />
+          {/each}
+        </div>
+      {/if}
       </div>
         {#if workspaceView === "outline"}
           <OutlineView
@@ -6527,6 +6627,17 @@
   .editor-panel.typewriter-mode { padding-bottom: 50vh; }
   .editor-panel-hidden { display: none; }
   .editor-column { position: relative; width: min(100%, 690px); }
+  .editor-panel.split-open { align-items: flex-start; gap: 24px; }
+  /* The editor gives up width first (down to 360px); the panes then share what is left and scroll sideways. */
+  .editor-panel.split-open .editor-column { width: auto; min-width: 360px; flex: 0 8 690px; }
+  .editor-panel.split-open .toolbar { flex-wrap: wrap; }
+  .split-panes { position: sticky; top: 64px; display: flex; min-width: 0; flex: 0 1 calc(var(--panes) * 300px + (var(--panes) - 1) * 14px); gap: 14px; overflow-x: auto; }
+  .panel-toggle.active { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
+  @media (max-width: 1180px) {
+    .editor-panel.split-open { flex-direction: column; align-items: center; }
+    .editor-panel.split-open .editor-column { width: min(100%, 690px); flex: none; }
+    .split-panes { position: static; width: min(100%, 690px); flex: none; flex-direction: column; overflow: visible; }
+  }
   .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
   .document-meta { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 10px; }
   .document-type { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 650; letter-spacing: .8px; }
@@ -6856,6 +6967,7 @@
     pointer-events: none;
   }
   .app-shell.zen-hidden .main-panel { margin-right: 0; margin-left: 0; }
+  .app-shell.zen-hidden .split-panes,
   .app-shell.zen-hidden .workspace-controls,
   .app-shell.zen-hidden .document-meta,
   .app-shell.zen-hidden .title-input,
