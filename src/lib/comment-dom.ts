@@ -43,6 +43,25 @@ export function offsetsFromRange(root: Element, range: Range): { start: number; 
   return end > start ? { start, end } : null;
 }
 
+/** Text offset of a point (a node plus an offset) inside `root`, or null when it lies outside. */
+export function offsetFromPoint(root: Element, node: Node, offset: number): number | null {
+  if (!root.contains(node)) return null;
+  let position = 0;
+  for (const textNode of textNodes(root)) {
+    if (textNode === node) return position + Math.min(offset, textNode.data.length);
+    position += textNode.data.length;
+  }
+  // The point sits on an element boundary; measure the text before it.
+  const probe = document.createRange();
+  probe.selectNodeContents(root);
+  try {
+    probe.setEnd(node, offset);
+  } catch {
+    return null;
+  }
+  return probe.toString().length;
+}
+
 export function rangeFromOffsets(root: Element, start: number, end: number): Range | null {
   let offset = 0;
   let startNode: Text | null = null;

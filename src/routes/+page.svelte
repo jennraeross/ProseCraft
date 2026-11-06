@@ -58,7 +58,7 @@
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
-  import { commentText, offsetsFromRange, rangeFromOffsets } from "$lib/comment-dom";
+  import { commentText, offsetFromPoint, offsetsFromRange, rangeFromOffsets } from "$lib/comment-dom";
   import {
     buildAnchor,
     commentsForDocument,
@@ -440,6 +440,11 @@
   let pendingAnchor = $state<CommentAnchor | null>(null);
   let showResolvedComments = $state(false);
   let commentPositions = $state<Record<string, number | null>>({});
+  let commentSpans: Array<{ comment: TextComment; start: number; end: number }> = [];
+  let commentPreview = $state<{ comments: TextComment[]; left: number; top: number } | null>(null);
+  let commentPreviewTimer: ReturnType<typeof setTimeout> | undefined;
+  let commentSelectionPopover = $state<{ left: number; top: number } | null>(null);
+  let commentPopoverSuppressedUntil = 0;
   const commentHighlightName = "prosecraft-comment";
   const commentAuthorStorageKey = "prosecraft-comment-author";
   let splitPanes = $state<SplitPaneState[]>([]);
@@ -1352,10 +1357,12 @@
   function handleRichTextSelectionChange() {
     if (!editor) return;
     if (!editor.contains(document.activeElement)) {
+      commentSelectionPopover = null;
       clearRichTextFade();
       return;
     }
 
+    updateCommentSelectionPopover();
     if (fadeOtherParagraphs) scheduleRichTextFade();
 
     if (!typewriterMode) return;
@@ -1363,6 +1370,50 @@
     if (!selection || !selection.rangeCount || !selection.isCollapsed || !selection.focusNode) return;
     if (!editor.contains(selection.focusNode)) return;
     scheduleRichTextTypewriter();
+  }
+
+  /** Shows the "Comment" button above a selection, mirroring the comment toolbar button. */
+  function updateCommentSelectionPopover() {
+    if (!editor || markdownEditorMode || zenInterfaceHidden || !activeDocumentId
+      || workspaceView !== "writing" || commentsDialog?.open) {
+      commentSelectionPopover = null;
+      return;
+    }
+    if (Date.now() < commentPopoverSuppressedUntil) {
+      commentSelectionPopover = null;
+      return;
+    }
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      commentSelectionPopover = null;
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) {
+      commentSelectionPopover = null;
+      return;
+    }
+    const offsets = offsetsFromRange(editor, range);
+    // Whitespace-only selections have no anchor to comment on.
+    if (!offsets || !buildAnchor(commentText(editor), offsets.start, offsets.end)) {
+      commentSelectionPopover = null;
+      return;
+    }
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      commentSelectionPopover = null;
+      return;
+    }
+    const width = 108;
+    const above = rect.top > 52;
+    commentSelectionPopover = {
+      left: Math.max(8, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 8)),
+      top: Math.max(8, above ? rect.top - 40 : rect.bottom + 10)
+    };
+  }
+
+  function hideCommentSelectionPopover() {
+    commentSelectionPopover = null;
   }
 
   function setTypewriterMode(enabled: boolean, syncMenu = true) {
@@ -2752,8 +2803,7 @@
     }
   }
 
-  function handleWikiMentionPointerMove(event: PointerEvent) {
-    if (event.pointerType === "touch") return;
+  function pointerTextPoint(event: PointerEvent): { node: Node; offset: number } | null {
     const positionFromPoint = Reflect.get(document, "caretPositionFromPoint") as
       | ((x: number, y: number) => { offsetNode: Node; offset: number } | null)
       | undefined;
@@ -2764,28 +2814,86 @@
     const range = position ? null : rangeFromPoint?.call(document, event.clientX, event.clientY);
     const node = position?.offsetNode ?? range?.startContainer;
     const offset = position?.offset ?? range?.startOffset;
-    const mention = node instanceof Text && offset !== undefined
-      ? wikiMentions.find((entry) => entry.node === node && offset >= entry.from && offset < entry.to)
+    return node && offset !== undefined ? { node, offset } : null;
+  }
+
+  function handleEditorPointerMove(event: PointerEvent) {
+    if (event.pointerType === "touch") return;
+    // Dragging out a selection: the Comment button is the useful UI, not a card.
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) {
+      wikiMentionPreview = null;
+      hideCommentPreviewSoon();
+      return;
+    }
+    const point = pointerTextPoint(event);
+    const mention = point?.node instanceof Text
+      ? wikiMentions.find((entry) => entry.node === point.node && point.offset >= entry.from && point.offset < entry.to)
       : undefined;
 
-    if (!mention) {
-      wikiMentionPreview = null;
+    if (mention) {
+      hideCommentPreview();
+      const previous = wikiMentionPreview;
+      const excerpt = previous?.article.id === mention.article.id
+        ? previous.excerpt
+        : htmlToPlainText(cleanHtml(mention.article.content), { rich: "omit" })
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 360);
+      wikiMentionPreview = {
+        article: mention.article,
+        excerpt,
+        left: Math.max(8, Math.min(event.clientX + 14, window.innerWidth - 350)),
+        top: Math.max(8, Math.min(event.clientY + 16, window.innerHeight - 190))
+      };
+      return;
+    }
+    wikiMentionPreview = null;
+
+    const offset = point && editor ? offsetFromPoint(editor, point.node, point.offset) : null;
+    const matches = offset === null
+      ? []
+      : commentSpans.filter((span) => offset >= span.start && offset < span.end);
+    if (matches.length === 0) {
+      hideCommentPreviewSoon();
       return;
     }
 
-    const previous = wikiMentionPreview;
-    const excerpt = previous?.article.id === mention.article.id
-      ? previous.excerpt
-      : htmlToPlainText(cleanHtml(mention.article.content), { rich: "omit" })
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 360);
-    wikiMentionPreview = {
-      article: mention.article,
-      excerpt,
-      left: Math.max(8, Math.min(event.clientX + 14, window.innerWidth - 350)),
-      top: Math.max(8, Math.min(event.clientY + 16, window.innerHeight - 190))
+    keepCommentPreview();
+    commentPreview = {
+      comments: matches.slice(0, 3).map((span) => span.comment),
+      left: Math.max(8, Math.min(event.clientX + 14, window.innerWidth - 334)),
+      top: Math.max(8, Math.min(event.clientY + 16, window.innerHeight - 230))
     };
+  }
+
+  function keepCommentPreview() {
+    if (commentPreviewTimer) {
+      clearTimeout(commentPreviewTimer);
+      commentPreviewTimer = undefined;
+    }
+  }
+
+  /** The card is clickable, so it needs a moment to survive the trip from the text. */
+  function hideCommentPreviewSoon() {
+    if (!commentPreview) return;
+    keepCommentPreview();
+    commentPreviewTimer = setTimeout(() => {
+      commentPreviewTimer = undefined;
+      commentPreview = null;
+    }, 160);
+  }
+
+  function hideCommentPreview() {
+    keepCommentPreview();
+    commentPreview = null;
+  }
+
+  function goToCommentFromPreview(comment: TextComment) {
+    hideCommentPreview();
+    // Selecting the passage would immediately offer "Comment" again.
+    commentPopoverSuppressedUntil = Date.now() + 600;
+    goToComment(comment);
   }
 
   function captureEditorSelection() {
@@ -3099,21 +3207,26 @@
       | (new (...highlightRanges: Range[]) => unknown)
       | undefined;
     registry?.delete(commentHighlightName);
+    hideCommentPreview();
     if (!editor || markdownEditorMode || !activeDocumentId) {
       commentPositions = {};
+      commentSpans = [];
       return;
     }
     const text = commentText(editor);
     const positions: Record<string, number | null> = {};
+    const spans: Array<{ comment: TextComment; start: number; end: number }> = [];
     const ranges: Range[] = [];
     for (const comment of commentsForDocument(comments, activeDocumentId)) {
       const found = locateAnchor(text, comment);
       positions[comment.id] = found ? found.start : null;
       if (!found || comment.resolved) continue;
+      spans.push({ comment, start: found.start, end: found.end });
       const range = rangeFromOffsets(editor, found.start, found.end);
       if (range) ranges.push(range);
     }
     commentPositions = positions;
+    commentSpans = spans;
     if (ranges.length > 0 && registry && HighlightConstructor) {
       registry.set(commentHighlightName, new HighlightConstructor(...ranges));
     }
@@ -3125,6 +3238,14 @@
     void activeDocumentId;
     void markdownEditorMode;
     refreshCommentHighlights();
+  });
+
+  // The floating button belongs to the rich writing view only.
+  $effect(() => {
+    void markdownEditorMode;
+    void workspaceView;
+    void zenInterfaceHidden;
+    commentSelectionPopover = null;
   });
 
   function readCommentAuthor(): string {
@@ -3149,6 +3270,8 @@
     }
     commentDraft = "";
     commentAuthor = readCommentAuthor();
+    commentSelectionPopover = null;
+    hideCommentPreview();
     commentsDialog.showModal();
   }
 
@@ -5330,9 +5453,13 @@
   onMount(() => {
     window.addEventListener("resize", handleViewportResize);
     document.addEventListener("selectionchange", handleRichTextSelectionChange);
+    // Capture phase so scrolling inside any pane hides the floating comment button.
+    window.addEventListener("scroll", hideCommentSelectionPopover, true);
     return () => {
       window.removeEventListener("resize", handleViewportResize);
       document.removeEventListener("selectionchange", handleRichTextSelectionChange);
+      window.removeEventListener("scroll", hideCommentSelectionPopover, true);
+      keepCommentPreview();
     };
   });
 
@@ -5934,9 +6061,14 @@
           }}
           oninput={handleInput}
           onclick={handleEditorClick}
-          onpointermove={handleWikiMentionPointerMove}
-          onpointerleave={() => wikiMentionPreview = null}
-          onkeydown={(event) => { if (event.key === "Escape") selectEditorImage(null); }}
+          onpointermove={handleEditorPointerMove}
+          onpointerleave={() => { wikiMentionPreview = null; hideCommentPreviewSoon(); }}
+          onkeydown={(event) => {
+            if (event.key !== "Escape") return;
+            selectEditorImage(null);
+            hideCommentPreview();
+            hideCommentSelectionPopover();
+          }}
         >{@html starterContent}</div>
 
         {#if wikiMentionPreview}
@@ -5948,6 +6080,59 @@
             <strong>{wikiMentionPreview.article.title}</strong>
             <p>{wikiMentionPreview.excerpt || "This Wiki article has no text yet."}</p>
           </aside>
+        {/if}
+
+        {#if commentPreview}
+          <aside
+            class="comment-preview"
+            role="group"
+            aria-label="Comment on this text"
+            style={`left: ${commentPreview.left}px; top: ${commentPreview.top}px`}
+            onpointerenter={keepCommentPreview}
+            onpointerleave={hideCommentPreviewSoon}
+          >
+            {#each commentPreview.comments as comment (comment.id)}
+              <div class="comment-preview-entry">
+                <div class="comment-preview-meta">
+                  <strong>{comment.author}</strong>
+                  <span>{new Date(comment.createdAt).toLocaleDateString()}</span>
+                </div>
+                <p>{comment.body}</p>
+                <div class="comment-preview-actions">
+                  <button
+                    type="button"
+                    onpointerdown={(event) => event.preventDefault()}
+                    onclick={() => goToCommentFromPreview(comment)}
+                  >Go to</button>
+                  <button
+                    type="button"
+                    onpointerdown={(event) => event.preventDefault()}
+                    onclick={() => resolveComment(comment.id, true)}
+                  >Resolve</button>
+                </div>
+              </div>
+            {/each}
+          </aside>
+        {/if}
+
+        {#if commentSelectionPopover}
+          <div
+            class="comment-selection-popover"
+            role="toolbar"
+            aria-label="Comment on selection"
+            style={`left: ${commentSelectionPopover.left}px; top: ${commentSelectionPopover.top}px`}
+          >
+            <button
+              type="button"
+              onpointerdown={(event) => event.preventDefault()}
+              onclick={openComments}
+              aria-label="Add comment"
+              title="Add comment"
+            >
+              <MessageSquareText size={14} aria-hidden="true" />
+              <span>Comment</span>
+            </button>
+          </div>
         {/if}
 
         <footer class="editor-footer">
@@ -7720,7 +7905,63 @@
   .data-button:hover { border-color: var(--accent); color: var(--text-heading); }
   .danger-button { color: var(--danger); }
   .danger-button:hover { border-color: var(--danger); color: var(--danger); }
-  :global(::highlight(prosecraft-comment)) { background-color: color-mix(in srgb, #e0b000 30%, transparent); }
+  :global(::highlight(prosecraft-comment)) {
+    background-color: color-mix(in srgb, #e0b000 16%, transparent);
+    text-decoration: underline dotted color-mix(in srgb, #e0b000 70%, transparent);
+    text-underline-offset: .15em;
+  }
+  .comment-preview {
+    position: fixed;
+    z-index: 21;
+    display: flex;
+    width: min(320px, calc(100vw - 16px));
+    max-height: 260px;
+    overflow: auto;
+    padding: 10px 12px;
+    flex-direction: column;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-panel);
+    color: var(--text-body);
+  }
+  .comment-preview-entry { display: flex; flex-direction: column; gap: 5px; }
+  .comment-preview-entry + .comment-preview-entry { padding-top: 10px; border-top: 1px solid var(--border); }
+  .comment-preview-meta { display: flex; align-items: baseline; gap: 8px; }
+  .comment-preview-meta strong { color: var(--text-heading); font-size: 12px; font-weight: 600; }
+  .comment-preview-meta span { color: var(--text-muted); font-size: 10px; }
+  .comment-preview-entry p { margin: 0; color: var(--text-body); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .comment-preview-actions { display: flex; gap: 6px; }
+  .comment-preview-actions button { height: 26px; padding: 0 10px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 10px; }
+  .comment-preview-actions button:hover { border-color: var(--accent); color: var(--text-heading); }
+  .comment-preview-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .comment-selection-popover {
+    position: fixed;
+    z-index: 19;
+    display: flex;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-panel);
+  }
+  .comment-selection-popover button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .comment-selection-popover button:hover { background: var(--hover-bg); color: var(--text-heading); }
+  .comment-selection-popover button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .comment-form { display: flex; flex-direction: column; gap: 8px; }
   .comment-form textarea { resize: vertical; font-family: inherit; }
   .comment-form-row { display: flex; gap: 8px; }
