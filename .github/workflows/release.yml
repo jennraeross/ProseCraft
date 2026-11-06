@@ -152,7 +152,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          release_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)"
           gh api --method PATCH \
             "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             -F draft=false \
