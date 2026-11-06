@@ -195,6 +195,7 @@
     saveBrowserResearchFile
   } from "$lib/research-files";
   import { createTimelineNode, normalizeTimelineNodes } from "$lib/timeline";
+  import { STARTERS, buildStarter, type StarterId } from "$lib/starters";
   import { migrateLegacyDocument, migrateProjectToWiki } from "$lib/wiki-migration";
   import { createWikiMentionMatcher } from "$lib/wiki-mentions";
   import {
@@ -350,6 +351,8 @@
   let researchMarkdownTitle = $state("");
   let researchMarkdownHtml = $state("");
   let projectSettingsDialog: HTMLDialogElement;
+  let starterDialog: HTMLDialogElement;
+  let starterDraft = $state<StarterId>("blank");
   let chapterNameInput = $state<HTMLInputElement>();
   let dataImportInput = $state<HTMLInputElement>();
   let dataStatus = $state("");
@@ -1787,6 +1790,18 @@
 
   function createProject() {
     showZenInterface();
+    starterDraft = "blank";
+    if (starterDialog && !starterDialog.open) starterDialog.showModal();
+  }
+
+  function createProjectFromStarter(event: SubmitEvent) {
+    event.preventDefault();
+    starterDialog.close();
+    createProjectWithStarter(starterDraft);
+  }
+
+  function createProjectWithStarter(starter: StarterId) {
+    showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const number = liveProjects.length + 1;
@@ -1816,6 +1831,11 @@
       chapterId: chapter.id
     };
     next.documents = [scene];
+    if (starter !== "blank") {
+      const starterContent = buildStarter(starter, () => crypto.randomUUID());
+      next.researchFolders = starterContent.folders;
+      next.documents = [...next.documents, ...starterContent.documents];
+    }
     next.activeDocumentId = scene.id;
     projects = [...projects, next];
     loadProject(next);
@@ -7977,6 +7997,46 @@
   </form>
 </dialog>
 
+<dialog class="settings-dialog starter-dialog" bind:this={starterDialog} onclick={(event) => {
+  if (event.target === starterDialog) starterDialog.close();
+}}>
+  <form onsubmit={createProjectFromStarter}>
+    <div class="settings-header">
+      <div><span class="settings-kicker">PROSECRAFT</span><h2>Start from</h2></div>
+      <button class="close-settings" aria-label="Close starter selection" type="button" onclick={() => starterDialog.close()}><X size={15} aria-hidden="true" /></button>
+    </div>
+    <div class="settings-body">
+      <section class="preference-section">
+        <div class="preference-heading"><strong>Wiki template</strong><span>Adds starter folders and template pages to the new project.</span></div>
+        <div class="starter-options" role="radiogroup" aria-label="Starter">
+          {#each STARTERS as starter (starter.id)}
+            <label class="starter-option" class:selected={starterDraft === starter.id}>
+              <input
+                type="radio"
+                name="starter"
+                value={starter.id}
+                checked={starterDraft === starter.id}
+                onchange={() => (starterDraft = starter.id)}
+              />
+              <span class="starter-copy">
+                <strong>{starter.label}</strong>
+                <span>{starter.description}</span>
+              </span>
+            </label>
+          {/each}
+        </div>
+      </section>
+    </div>
+    <div class="settings-footer">
+      <span>You can add pages later.</span>
+      <div class="starter-dialog-actions">
+        <button type="button" class="starter-cancel" onclick={() => starterDialog.close()}>Cancel</button>
+        <button class="done-button" type="submit">Create</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
 <dialog class="settings-dialog project-settings-dialog" bind:this={projectSettingsDialog} onclick={(event) => {
   if (event.target === projectSettingsDialog) projectSettingsDialog.close();
 }}>
@@ -8894,6 +8954,17 @@
   .research-markdown-content :global(img) { max-width: 100%; height: auto; }
   .project-settings-dialog form { margin: 0; }
   .research-link-dialog form { margin: 0; }
+  .starter-dialog form { margin: 0; }
+  .starter-options { display: grid; gap: 6px; }
+  .starter-option { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-control); border-radius: 6px; cursor: pointer; }
+  .starter-option.selected { border-color: var(--accent); background: var(--control-bg); }
+  .starter-option input { margin: 2px 0 0; accent-color: var(--accent); }
+  .starter-copy { display: grid; gap: 2px; }
+  .starter-copy strong { color: var(--text-heading); font-size: 11px; font-weight: 600; }
+  .starter-copy span { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+  .starter-dialog-actions { display: flex; align-items: center; gap: 8px; }
+  .starter-cancel { height: 30px; padding: 0 12px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
+  .starter-cancel:hover { border-color: var(--accent); color: var(--text-heading); }
   .settings-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
   .settings-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 23px 25px 18px; border-bottom: 1px solid var(--border-soft); }
   .settings-kicker { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 1.2px; }
