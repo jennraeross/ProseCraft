@@ -66,6 +66,7 @@ the release once they succeed.
 - [x] Typewriter mode
 - [x] Focus mode
 - [x] Zen mode
+- [x] Comments on selected text (for a co-author, a proofreader or an agent)
 - [x] Split view (the editor plus up to four read-only reference panes, PDFs included)
 - [x] Snapshots of a scene (save, preview and restore earlier versions)
 - [x] LaTeX math (MathJax)

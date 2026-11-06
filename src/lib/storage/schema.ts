@@ -125,6 +125,7 @@ export function projectContentKey(project: ProjectData): string {
     researchFolders: project.researchFolders ?? [],
     researchItems: project.researchItems ?? [],
     publishOptions: project.publishOptions ?? null,
+    comments: project.comments ?? [],
     snapshots: project.snapshots ?? []
   });
 }

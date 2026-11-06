@@ -10,6 +10,22 @@ import type {
 
 export type ActivityRecord = { edits: number; wordsAdded: number };
 
+/**
+ * A note attached to a passage of a document. The passage is found again by its
+ * quoted words plus a little text before and after, so nothing is written into
+ * the document HTML.
+ */
+export type TextComment = {
+  id: string;
+  documentId: string;
+  quote: string;
+  prefix: string;
+  suffix: string;
+  body: string;
+  author: string;
+  createdAt: number;
+  resolved: boolean;
+};
 /** A saved copy of one document's text. `before-restore` ones are made automatically so a restore can be undone. */
 export type DocumentSnapshot = {
   id: string;
@@ -102,6 +118,8 @@ export type ProjectData = {
   researchFolders?: ResearchFolder[];
   researchItems?: ResearchItem[];
   publishOptions?: PublishOptions;
+  /** Notes on passages of text, for example from a co-author, a proofreader or an agent. */
+  comments?: TextComment[];
   /** Saved earlier versions of document text, newest per document capped by `MAX_SNAPSHOTS_PER_DOCUMENT`. */
   snapshots?: DocumentSnapshot[];
 };
