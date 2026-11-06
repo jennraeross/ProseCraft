@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { BookOpen, Plus } from "@lucide/svelte";
   import { autoResize } from "./auto-resize";
   import { chapterLabel } from "./publish/chapters";
   import type { ChapterData } from "./publish/types";
@@ -47,16 +48,16 @@
       <span class="outline-count">
         {chapters.length} {chapters.length === 1 ? "chapter" : "chapters"} · {totalWords.toLocaleString()} words
       </span>
-      <button class="outline-add" type="button" onclick={addChapter}>+ Add chapter</button>
+      <button class="outline-add" type="button" onclick={addChapter}><Plus size={14} aria-hidden="true" /> Add chapter</button>
     </div>
   </header>
 
   {#if chapters.length === 0}
     <div class="outline-empty">
-      <span class="outline-empty-mark">▱</span>
+      <BookOpen size={34} strokeWidth={1.4} color="var(--eyebrow)" aria-hidden="true" />
       <h2>No chapters yet</h2>
       <p>Add your first chapter to start planning the shape of your story.</p>
-      <button class="outline-add" type="button" onclick={addChapter}>+ Add chapter</button>
+      <button class="outline-add" type="button" onclick={addChapter}><Plus size={14} aria-hidden="true" /> Add chapter</button>
     </div>
   {:else}
     <div class="outline-list">
@@ -92,7 +93,7 @@
       {/each}
 
       <button class="outline-add-card" type="button" onclick={addChapter}>
-        <span class="outline-add-symbol">+</span>
+        <span class="outline-add-symbol"><Plus size={16} aria-hidden="true" /></span>
         <span><strong>Add chapter</strong><small>Create another card in your outline.</small></span>
       </button>
     </div>
@@ -129,7 +130,6 @@
   .outline-add-card strong { display: block; color: var(--text-nav); font-size: 10px; font-weight: 600; }
   .outline-add-card small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 8px; }
   .outline-empty { display: flex; min-height: 310px; align-items: center; flex-direction: column; justify-content: center; gap: 6px; padding: 30px; border: 1px dashed var(--border-control); border-radius: 10px; background: var(--surface); text-align: center; }
-  .outline-empty-mark { color: var(--eyebrow); font-family: Georgia, serif; font-size: 34px; line-height: 1; }
   .outline-empty h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 21px; font-weight: 500; }
   .outline-empty p { margin: 0 0 8px; color: var(--text-muted); font-size: 10px; }
   .outline-add:focus-visible, .outline-add-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

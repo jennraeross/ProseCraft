@@ -1,6 +1,45 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { history, historyKeymap, isolateHistory, redo as redoMarkdown, undo as undoMarkdown, undoDepth } from "@codemirror/commands";
+  import {
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    BookOpen,
+    Columns2,
+    ChevronLeft,
+    ChevronRight,
+    Download,
+    ExternalLink,
+    FileText,
+    Folder,
+    FolderPlus,
+    GripVertical,
+    Hand,
+    History,
+    Image as ImageIcon,
+    ImagePlus,
+    Link as LinkIcon,
+    List,
+    ListOrdered,
+    MousePointer2,
+    PanelLeft,
+    PanelRight,
+    Pencil,
+    Plus,
+    Redo2,
+    RotateCcw,
+    Settings,
+    Sigma,
+    Square,
+    Trash2,
+    Type,
+    Undo2,
+    Upload,
+    Workflow,
+    X
+  } from "@lucide/svelte";
   import { markdown } from "@codemirror/lang-markdown";
   import { Compartment, EditorState, StateEffect, StateField, Transaction, type Range as DecorationRange } from "@codemirror/state";
   import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
@@ -224,13 +263,13 @@
     start: BoardPoint;
     original: StoryboardDrawing;
   };
-  const storyboardDrawingTools: { tool: StoryboardDrawingTool; label: string; glyph: string }[] = [
-    { tool: "select", label: "Select", glyph: "↖" },
-    { tool: "pan", label: "Pan", glyph: "✋" },
-    { tool: "line", label: "Line", glyph: "／" },
-    { tool: "arrow", label: "Arrow", glyph: "➜" },
-    { tool: "box", label: "Box", glyph: "□" },
-    { tool: "text", label: "Text", glyph: "T" }
+  const storyboardDrawingTools: { tool: StoryboardDrawingTool; label: string; icon: typeof MousePointer2 }[] = [
+    { tool: "select", label: "Select", icon: MousePointer2 },
+    { tool: "pan", label: "Pan", icon: Hand },
+    { tool: "line", label: "Line", icon: ArrowRight },
+    { tool: "arrow", label: "Arrow", icon: ArrowRight },
+    { tool: "box", label: "Box", icon: Square },
+    { tool: "text", label: "Text", icon: Type }
   ];
   type ResearchTreeItem =
     | { kind: "folder"; folder: BinderFolder; depth: number }
@@ -4078,12 +4117,6 @@
     return [formatResearchFileSize(item.size), item.mimeType].filter(Boolean).join(" · ");
   }
 
-  function researchFileGlyph(item: ResearchFile): string {
-    if (item.mimeType === "application/pdf") return "PDF";
-    if (item.mimeType.startsWith("image/")) return "▧";
-    return "▤";
-  }
-
   const splitFiles = $derived(researchItems.flatMap((item) => item.kind === "file" ? [item] : []));
   const splitGroups = $derived.by((): SplitGroup[] => {
     const groups: SplitGroup[] = [];
@@ -5243,20 +5276,20 @@
         {/each}
       </select>
       <div class="project-identity-actions">
-        <button aria-label="Project settings" title="Project settings" onclick={openProjectSettings}>⚙</button>
+        <button aria-label="Project settings" title="Project settings" onclick={openProjectSettings}><Settings size={14} aria-hidden="true" /></button>
         <button
           aria-label="Move current project to Trash"
           title={liveProjects.length > 1 ? "Move project to Trash" : "The last project cannot be moved to Trash"}
           disabled={liveProjects.length <= 1}
           onclick={trashActiveProject}
-        >×</button>
+        ><Trash2 size={14} aria-hidden="true" /></button>
         <button
           aria-label="Import EPUB"
           title="Import EPUB…"
           disabled={epubImportBusy}
           onclick={triggerEpubImport}
-        >⤓</button>
-        <button aria-label="Create project" title="Create project" onclick={createProject}>+</button>
+        ><Download size={14} aria-hidden="true" /></button>
+        <button aria-label="Create project" title="Create project" onclick={createProject}><Plus size={14} aria-hidden="true" /></button>
       </div>
       <span class="author-name">{authorName ? `by ${authorName}` : "Add author name"}</span>
     </div>
@@ -5264,7 +5297,7 @@
     <div class="sidebar-tree">
       <div class="tree-heading">
         <span class="nav-label">CHAPTERS</span>
-        <button class="tree-add" aria-label="Add chapter" title="Add chapter" onclick={() => createChapter()}>+</button>
+        <button class="tree-add" aria-label="Add chapter" title="Add chapter" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /></button>
       </div>
       <div class="chapter-list">
         {#each liveChapters as chapter (chapter.id)}
@@ -5283,7 +5316,7 @@
                 aria-label="Drag to reorder {chapterLabel(chapter)}"
                 title="Drag to reorder"
                 onpointerdown={(event) => startChapterDrag(event, chapter.id)}
-              >⠿</button>
+              ><GripVertical size={14} aria-hidden="true" /></button>
               {#if editingChapterId === chapter.id}
                   <input
                     bind:this={chapterNameInput}
@@ -5300,17 +5333,17 @@
                   />
               {:else}
                 <button class="chapter-toggle" aria-label="{chapter.expanded ? 'Collapse' : 'Expand'} {chapterLabel(chapter)}" aria-expanded={chapter.expanded} onclick={() => toggleChapter(chapter.id)}>
-                  <span class:rotated={chapter.expanded} class="chevron">›</span>
-                  <svg class="folder-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.8 5.5a1.4 1.4 0 0 1 1.4-1.4h4l1.6 1.7h6a1.4 1.4 0 0 1 1.4 1.4v7.3a1.4 1.4 0 0 1-1.4 1.4H4.2a1.4 1.4 0 0 1-1.4-1.4V5.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                  <span class:rotated={chapter.expanded} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+                  <span class="folder-icon"><Folder size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
                   <span class="tree-name">{chapterLabel(chapter)}</span>
                 </button>
               {/if}
               <div class="chapter-actions">
-                <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}>✎</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}>↑</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}>↓</button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} to Trash" title="Move chapter and scenes to Trash" onclick={() => trashChapter(chapter.id)}>×</button>
-                <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}>+</button>
+                <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}><Pencil size={13} aria-hidden="true" /></button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}><ArrowUp size={13} aria-hidden="true" /></button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}><ArrowDown size={13} aria-hidden="true" /></button>
+                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} to Trash" title="Move chapter and scenes to Trash" onclick={() => trashChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}><Plus size={13} aria-hidden="true" /></button>
               </div>
             </div>
             {#if chapter.expanded}
@@ -5321,7 +5354,7 @@
                       <span class="scene-mark">¶</span>
                       <span class="tree-name">{doc.title || "Untitled scene"}</span>
                     </button>
-                    <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}>×</button>
+                    <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
                   </div>
                 {/each}
                 {#if !documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed)}
@@ -5332,7 +5365,7 @@
           </div>
         {/each}
         {#if liveChapters.length === 0}
-          <button class="empty-action" onclick={() => createChapter()}>+ Add your first chapter</button>
+          <button class="empty-action" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /> Add your first chapter</button>
         {/if}
       </div>
 
@@ -5341,14 +5374,14 @@
       <div class="space-group">
         <div class="space-heading">
           <button class="space-toggle" aria-expanded={expandedSpaces.Wiki} onclick={() => expandedSpaces.Wiki = !expandedSpaces.Wiki}>
-            <span class:rotated={expandedSpaces.Wiki} class="chevron">›</span>
-            <span class="space-icon" aria-hidden="true">▤</span>
+            <span class:rotated={expandedSpaces.Wiki} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+            <span class="space-icon"><FileText size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
             <span class="tree-name">Wiki</span>
           </button>
-          <button class="row-add research-add" aria-label="Add folder to Wiki" title="Add folder" onclick={() => createResearchFolder()}>▱</button>
-          <button class="row-add research-add" aria-label="Add file to Wiki" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}>↥</button>
-          <button class="row-add research-add" aria-label="Add link to Wiki" title="Add web link" onclick={() => openResearchLinkDialog()}>↗</button>
-          <button class="row-add research-add" aria-label="Add page to Wiki" title="Add page" onclick={() => createSpaceDocument("Wiki")}>+</button>
+          <button class="row-add research-add" aria-label="Add folder to Wiki" title="Add folder" onclick={() => createResearchFolder()}><FolderPlus size={13} aria-hidden="true" /></button>
+          <button class="row-add research-add" aria-label="Add file to Wiki" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}><Upload size={13} aria-hidden="true" /></button>
+          <button class="row-add research-add" aria-label="Add link to Wiki" title="Add web link" onclick={() => openResearchLinkDialog()}><LinkIcon size={13} aria-hidden="true" /></button>
+          <button class="row-add research-add" aria-label="Add page to Wiki" title="Add page" onclick={() => createSpaceDocument("Wiki")}><Plus size={13} aria-hidden="true" /></button>
         </div>
         {#if expandedSpaces.Wiki}
           <div class="space-items">
@@ -5382,18 +5415,18 @@
                       aria-expanded={expandedResearchFolders[item.folder.id] !== false}
                       onclick={() => toggleResearchFolder(item.folder.id)}
                     >
-                      <span class:rotated={expandedResearchFolders[item.folder.id] !== false} class="chevron">›</span>
-                      <span class="note-folder-icon" aria-hidden="true">▱</span>
+                      <span class:rotated={expandedResearchFolders[item.folder.id] !== false} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+                      <span class="note-folder-icon"><Folder size={13} color="var(--text-muted)" aria-hidden="true" /></span>
                       <span class="tree-name">{item.folder.title}</span>
                     </button>
                   {/if}
                   <div class="note-folder-actions">
-                    <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}>▱+</button>
-                    <button class="chapter-action" aria-label="Add page to {item.folder.title}" title="Add page" onclick={() => createSpaceDocument("Wiki", item.folder.id)}>+</button>
-                    <button class="chapter-action" aria-label="Add file to {item.folder.title}" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles(item.folder.id)}>↥</button>
-                    <button class="chapter-action" aria-label="Add link to {item.folder.title}" title="Add web link" onclick={() => openResearchLinkDialog(item.folder.id)}>↗</button>
-                    <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}>✎</button>
-                    <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}>×</button>
+                    <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}><FolderPlus size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Add page to {item.folder.title}" title="Add page" onclick={() => createSpaceDocument("Wiki", item.folder.id)}><Plus size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Add file to {item.folder.title}" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles(item.folder.id)}><Upload size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Add link to {item.folder.title}" title="Add web link" onclick={() => openResearchLinkDialog(item.folder.id)}><LinkIcon size={13} aria-hidden="true" /></button>
+                    <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}><Pencil size={13} aria-hidden="true" /></button>
+                    <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}><Trash2 size={13} aria-hidden="true" /></button>
                   </div>
                 </div>
               {:else if item.kind === "document"}
@@ -5415,7 +5448,7 @@
                       {/each}
                     </select>
                   {/if}
-                  <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}>×</button>
+                  <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else if item.kind === "file"}
                 <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
@@ -5424,7 +5457,13 @@
                     title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
                     onclick={() => openResearchFile(item.item)}
                   >
-                    <span class="scene-mark research-file-mark">{researchFileGlyph(item.item)}</span>
+                    {#if item.item.mimeType === "application/pdf"}
+                      <span class="scene-mark research-file-mark">PDF</span>
+                    {:else if item.item.mimeType.startsWith("image/")}
+                      <span class="scene-mark research-file-mark"><ImageIcon size={14} aria-hidden="true" /></span>
+                    {:else}
+                      <span class="scene-mark research-file-mark"><FileText size={14} aria-hidden="true" /></span>
+                    {/if}
                     <span class="tree-name">{researchItemTitle(item.item)}</span>
                   </button>
                   {#if researchFolderChoices.length > 0}
@@ -5441,9 +5480,9 @@
                     </select>
                   {/if}
                   {#if desktopRuntime}
-                    <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}>⌖</button>
+                    <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}><Folder size={13} aria-hidden="true" /></button>
                   {/if}
-                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}>×</button>
+                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
@@ -5452,7 +5491,7 @@
                     title={researchItemMeta(item.item)}
                     onclick={() => openResearchLink(item.item)}
                   >
-                    <span class="scene-mark research-link-mark">↗</span>
+                    <span class="scene-mark research-link-mark"><ExternalLink size={14} aria-hidden="true" /></span>
                     <span class="tree-name">{researchItemTitle(item.item)}</span>
                   </button>
                   {#if researchFolderChoices.length > 0}
@@ -5468,7 +5507,7 @@
                       {/each}
                     </select>
                   {/if}
-                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}>×</button>
+                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {/if}
             {/each}
@@ -5486,8 +5525,8 @@
       <div class="space-group trash-group">
         <div class="space-heading">
           <button class="space-toggle" aria-expanded={expandedSpaces.Trash} onclick={() => expandedSpaces.Trash = !expandedSpaces.Trash}>
-            <span class:rotated={expandedSpaces.Trash} class="chevron">›</span>
-            <span class="space-icon" aria-hidden="true">⌫</span>
+            <span class:rotated={expandedSpaces.Trash} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+            <span class="space-icon"><Trash2 size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
             <span class="tree-name">Trash</span>
             <span class="trash-count">{trashCount || ""}</span>
           </button>
@@ -5497,21 +5536,21 @@
             {#each chapters.filter((chapter) => chapter.trashed) as chapter (chapter.id)}
               <div class="document-row">
                 <span class="document-select trashed-document">
-                  <span class="scene-mark">▱</span>
+                  <span class="scene-mark"><Folder size={14} aria-hidden="true" /></span>
                   <span class="tree-name">{chapterLabel(chapter)}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore {chapterLabel(chapter)} and its scenes" title="Restore chapter and scenes" onclick={() => restoreChapter(chapter.id)}>↶</button>
-                <button class="row-action delete-action" aria-label="Permanently delete {chapterLabel(chapter)} and its scenes" title="Delete chapter and scenes permanently" onclick={() => permanentlyDeleteChapter(chapter.id)}>×</button>
+                <button class="row-action restore-action" aria-label="Restore {chapterLabel(chapter)} and its scenes" title="Restore chapter and scenes" onclick={() => restoreChapter(chapter.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label="Permanently delete {chapterLabel(chapter)} and its scenes" title="Delete chapter and scenes permanently" onclick={() => permanentlyDeleteChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#each projects.filter((project) => project.trashed) as project (project.id)}
               <div class="document-row">
                 <span class="document-select trashed-document">
-                  <span class="scene-mark">▣</span>
+                  <span class="scene-mark"><BookOpen size={14} aria-hidden="true" /></span>
                   <span class="tree-name">{project.name}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore project {project.name}" title="Restore project" onclick={() => restoreProject(project.id)}>↶</button>
-                <button class="row-action delete-action" aria-label="Permanently delete project {project.name}" title="Delete project permanently" onclick={() => permanentlyDeleteProject(project.id)}>×</button>
+                <button class="row-action restore-action" aria-label="Restore project {project.name}" title="Restore project" onclick={() => restoreProject(project.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label="Permanently delete project {project.name}" title="Delete project permanently" onclick={() => permanentlyDeleteProject(project.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#each documents.filter((doc) => doc.trashed && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)) as doc (doc.id)}
@@ -5520,8 +5559,8 @@
                   <span class="scene-mark">¶</span>
                   <span class="tree-name">{doc.title || "Untitled"}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore {doc.title}" title="Restore" onclick={() => restoreDocument(doc.id)}>↶</button>
-                <button class="row-action delete-action" aria-label="Permanently delete {doc.title}" title="Delete permanently" onclick={() => permanentlyDelete(doc.id)}>×</button>
+                <button class="row-action restore-action" aria-label="Restore {doc.title}" title="Restore" onclick={() => restoreDocument(doc.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label="Permanently delete {doc.title}" title="Delete permanently" onclick={() => permanentlyDelete(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#if trashCount === 0}
@@ -5538,7 +5577,7 @@
         aria-label="Settings"
         onclick={openSettings}
       >
-        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3.2a1.2 1.2 0 0 1 2.3-.5l.5 1.2a1.2 1.2 0 0 0 1.7.6l1.1-.6a1.2 1.2 0 0 1 1.7 1.7l-.6 1.1a1.2 1.2 0 0 0 .6 1.7l1.2.5a1.2 1.2 0 0 1-.5 2.3l-1.3.1a1.2 1.2 0 0 0-1.1 1.4l.2 1.3a1.2 1.2 0 0 1-2 1l-1-.9a1.2 1.2 0 0 0-1.8.2l-.7 1.1a1.2 1.2 0 0 1-2.2-.8l.3-1.3a1.2 1.2 0 0 0-1-1.4l-1.3-.2a1.2 1.2 0 0 1-.3-2.3l1.2-.5a1.2 1.2 0 0 0 .5-1.7l-.7-1.1a1.2 1.2 0 0 1 1.6-1.7l1.2.6a1.2 1.2 0 0 0 1.7-.6L10 3.2Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.2" stroke="currentColor" stroke-width="1.2"/></svg>
+        <Settings size={15} aria-hidden="true" />
         <span>Settings</span>
       </button>
       <div class="sync-status"><span class="sync-dot"></span> Your writing is private</div>
@@ -5552,7 +5591,7 @@
         <span class="storage-banner-actions">
           <button type="button" class="data-button" onclick={exportDataBundle}>Export backup</button>
           <button type="button" class="data-button" onclick={openSettings}>Settings</button>
-          <button type="button" class="storage-banner-dismiss" aria-label="Dismiss storage warning" onclick={() => storageError = ""}>×</button>
+          <button type="button" class="storage-banner-dismiss" aria-label="Dismiss storage warning" onclick={() => storageError = ""}><X size={14} aria-hidden="true" /></button>
         </span>
       </div>
     {/if}
@@ -5567,15 +5606,15 @@
         </div>
         <div class="panel-toggles">
           <button class="panel-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
-            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.5" width="14.4" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M10 3.8v12.4" stroke="currentColor" stroke-width="1.3"/></svg>
+            <Columns2 size={15} aria-hidden="true" />
             <span>Split</span>
           </button>
           <button class="panel-toggle" aria-label={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} title={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} aria-pressed={leftSidebarVisible} onclick={() => leftSidebarVisible = !leftSidebarVisible}>
-            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.5" width="14.4" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M7.3 3.8v12.4" stroke="currentColor" stroke-width="1.3"/></svg>
+            <PanelLeft size={15} aria-hidden="true" />
             <span>Chapters</span>
           </button>
           <button class="panel-toggle" aria-label={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} title={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} aria-pressed={rightSidebarVisible} onclick={() => rightSidebarVisible = !rightSidebarVisible}>
-            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.5" width="14.4" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M12.7 3.8v12.4m-6.8-6.1 2.1-2.2 2.2 2.2 2.4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <PanelRight size={15} aria-hidden="true" />
             <span>Progress</span>
           </button>
         </div>
@@ -5646,17 +5685,17 @@
           <button class="tool-button underline" aria-label="Underline" title="Underline" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("underline")}>U</button>
           <button class="tool-button strike" aria-label="Strikethrough" title="Strikethrough" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("strikeThrough")}>S</button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button" aria-label="Bulleted list" title="Bulleted list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertUnorderedList")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 5h8M8 10h8M8 15h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="4.5" cy="5" r=".8" fill="currentColor"/><circle cx="4.5" cy="10" r=".8" fill="currentColor"/><circle cx="4.5" cy="15" r=".8" fill="currentColor"/></svg></button>
-          <button class="tool-button" aria-label="Numbered list" title="Numbered list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertOrderedList")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 5h8M8 10h8M8 15h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 4.2h1v2H4m-.2 3.5h1.4l-1.4 1.6h1.4m-1.6 3.5h1.6l-1.6 1.6h1.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Bulleted list" title="Bulleted list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertUnorderedList")}><List size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Numbered list" title="Numbered list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertOrderedList")}><ListOrdered size={16} aria-hidden="true" /></button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button" aria-label="Add link" title="Add link" onpointerdown={(event) => event.preventDefault()} onclick={addLink}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m8.2 11.8 3.6-3.6m-5 5-1.2 1.2a2.55 2.55 0 0 1-3.6-3.6l3-3a2.55 2.55 0 0 1 3.6 0m2.2-2.6 1.2-1.2a2.55 2.55 0 0 1 3.6 3.6l-3 3a2.55 2.55 0 0 1-3.6 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
-          <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "undo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M7.5 6 4 9.5 7.5 13M4.5 9.5h6a5 5 0 0 1 5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "redo")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.5 6 16 9.5 12.5 13M15.5 9.5h-6a5 5 0 0 0-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button" aria-label="Add link" title="Add link" onpointerdown={(event) => event.preventDefault()} onclick={addLink}><LinkIcon size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "undo")}><Undo2 size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "redo")}><Redo2 size={16} aria-hidden="true" /></button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.3" width="14.4" height="13.4" rx="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.4" r="1.4" stroke="currentColor" stroke-width="1.2"/><path d="m4.2 14.8 4-4 2.5 2.5 2-2 3.1 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="6.6" stroke="currentColor" stroke-width="1.3"/><path d="M10 6.4V10l2.6 1.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><span aria-hidden="true" class="math-tool-mark">Σ</span></button>
-          <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.8" y="3.2" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="11.6" y="12.6" width="5.6" height="4.2" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M8.4 5.3h1.8a2 2 0 0 1 2 2v5.3m0 0-1.8-1.8m1.8 1.8 1.8-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><ImagePlus size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
         </div>
         {/if}
 
@@ -5721,7 +5760,7 @@
           <span class="footer-actions">
             <span class="save-indicator"><span class:unsaved={saveState !== "All changes saved"} class="save-dot"></span>{saveState}</span>
             <button class="export-button" onclick={exportDocument}>
-              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3.5v9m0 0 3.2-3.2M10 12.5 6.8 9.3M4.5 13v3.5h11V13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <Download size={16} aria-hidden="true" />
               Export
             </button>
           </span>
@@ -5766,18 +5805,18 @@
             <section class="board-source-group">
               <h3>Cards</h3>
               <div class="board-source">
-                <button class="source-drag-handle" aria-label="Drag a blank card onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}>⠿</button>
-                <span class="source-icon">▢</span><span class="source-name">Blank card</span>
-                <button class="source-add" aria-label="Add a blank card near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("blank", "")}>+</button>
+                <button class="source-drag-handle" aria-label="Drag a blank card onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}><GripVertical size={14} aria-hidden="true" /></button>
+                <Square size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">Blank card</span>
+                <button class="source-add" aria-label="Add a blank card near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("blank", "")}><Plus size={13} aria-hidden="true" /></button>
               </div>
             </section>
             <section class="board-source-group">
               <h3>Chapters</h3>
               {#each liveChapters as chapter (chapter.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}>⠿</button>
-                  <span class="source-icon">▱</span><span class="source-name">{chapterLabel(chapter)}</span>
-                  <button class="source-add" aria-label="Add {chapterLabel(chapter)} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("chapter", chapter.id)}>+</button>
+                  <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <Folder size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{chapterLabel(chapter)}</span>
+                  <button class="source-add" aria-label="Add {chapterLabel(chapter)} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("chapter", chapter.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <p class="board-source-empty">No chapters yet</p>
@@ -5787,9 +5826,9 @@
               <h3>Scenes</h3>
               {#each documents.filter((doc) => doc.chapterId && !doc.trashed) as doc (doc.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled scene'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}>⠿</button>
-                  <span class="source-icon">¶</span><span class="source-name">{doc.title || "Untitled scene"}</span>
-                  <button class="source-add" aria-label="Add {doc.title || 'Untitled scene'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("scene", doc.id)}>+</button>
+                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled scene'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <FileText size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{doc.title || "Untitled scene"}</span>
+                  <button class="source-add" aria-label="Add {doc.title || 'Untitled scene'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("scene", doc.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <p class="board-source-empty">No scenes yet</p>
@@ -5799,10 +5838,10 @@
               <h3>Wiki</h3>
               {#each documents.filter((doc) => doc.space === "Wiki" && !doc.trashed) as doc (doc.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "Wiki", doc.id)}>⠿</button>
-                  <span class="source-icon">▤</span>
+                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "Wiki", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <BookOpen size={16} color="var(--eyebrow)" aria-hidden="true" />
                   <span class="source-name">{doc.title || "Untitled"}</span>
-                  <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("Wiki", doc.id)}>+</button>
+                  <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("Wiki", doc.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
                 <p class="board-source-empty">No wiki pages yet</p>
@@ -5814,11 +5853,12 @@
               <div><span class="board-eyebrow">PLAN YOUR STORY</span><h1>Storyboard</h1></div>
               <div class="storyboard-header-actions">
                 <span class="board-card-count">{storyboardCards.length} {storyboardCards.length === 1 ? "card" : "cards"}</span>
-                <button class="add-timeline-row" onclick={() => addStoryboardCard("blank", "")}>+ Add blank card</button>
+                <button class="add-timeline-row" onclick={() => addStoryboardCard("blank", "")}><Plus size={14} aria-hidden="true" /> Add blank card</button>
               </div>
             </header>
             <div class="storyboard-drawing-toolbar" role="toolbar" aria-label="Diagram drawing tools">
               {#each storyboardDrawingTools as item (item.tool)}
+                {@const Icon = item.icon}
                 <button
                   class="drawing-tool"
                   class:active={activeDrawingTool === item.tool}
@@ -5826,7 +5866,7 @@
                   aria-pressed={activeDrawingTool === item.tool}
                   title={`${item.label} tool`}
                   onclick={() => { activeDrawingTool = item.tool; }}
-                ><span class="drawing-tool-glyph">{item.glyph}</span><span>{item.label}</span></button>
+                ><Icon size={15} aria-hidden="true" /><span>{item.label}</span></button>
               {/each}
               {#if activeDrawingTool === "text" || selectedStoryboardTextDrawing()}
                 <label class="drawing-font-size">
@@ -5928,7 +5968,7 @@
                         onblur={() => finishStoryboardTextEdit(drawing.id)}
                       ></textarea>
                       {#if selectedDrawingId === drawing.id}
-                        <button class="drawing-move-handle" aria-label="Move text label" title="Drag to move" onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}>⠿</button>
+                        <button class="drawing-move-handle" aria-label="Move text label" title="Drag to move" onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}><GripVertical size={14} aria-hidden="true" /></button>
                         <button class="drawing-resize-handle" aria-label="Resize text area" title="Drag to resize" onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
                       {/if}
                     </div>
@@ -5961,9 +6001,9 @@
                         title="Drag to move; arrow keys to nudge"
                         onpointerdown={(event) => startStoryboardDrag(event, "board-card", card.id)}
                         onkeydown={(event) => handleStoryboardCardKeydown(event, card.id)}
-                      >⠿</button>
+                      ><GripVertical size={14} aria-hidden="true" /></button>
                       <span class="card-kind">{card.kind === "blank" ? "blank" : card.kind}</span>
-                      <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}>×</button>
+                      <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}><X size={14} aria-hidden="true" /></button>
                     </div>
                     <input class="board-card-title" data-undo-key={`card-title:${card.id}`} aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
                     <textarea
@@ -6027,7 +6067,7 @@
           <span class="progress-eyebrow">YOUR WRITING</span>
           <h2>Progress</h2>
         </div>
-        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => rightSidebarVisible = false}>×</button>
+        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => rightSidebarVisible = false}><X size={15} aria-hidden="true" /></button>
       </div>
 
       <section class="progress-section project-progress">
@@ -6098,8 +6138,8 @@
         <div class="calendar-heading">
           <strong>{viewedMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</strong>
           <div class="calendar-navigation">
-            <button aria-label="Previous month" onclick={() => changeViewedMonth(-1)}>‹</button>
-            <button aria-label="Next month" onclick={() => changeViewedMonth(1)}>›</button>
+            <button aria-label="Previous month" onclick={() => changeViewedMonth(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
+            <button aria-label="Next month" onclick={() => changeViewedMonth(1)}><ChevronRight size={14} aria-hidden="true" /></button>
           </div>
         </div>
         <div class="calendar-grid" role="grid" aria-label="Writing activity calendar">
@@ -6135,7 +6175,7 @@
 }}>
   <div class="settings-header">
     <div><span class="settings-kicker">WIKI FILE</span><h2>{researchMarkdownTitle}</h2></div>
-    <button class="close-settings" aria-label="Close Markdown preview" onclick={() => researchMarkdownDialog.close()}>×</button>
+    <button class="close-settings" aria-label="Close Markdown preview" onclick={() => researchMarkdownDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <article class="research-markdown-content">{@html researchMarkdownHtml}</article>
 </dialog>
@@ -6145,7 +6185,7 @@
 }}>
   <div class="settings-header">
     <div><span class="settings-kicker">PROSECRAFT</span><h2>Settings</h2></div>
-    <button class="close-settings" aria-label="Close settings" onclick={() => settingsDialog.close()}>×</button>
+    <button class="close-settings" aria-label="Close settings" onclick={() => settingsDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body">
     <section class="preference-section">
@@ -6532,7 +6572,7 @@
         <span class="settings-kicker">PROSECRAFT</span>
         <h2>{passphraseMode === "export" ? "Encrypt backup" : "Unlock backup"}</h2>
       </div>
-      <button class="close-settings" aria-label="Close passphrase dialog" type="button" disabled={passphraseBusy} onclick={() => passphraseDialog.close()}>×</button>
+      <button class="close-settings" aria-label="Close passphrase dialog" type="button" disabled={passphraseBusy} onclick={() => passphraseDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
@@ -6590,7 +6630,7 @@
   <form onsubmit={saveProjectSettings}>
     <div class="settings-header">
       <div><span class="settings-kicker">PROSECRAFT</span><h2>Project Settings</h2></div>
-      <button class="close-settings" aria-label="Close project settings" type="button" onclick={() => projectSettingsDialog.close()}>×</button>
+      <button class="close-settings" aria-label="Close project settings" type="button" onclick={() => projectSettingsDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
@@ -6613,7 +6653,7 @@
 }}>
   <div class="settings-header">
     <div><span class="settings-kicker">SCENE</span><h2>Snapshots</h2></div>
-    <button class="close-settings" aria-label="Close snapshots" type="button" onclick={() => snapshotsDialog.close()}>×</button>
+    <button class="close-settings" aria-label="Close snapshots" type="button" onclick={() => snapshotsDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body">
     <section class="preference-section">
@@ -6657,7 +6697,7 @@
   <form onsubmit={saveResearchLink}>
     <div class="settings-header">
       <div><span class="settings-kicker">WIKI</span><h2>Add web link</h2></div>
-      <button class="close-settings" aria-label="Close link dialog" type="button" onclick={() => researchLinkDialog.close()}>×</button>
+      <button class="close-settings" aria-label="Close link dialog" type="button" onclick={() => researchLinkDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
@@ -6706,7 +6746,7 @@
         <span class="settings-kicker">{richDialogKind === "diagram" ? "DIAGRAM" : "EQUATION"}</span>
         <h2>{richEditTarget ? "Edit" : "Insert"} {richDialogKind === "diagram" ? "diagram" : "equation"}</h2>
       </div>
-      <button class="close-settings" aria-label="Close equation and diagram editor" type="button" onclick={closeRichDialog}>×</button>
+      <button class="close-settings" aria-label="Close equation and diagram editor" type="button" onclick={closeRichDialog}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body rich-dialog-body">
       {#if richDialogKind === "math"}
@@ -7019,7 +7059,7 @@
   .chapter-action:disabled { opacity: .18; cursor: default; }
   .chapter-name-input { min-width: 0; flex: 1; padding: 2px 3px; border: 1px solid var(--border-control); border-radius: 3px; background: var(--control-bg); color: var(--text-primary); font-size: 10px; }
   .chapter-name-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .chevron { display: inline-block; width: 11px; color: var(--text-faint); font-size: 17px; line-height: 1; transform: rotate(0deg); transition: transform .12s ease; }
+  .chevron { display: inline-block; width: 14px; flex: 0 0 auto; color: var(--text-faint); font-size: 17px; line-height: 1; transform: rotate(0deg); transition: transform .12s ease; }
   .chevron.rotated { transform: rotate(90deg); }
   .folder-icon { width: 15px; height: 15px; flex: 0 0 auto; color: var(--text-muted); }
   .tree-name { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
@@ -7069,7 +7109,6 @@
   .sidebar-footer { flex: 0 0 auto; padding-top: 8px; }
   .settings-button { display: flex; width: 100%; height: 34px; align-items: center; gap: 9px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; font-size: 10px; }
   .settings-button:hover { background: var(--hover-bg); color: var(--text-primary); }
-  .settings-button svg { width: 15px; height: 15px; flex: 0 0 auto; }
   .sync-status { display: flex; align-items: center; gap: 7px; padding: 0 8px 13px; color: var(--text-muted); font-size: 10px; }
   .sync-dot, .save-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
@@ -7140,7 +7179,6 @@
   .storage-warning { color: var(--danger); }
   .save-indicator { display: flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 10px; }
   .save-dot.unsaved { background: var(--warning); }
-  .export-button svg { width: 16px; height: 16px; }
   .export-button { display: flex; height: 30px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 11px; }
   .export-button:hover { background: var(--control-hover); }
   .writing-area { display: flex; flex: 1; flex-direction: column; align-items: center; padding: 15px 32px 44px; }
@@ -7164,7 +7202,6 @@
   .workspace-mode.active { background: var(--selected-bg); color: var(--selected-text); font-weight: 600; }
   .panel-toggle { display: inline-flex; height: 28px; align-items: center; gap: 6px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; }
   .panel-toggle:hover { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
-  .panel-toggle svg { width: 15px; height: 15px; }
   .editor-panel { display: flex; width: 100%; justify-content: center; }
   .editor-panel.typewriter-mode { padding-bottom: 50vh; }
   .editor-panel-hidden { display: none; }
@@ -7192,7 +7229,6 @@
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
   .tool-button:hover { background: var(--toolbar-hover); color: var(--selected-text); }
-  .tool-button svg { width: 16px; height: 16px; }
   .italic { font-family: Georgia, serif; font-style: italic; }
   .underline { text-decoration: underline; text-underline-offset: 2px; }
   .strike { text-decoration: line-through; }
@@ -7201,7 +7237,6 @@
   .image-insert-button { margin-left: auto; }
   .document-meta .markdown-mode-toggle + .image-insert-button { margin-left: 0; }
   .image-tool-button { font-size: 17px; }
-  .math-tool-mark { font-family: Georgia, serif; font-size: 16px; line-height: 1; }
   .image-insert-error { margin: 8px 0 0; color: var(--danger, #b42318); font-size: 11px; }
   .image-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 12px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
   .image-edit-label { margin: 0 4px; color: var(--text-muted); font-size: 10px; }
@@ -7284,7 +7319,6 @@
   .source-add { font-size: 16px; }
   .source-drag-handle:hover, .source-add:hover { background: var(--selected-bg); color: var(--selected-text); }
   .source-name { overflow: hidden; min-width: 0; flex: 1; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-  .source-icon { width: 14px; flex: 0 0 auto; color: var(--eyebrow); font-family: Georgia, serif; text-align: center; }
   .board-source-empty { margin: 5px 3px; color: var(--text-muted); font-size: 9px; }
   .storyboard-canvas { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; padding: 18px 20px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
   .storyboard-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid var(--border-soft); }
@@ -7297,7 +7331,6 @@
   .drawing-tool, .drawing-delete { display: inline-flex; min-height: 28px; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
   .drawing-tool { min-width: 54px; }
   .drawing-tool.active { border-color: var(--accent); background: var(--selected-bg); color: var(--selected-text); }
-  .drawing-tool-glyph { font-size: 13px; font-weight: 600; }
   .drawing-font-size { display: inline-flex; min-height: 28px; align-items: center; gap: 6px; padding: 0 7px; color: var(--text-muted); font-size: 9px; }
   .drawing-font-size input { width: 90px; accent-color: var(--accent); }
   .drawing-font-size output { min-width: 24px; color: var(--text-nav); font-variant-numeric: tabular-nums; }

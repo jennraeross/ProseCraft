@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { X } from "@lucide/svelte";
   import {
     CUSTOM_STYLE_LABEL_LIMIT,
     STYLE_FONTS,
@@ -89,7 +90,7 @@
         <span class="style-editor-kicker">EXPORT STYLE</span>
         <h2 id="style-editor-title">{isNew ? "New style" : "Edit style"}</h2>
       </div>
-      <button type="button" class="style-editor-close" aria-label="Close style editor" onclick={onCancel}>×</button>
+      <button type="button" class="style-editor-close" aria-label="Close style editor" onclick={onCancel}><X size={16} aria-hidden="true" /></button>
     </div>
 
     <div class="style-editor-body">

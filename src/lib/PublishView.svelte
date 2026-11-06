@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "@lucide/svelte";
   import {
     defaultPreviewPalette,
     readPreviewPalette,
@@ -602,21 +603,21 @@
                     title="Edit style"
                     aria-label={`Edit ${entry.label}`}
                     onclick={() => startEditStyle(entry.id)}
-                  >✎</button>
+                  ><Pencil size={13} aria-hidden="true" /></button>
                   <button
                     type="button"
                     class="style-action style-action-delete"
                     title="Delete style"
                     aria-label={`Delete ${entry.label}`}
                     onclick={() => startEditStyle(entry.id, true)}
-                  >×</button>
+                  ><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {/if}
             </div>
           {/each}
         </div>
         <button type="button" class="new-style-button" disabled={!canAddStyle} onclick={startNewStyle}>
-          + New style
+          <Plus size={14} aria-hidden="true" /> New style
         </button>
         <p class="style-hint">
           {#if canAddStyle}
@@ -908,21 +909,21 @@
                     aria-label={`Move ${page.title || "front matter page"} up`}
                     disabled={index === 0}
                     onclick={() => moveMatterPage("front", page.id, -1)}
-                  >↑</button>
+                  ><ArrowUp size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
                     title="Move page down"
                     aria-label={`Move ${page.title || "front matter page"} down`}
                     disabled={index === options.frontMatter.length - 1}
                     onclick={() => moveMatterPage("front", page.id, 1)}
-                  >↓</button>
+                  ><ArrowDown size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
                     class="matter-page-remove"
                     title="Remove page"
                     aria-label={`Remove ${page.title || "front matter page"}`}
                     onclick={() => removeMatterPage("front", page.id)}
-                  >×</button>
+                  ><Trash2 size={14} aria-hidden="true" /></button>
                 </div>
                 <textarea
                   value={page.body}
@@ -981,21 +982,21 @@
                     aria-label={`Move ${page.title || "back matter page"} up`}
                     disabled={index === 0}
                     onclick={() => moveMatterPage("back", page.id, -1)}
-                  >↑</button>
+                  ><ArrowUp size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
                     title="Move page down"
                     aria-label={`Move ${page.title || "back matter page"} down`}
                     disabled={index === options.backMatter.length - 1}
                     onclick={() => moveMatterPage("back", page.id, 1)}
-                  >↓</button>
+                  ><ArrowDown size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
                     class="matter-page-remove"
                     title="Remove page"
                     aria-label={`Remove ${page.title || "back matter page"}`}
                     onclick={() => removeMatterPage("back", page.id)}
-                  >×</button>
+                  ><Trash2 size={14} aria-hidden="true" /></button>
                 </div>
                 <textarea
                   value={page.body}
@@ -1053,7 +1054,7 @@
                   title="Previous section"
                   disabled={previewSectionIndex <= 0}
                   onclick={() => movePreviewSection(-1)}
-                >‹</button>
+                ><ChevronLeft size={15} aria-hidden="true" /></button>
                 <span>{previewSectionIndex + 1} / {previewSections.length}</span>
                 <button
                   type="button"
@@ -1061,7 +1062,7 @@
                   title="Next section"
                   disabled={previewSectionIndex >= previewSections.length - 1}
                   onclick={() => movePreviewSection(1)}
-                >›</button>
+                ><ChevronRight size={15} aria-hidden="true" /></button>
               </div>
             </div>
             <div class="preview-nav-groups">
