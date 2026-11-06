@@ -11,10 +11,11 @@ if (args.length < 1 || args.length > 2 || !["patch", "minor", "major"].includes(
 }
 
 function git(args, capture = false) {
-  return execFileSync("git", args, {
+  const result = execFileSync("git", args, {
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
-  }).trim();
+  });
+  return capture ? (result ?? "").trim() : "";
 }
 
 function bumpVersion(version) {
