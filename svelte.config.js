@@ -12,6 +12,11 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    // The desktop build leaves this empty; the GitHub Pages deploy sets it so
+    // the SPA works from https://<user>.github.io/ProseCraft/app/.
+    paths: {
+      base: process.env.PAGES_BASE ?? "",
+    },
   },
 };
 

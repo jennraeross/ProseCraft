@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ProseCraft — Outline. Write. Publish.</title>
+    <meta
+      name="description"
+      content="ProseCraft is a novel-writing app for the desktop, with tools for outlining, storyboarding and organizing your writing, and exports with granular control."
+    />
+    <meta name="theme-color" content="#f8f8f6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#191b19" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="favicon.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="ProseCraft — Outline. Write. Publish." />
+    <meta
+      property="og:description"
+      content="A novel-writing app with tools for outlining, storyboarding and organizing your writing."
+    />
+    <meta property="og:image" content="screenshots/writing.webp" />
+    <meta property="og:url" content="https://jennraeross.github.io/ProseCraft/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./">ProseCraft</a>
+      <nav aria-label="Main">
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="./app/">Try it</a>
+        <a href="https://github.com/jennraeross/ProseCraft">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="eyebrow">A novel-writing app for the desktop</p>
+        <h1>Outline. Write. Publish.</h1>
+        <p class="lede">
+          ProseCraft is a novel-writing app, with tools for outlining, storyboarding, and
+          organizing your writing. When you feel your project is ready, export it into a
+          variety of formats with granular control.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/jennraeross/ProseCraft/releases/latest">
+            Download for desktop
+          </a>
+          <a class="button" href="./app/">Try it in your browser</a>
+          <a class="button ghost" href="https://github.com/jennraeross/ProseCraft">View source</a>
+        </div>
+        <p class="meta">Free and open source · MIT · Linux, macOS and Windows</p>
+
+        <figure class="hero-shot">
+          <img
+            src="screenshots/writing.webp"
+            width="1600"
+            height="973"
+            alt="The ProseCraft editor showing a scene in progress with the project outline beside it."
+            fetchpriority="high"
+          />
+        </figure>
+      </section>
+
+      <section id="features" class="section">
+        <h2>Everything a draft needs</h2>
+        <div class="features">
+          <article>
+            <h3>Outline</h3>
+            <ul>
+              <li>Chapter-by-chapter outline with goals and progress</li>
+              <li>Freeform, pannable storyboard canvas</li>
+              <li>Timeline view for plot and chronology</li>
+              <li>Character and place templates</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Write</h3>
+            <ul>
+              <li>Rich text editor with an optional Markdown source view</li>
+              <li>Typewriter, focus and zen modes</li>
+              <li>Split view with up to four reference panes, PDFs included</li>
+              <li>Comments, scene snapshots, images and LaTeX math</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Publish</h3>
+            <ul>
+              <li>PDF, DOCX, EPUB, Markdown, HTML and plain text</li>
+              <li>Paginated and continuous previews before you commit</li>
+              <li>Preset or custom styles, front and back matter, cover and TOC</li>
+              <li>Encrypted backups and folder or Google Drive sync</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="screenshots" class="section">
+        <h2>A look inside</h2>
+        <div class="shots">
+          <figure>
+            <img
+              src="screenshots/outline.webp"
+              width="1600"
+              height="973"
+              loading="lazy"
+              alt="The ProseCraft outline view with chapters and word-count goals."
+            />
+            <figcaption>
+              <strong>Outline</strong>
+              Chapters, scenes and goals in one column.
+            </figcaption>
+          </figure>
+          <figure>
+            <img
+              src="screenshots/storyboard.webp"
+              width="1600"
+              height="973"
+              loading="lazy"
+              alt="The ProseCraft storyboard canvas with cards, arrows and notes."
+            />
+            <figcaption>
+              <strong>Storyboard</strong>
+              A pannable canvas for cards, arrows and boxes.
+            </figcaption>
+          </figure>
+          <figure>
+            <img
+              src="screenshots/publish.webp"
+              width="1600"
+              height="973"
+              loading="lazy"
+              alt="The ProseCraft publish view showing a paginated preview and export settings."
+            />
+            <figcaption>
+              <strong>Publish</strong>
+              Preview the finished book, then export it.
+            </figcaption>
+          </figure>
+          <figure>
+            <img
+              src="screenshots/writing.webp"
+              width="1600"
+              height="973"
+              loading="lazy"
+              alt="The ProseCraft writing view with a scene open in the editor."
+            />
+            <figcaption>
+              <strong>Write</strong>
+              A quiet editor with typewriter, focus and zen modes.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>ProseCraft · MIT licensed · Built with Tauri and Svelte</span>
+      <nav aria-label="Project links">
+        <a href="./app/">Try it</a>
+        <a href="https://github.com/jennraeross/ProseCraft">GitHub</a>
+        <a href="https://github.com/jennraeross/ProseCraft/releases">Releases</a>
+      </nav>
+    </footer>
+  </body>
+</html>
