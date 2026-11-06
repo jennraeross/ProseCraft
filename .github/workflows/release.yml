@@ -125,7 +125,18 @@ jobs:
         with:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: ProseCraft ${{ env.RELEASE_TAG }}
-          releaseBody: Installers for ProseCraft ${{ env.RELEASE_TAG }}.
+          releaseBody: |
+            ## What's New
+
+            - View PDFs in Split View (#4)
+            - Save, preview, and restore scene snapshots (#5)
+            - Add comments to selected text (#6)
+            - Undo and redo edits across fields and pages (#9)
+
+            ## Contributors
+
+            - [@studiosusmed](https://github.com/studiosusmed) - PRs #4, #5, and #6
+            - [@Sycration](https://github.com/Sycration) - PR #9
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
