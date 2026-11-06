@@ -88,9 +88,19 @@ the release once they succeed.
 - [x] Sync via external folder
 - [x] Sync as a single encrypted file
 - [x] Open Markdown + JSON folder sync
+- [x] Google Drive sync via OAuth
 - [x] Basic conflict resolution
 - [ ] More advanced syncing (such as for mobile)
 - [x] Human legible folder
+
+Google Drive sync stores encrypted sync files in the app's private
+`appDataFolder`. It needs an OAuth client ID; the setup steps are documented in
+`src/lib/storage/sync/google-drive-oauth.ts`. Create a Desktop app OAuth client
+and put its secret in `VITE_GOOGLE_CLIENT_SECRET` inside a local `.env.local`
+file (see `.env.example`); the real value is gitignored. The first connection
+opens Google's consent page; the desktop app catches the redirect with a
+temporary loopback server and finishes automatically. Web builds fall back to
+pasting the authorization code back into ProseCraft.
 
 #### Application
 - [x] Font selection

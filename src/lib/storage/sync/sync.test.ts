@@ -318,15 +318,59 @@ describe("sync state", () => {
   it("defaults old saved state to the encrypted-folder layout", () => {
     localStorage.setItem(SYNC_STATE_KEY, JSON.stringify({ folder: "/tmp/sync", lastSynced: {} }));
     expect(loadSyncState()).toEqual({
+      provider: "folder",
       folder: "/tmp/sync",
       mode: "encrypted-folder",
+      googleDriveAccessToken: "",
+      googleDriveRefreshToken: "",
+      googleDriveTokenExpiry: 0,
+      googleDriveEmail: "",
       lastSynced: {}
     });
   });
 
   it("round-trips the selected mode", () => {
-    saveSyncState({ folder: "/tmp/sync", mode: "open-folder", lastSynced: {} });
+    saveSyncState({
+      provider: "folder",
+      folder: "/tmp/sync",
+      mode: "open-folder",
+      googleDriveAccessToken: "",
+      googleDriveRefreshToken: "",
+      googleDriveTokenExpiry: 0,
+      googleDriveEmail: "",
+      lastSynced: {}
+    });
     expect(loadSyncState()?.mode).toBe("open-folder");
+  });
+
+  it("round-trips a Google Drive connection", () => {
+    saveSyncState({
+      provider: "googledrive",
+      folder: "",
+      mode: "encrypted-file",
+      googleDriveAccessToken: "access-token",
+      googleDriveRefreshToken: "refresh-token",
+      googleDriveTokenExpiry: 1_234,
+      googleDriveEmail: "writer@example.com",
+      lastSynced: {}
+    });
+    expect(loadSyncState()).toMatchObject({
+      provider: "googledrive",
+      mode: "encrypted-file",
+      googleDriveAccessToken: "access-token",
+      googleDriveRefreshToken: "refresh-token",
+      googleDriveTokenExpiry: 1_234,
+      googleDriveEmail: "writer@example.com"
+    });
+  });
+
+  it("treats a Google Drive state without tokens as unconfigured", () => {
+    localStorage.setItem(SYNC_STATE_KEY, JSON.stringify({
+      provider: "googledrive",
+      mode: "encrypted-file",
+      lastSynced: {}
+    }));
+    expect(loadSyncState()).toBeNull();
   });
 });
 

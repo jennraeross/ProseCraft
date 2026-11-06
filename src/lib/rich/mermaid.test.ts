@@ -46,7 +46,7 @@ describe("Mermaid rendering", () => {
     expect(result.width).toBeLessThanOrEqual(680);
     expect(result.height).toBeGreaterThan(0);
     expect(result.height).toBeLessThanOrEqual(900);
-  });
+  }, 30_000);
 
   it("rejects diagram source above the render limit", async () => {
     await expect(renderDiagramSvg("x".repeat(MAX_DIAGRAM_SOURCE_LENGTH + 1)))

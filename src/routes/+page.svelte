@@ -96,7 +96,22 @@
     writeStored
   } from "$lib/storage/repository";
   import { readEncryptedBundleHint } from "$lib/storage/encrypted-bundle";
-  import { clearSyncState, loadSyncState, saveSyncState } from "$lib/storage/sync/state";
+  import {
+    clearSyncState,
+    loadSyncState,
+    saveSyncState,
+    type PersistedSyncState,
+    type SyncProviderType
+  } from "$lib/storage/sync/state";
+  import {
+    authenticateGoogleDrive,
+    cancelGoogleDriveAuthorization,
+    exchangeCodeForToken,
+    isTokenExpired,
+    refreshAccessToken,
+    revokeGoogleDriveAccess,
+    type GoogleDriveTokens
+  } from "$lib/storage/sync/google-drive-oauth";
   import {
     boardPointAtViewportCenter,
     boardPointFromClient,
@@ -107,7 +122,7 @@
     resizeStoryboardDrawing,
     type BoardPoint
   } from "$lib/storyboard-layout";
-  import type { SyncMode, SyncProvider } from "$lib/storage/sync/types";
+  import type { SyncMode, SyncProvider, SyncStamp } from "$lib/storage/sync/types";
   import type {
     ActivityRecord,
     ProjectData,
@@ -220,6 +235,7 @@
   let pendingEncryptedImport = "";
   let pendingEncryptedHint = $state("");
   let desktopRuntime = $state(false);
+  let syncProviderType = $state<SyncProviderType>("folder");
   let syncFolder = $state("");
   let syncMode = $state<SyncMode>("encrypted-file");
   let syncPassphrase = $state("");
@@ -227,6 +243,15 @@
   let syncStatus = $state("");
   let syncProvider: SyncProvider | undefined;
   let syncProviderKey = "";
+  let googleDriveAccessToken = $state("");
+  let googleDriveRefreshToken = $state("");
+  let googleDriveTokenExpiry = $state(0);
+  let googleDriveEmail = $state("");
+  let googleDriveAuthenticated = $state(false);
+  let googleDriveAuthCode = $state("");
+  let googleDriveCodeVerifier = $state("");
+  let googleDriveAuthorizing = $state(false);
+  let googleDriveConfigured = $derived(Boolean(googleDriveAccessToken || googleDriveRefreshToken));
   let lastEditorWordCount = 0;
   let title = $state("The shape of a first draft");
   let saveState = $state("All changes saved");
@@ -1600,27 +1625,112 @@
     }
   }
 
-  async function getSyncProvider(folder: string, mode: SyncMode): Promise<SyncProvider> {
-    const key = `${mode}\u0000${folder}`;
-    if (syncProvider && syncProviderKey === key) return syncProvider;
-    const [
-      { TauriFileSystem },
-      { FolderSyncProvider },
-      { EncryptedFileSyncProvider },
-      { OpenFolderSyncProvider }
-    ] = await Promise.all([
-      import("$lib/storage/sync/tauri-fs"),
-      import("$lib/storage/sync/folder-provider"),
-      import("$lib/storage/sync/bundle-provider"),
-      import("$lib/storage/sync/open-provider")
-    ]);
-    const fs = new TauriFileSystem(folder);
-    syncProvider = mode === "encrypted-file"
-      ? new EncryptedFileSyncProvider(fs)
-      : mode === "open-folder"
-        ? new OpenFolderSyncProvider(fs)
-        : new FolderSyncProvider(fs);
-    syncProviderKey = key;
+  function currentSyncState(lastSynced: Record<string, SyncStamp>): PersistedSyncState {
+    return {
+      provider: syncProviderType,
+      folder: syncFolder,
+      mode: syncMode,
+      googleDriveAccessToken,
+      googleDriveRefreshToken,
+      googleDriveTokenExpiry,
+      googleDriveEmail,
+      lastSynced
+    };
+  }
+
+  /**
+   * Writes the active configuration to device storage. Nothing is saved until
+   * the selected provider is usable, so switching to Google Drive and closing
+   * the settings dialog cannot erase a working folder setup.
+   */
+  function persistSyncSettings(lastSynced?: Record<string, SyncStamp>): void {
+    if (syncProviderType === "folder" && !syncFolder) return;
+    if (syncProviderType === "googledrive"
+      && !googleDriveAccessToken
+      && !googleDriveRefreshToken) return;
+    const previous = loadSyncState();
+    const sameTarget = previous?.provider === syncProviderType
+      && previous.mode === syncMode
+      && (syncProviderType === "folder" ? previous.folder === syncFolder : true);
+    saveSyncState(currentSyncState(
+      lastSynced ?? (sameTarget ? previous.lastSynced : {})
+    ));
+  }
+
+  /**
+   * Returns a usable access token for Drive requests, refreshing it and
+   * persisting the new token when the short-lived token has expired.
+   */
+  async function googleDriveAccessTokenForRequest(): Promise<string> {
+    const state = loadSyncState();
+    if (!state || state.provider !== "googledrive") {
+      throw new Error("Google Drive is not connected.");
+    }
+    const tokens = {
+      accessToken: state.googleDriveAccessToken,
+      refreshToken: state.googleDriveRefreshToken,
+      expiry: state.googleDriveTokenExpiry,
+      email: state.googleDriveEmail
+    };
+    if (tokens.accessToken && !isTokenExpired(tokens)) return tokens.accessToken;
+    if (!tokens.refreshToken) {
+      throw new Error("Google Drive session expired. Please reconnect.");
+    }
+
+    const result = await refreshAccessToken(tokens.refreshToken);
+    if (!result.success || !result.tokens) {
+      throw new Error(result.error ?? "Could not refresh the Google Drive session.");
+    }
+
+    googleDriveAccessToken = result.tokens.accessToken;
+    googleDriveRefreshToken = result.tokens.refreshToken ?? state.googleDriveRefreshToken;
+    googleDriveTokenExpiry = result.tokens.expiry;
+    googleDriveEmail = result.tokens.email ?? state.googleDriveEmail;
+    googleDriveAuthenticated = true;
+    saveSyncState({
+      ...state,
+      googleDriveAccessToken,
+      googleDriveRefreshToken,
+      googleDriveTokenExpiry,
+      googleDriveEmail
+    });
+    return googleDriveAccessToken;
+  }
+
+  async function getSyncProvider(): Promise<SyncProvider> {
+    const state = loadSyncState();
+    if (!state) throw new Error("Sync is not configured.");
+    const cacheKey = `${state.provider}\u0000${state.mode}\u0000${state.provider === "folder" ? state.folder : state.googleDriveEmail}`;
+    if (syncProvider && syncProviderKey === cacheKey) return syncProvider;
+
+    if (state.provider === "folder") {
+      if (!desktopRuntime) throw new Error("Folder sync is only available on desktop.");
+      const [
+        { TauriFileSystem },
+        { FolderSyncProvider },
+        { EncryptedFileSyncProvider },
+        { OpenFolderSyncProvider }
+      ] = await Promise.all([
+        import("$lib/storage/sync/tauri-fs"),
+        import("$lib/storage/sync/folder-provider"),
+        import("$lib/storage/sync/bundle-provider"),
+        import("$lib/storage/sync/open-provider")
+      ]);
+      const fs = new TauriFileSystem(state.folder);
+      syncProvider = state.mode === "encrypted-file"
+        ? new EncryptedFileSyncProvider(fs)
+        : state.mode === "open-folder"
+          ? new OpenFolderSyncProvider(fs)
+          : new FolderSyncProvider(fs);
+    } else {
+      const { createGoogleDriveProvider } = await import("$lib/storage/sync/google-drive-provider");
+      syncProvider = createGoogleDriveProvider(
+        { getAccessToken: googleDriveAccessTokenForRequest },
+        state.mode
+      );
+    }
+
+    syncProviderKey = cacheKey;
     return syncProvider;
   }
 
@@ -1631,12 +1741,24 @@
 
   function syncCreatedMessage(count: number): string {
     if (syncMode === "open-folder") {
-      return `Set up the open folder. ${count} project(s) synced.`;
+      return syncProviderType === "googledrive"
+        ? `Set up Google Drive as an open folder. ${count} project(s) synced.`
+        : `Set up the open folder. ${count} project(s) synced.`;
     }
     if (syncMode === "encrypted-file") {
-      return `Created an encrypted sync file. ${count} project(s) synced.`;
+      return syncProviderType === "googledrive"
+        ? `Created an encrypted sync file in Google Drive. ${count} project(s) synced.`
+        : `Created an encrypted sync file. ${count} project(s) synced.`;
     }
-    return `Created an encrypted vault in this folder. ${count} project(s) synced.`;
+    return syncProviderType === "googledrive"
+      ? `Created an encrypted vault in Google Drive. ${count} project(s) synced.`
+      : `Created an encrypted vault in this folder. ${count} project(s) synced.`;
+  }
+
+  function googleDriveReadyMessage(): string {
+    return syncMode === "open-folder"
+      ? "Connected to Google Drive. Choose Sync now."
+      : "Connected to Google Drive. Enter your passphrase and choose Sync now.";
   }
 
   function setSyncMode(next: SyncMode) {
@@ -1645,16 +1767,11 @@
     syncProvider = undefined;
     syncProviderKey = "";
     syncPassphrase = "";
-    const state = loadSyncState();
-    if (syncFolder) {
-      saveSyncState({
-        folder: syncFolder,
-        mode: next,
-        lastSynced: state?.folder === syncFolder && state.mode === next
-          ? state.lastSynced
-          : {}
-      });
+    persistSyncSettings({});
+    if (syncProviderType === "folder" && syncFolder) {
       syncStatus = "Sync method changed. Use a folder already set up for this method, or an empty folder.";
+    } else if (syncProviderType === "googledrive" && googleDriveConfigured) {
+      syncStatus = "Sync method changed. Use a Google Drive setup already created for this method, or start fresh.";
     } else {
       syncStatus = "";
     }
@@ -1668,16 +1785,15 @@
       const picked = await open({ directory: true, multiple: false, title: "Choose a sync folder" });
       if (typeof picked !== "string" || !picked) return;
       const previous = loadSyncState();
-      const same = previous?.folder === picked && previous.mode === syncMode;
+      const same = previous?.provider === "folder"
+        && previous.folder === picked
+        && previous.mode === syncMode;
       if (!same) syncPassphrase = "";
       syncFolder = picked;
+      syncProviderType = "folder";
       syncProvider = undefined;
       syncProviderKey = "";
-      saveSyncState({
-        folder: picked,
-        mode: syncMode,
-        lastSynced: same ? previous.lastSynced : {}
-      });
+      persistSyncSettings(same ? previous.lastSynced : {});
       if (same) {
         syncStatus = syncFolderReadyMessage();
       } else if (syncMode === "open-folder") {
@@ -1693,18 +1809,148 @@
     }
   }
 
-  function forgetSyncFolder() {
-    if (syncBusy) return;
-    clearSyncState();
-    syncFolder = "";
+  function handleSyncProviderChange(provider: SyncProviderType) {
+    if (syncBusy || provider === syncProviderType) return;
+    const previous = loadSyncState();
+    syncProviderType = provider;
     syncProvider = undefined;
     syncProviderKey = "";
     syncPassphrase = "";
-    syncStatus = "Sync folder forgotten. Files in the folder were left untouched.";
+    syncStatus = "";
+    // Keep the last-synced stamps only when returning to the same provider.
+    if (previous?.provider === provider) {
+      persistSyncSettings(previous.lastSynced);
+    } else {
+      persistSyncSettings({});
+    }
+  }
+
+  function applyGoogleDriveTokens(tokens: GoogleDriveTokens) {
+    googleDriveAccessToken = tokens.accessToken;
+    googleDriveRefreshToken = tokens.refreshToken ?? "";
+    googleDriveTokenExpiry = tokens.expiry;
+    googleDriveEmail = tokens.email ?? "";
+    googleDriveAuthenticated = true;
+    googleDriveAuthCode = "";
+    googleDriveCodeVerifier = "";
+    syncProviderType = "googledrive";
+    syncProvider = undefined;
+    syncProviderKey = "";
+    persistSyncSettings({});
+  }
+
+  async function connectGoogleDrive() {
+    if (syncBusy) return;
+    syncStatus = "";
+    syncBusy = true;
+    googleDriveAuthorizing = true;
+    try {
+      const result = await authenticateGoogleDrive((message) => {
+        syncStatus = message;
+      });
+      if (result.success && result.tokens) {
+        applyGoogleDriveTokens(result.tokens);
+        syncStatus = googleDriveReadyMessage();
+      } else if (result.cancelled) {
+        googleDriveCodeVerifier = "";
+        syncStatus = "Google Drive authorization cancelled.";
+      } else if (result.pending) {
+        googleDriveCodeVerifier = "pending";
+        syncStatus = result.error
+          ?? "Complete authorization in your browser, then paste the code below.";
+      } else {
+        syncStatus = result.error ?? "Could not start Google Drive authorization.";
+      }
+    } catch (error) {
+      console.error("Could not connect to Google Drive.", error);
+      syncStatus = "Could not connect to Google Drive.";
+    } finally {
+      googleDriveAuthorizing = false;
+      syncBusy = false;
+    }
+  }
+
+  async function exchangeAuthCode() {
+    if (syncBusy || !googleDriveAuthCode) return;
+    syncStatus = "";
+    syncBusy = true;
+    try {
+      const result = await exchangeCodeForToken(googleDriveAuthCode);
+      if (result.success && result.tokens) {
+        applyGoogleDriveTokens(result.tokens);
+        syncStatus = googleDriveReadyMessage();
+      } else {
+        syncStatus = result.error ?? "Failed to exchange authorization code.";
+      }
+    } catch (error) {
+      console.error("Could not exchange authorization code.", error);
+      syncStatus = "Could not exchange authorization code.";
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  function cancelGoogleDriveAuth() {
+    cancelGoogleDriveAuthorization();
+    googleDriveAuthCode = "";
+    googleDriveCodeVerifier = "";
+    if (!googleDriveAuthorizing) syncStatus = "";
+  }
+
+  async function disconnectGoogleDrive() {
+    if (syncBusy) return;
+    syncStatus = "";
+    syncBusy = true;
+    try {
+      const tokens = [googleDriveAccessToken, googleDriveRefreshToken].filter(Boolean);
+      for (const token of tokens) {
+        await revokeGoogleDriveAccess(token);
+      }
+      googleDriveAccessToken = "";
+      googleDriveRefreshToken = "";
+      googleDriveTokenExpiry = 0;
+      googleDriveEmail = "";
+      googleDriveAuthenticated = false;
+      googleDriveAuthCode = "";
+      googleDriveCodeVerifier = "";
+      syncPassphrase = "";
+      syncProvider = undefined;
+      syncProviderKey = "";
+      // The saved state belongs to the Google Drive connection, so remove it
+      // rather than leaving unusable tokens behind. Projects in Drive are not
+      // touched; the user can reconnect at any time.
+      clearSyncState();
+      syncStatus = "Disconnected from Google Drive. Files in your app data folder were left untouched.";
+    } catch (error) {
+      console.error("Could not disconnect from Google Drive.", error);
+      syncStatus = "Could not disconnect from Google Drive.";
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  function forgetSyncSettings() {
+    if (syncBusy) return;
+    clearSyncState();
+    syncFolder = "";
+    googleDriveAccessToken = "";
+    googleDriveRefreshToken = "";
+    googleDriveTokenExpiry = 0;
+    googleDriveEmail = "";
+    googleDriveAuthenticated = false;
+    googleDriveAuthCode = "";
+    googleDriveCodeVerifier = "";
+    syncProvider = undefined;
+    syncProviderKey = "";
+    syncPassphrase = "";
+    syncStatus = syncProviderType === "folder"
+      ? "Sync folder forgotten. Files in the folder were left untouched."
+      : "Google Drive connection forgotten. Files in your app data folder were left untouched.";
   }
 
   async function runSync() {
-    if (!syncFolder || syncBusy) return;
+    const configured = syncProviderType === "folder" ? Boolean(syncFolder) : googleDriveConfigured;
+    if (!configured || syncBusy) return;
     const encrypted = syncMode !== "open-folder";
     if (encrypted && syncPassphrase.length < 8) {
       syncStatus = "Use a sync passphrase of at least 8 characters.";
@@ -1715,11 +1961,13 @@
     try {
       if (saveTimer) clearTimeout(saveTimer);
       persistNow();
-      const provider = await getSyncProvider(syncFolder, syncMode);
+      const provider = await getSyncProvider();
       const state = loadSyncState();
-      const lastSynced = state?.folder === syncFolder && state.mode === syncMode
-        ? state.lastSynced
-        : {};
+      if (!state) throw new Error("Sync configuration not found.");
+      const sameTarget = state.provider === syncProviderType
+        && state.mode === syncMode
+        && (syncProviderType === "folder" ? state.folder === syncFolder : true);
+      const lastSynced = sameTarget ? state.lastSynced : {};
       const result = await provider.sync(
         syncPassphrase,
         readStoredProjectRecords(),
@@ -1727,11 +1975,7 @@
         Date.now(),
         currentDeviceId()
       );
-      saveSyncState({
-        folder: syncFolder,
-        mode: syncMode,
-        lastSynced: result.lastSynced
-      });
+      saveSyncState(currentSyncState(result.lastSynced));
       const nextActiveId = result.projects.some((project) => project.id === activeProjectId)
         ? activeProjectId
         : (result.projects[0]?.id ?? "");
@@ -4165,14 +4409,43 @@
 
   onMount(() => {
     const savedSync = loadSyncState();
-    syncFolder = savedSync?.folder ?? "";
-    syncMode = savedSync?.mode ?? "encrypted-file";
+    if (savedSync) {
+      syncProviderType = savedSync.provider;
+      syncFolder = savedSync.folder;
+      syncMode = savedSync.mode;
+      googleDriveAccessToken = savedSync.googleDriveAccessToken;
+      googleDriveRefreshToken = savedSync.googleDriveRefreshToken;
+      googleDriveTokenExpiry = savedSync.googleDriveTokenExpiry;
+      googleDriveEmail = savedSync.googleDriveEmail;
+      googleDriveAuthenticated = Boolean(googleDriveAccessToken) && !isTokenExpired({
+        accessToken: googleDriveAccessToken,
+        refreshToken: googleDriveRefreshToken,
+        expiry: googleDriveTokenExpiry,
+        email: googleDriveEmail
+      });
+      // Refresh an expired access token in the background so the user does not
+      // have to reconnect every hour.
+      if (savedSync.provider === "googledrive"
+        && !googleDriveAuthenticated
+        && googleDriveRefreshToken) {
+        void googleDriveAccessTokenForRequest().catch((error) => {
+          console.error("Could not refresh the Google Drive session.", error);
+          googleDriveAuthenticated = false;
+          syncStatus = "Google Drive session expired. Please reconnect.";
+        });
+      }
+    }
     void import("@tauri-apps/api/core")
       .then(({ isTauri }) => {
         desktopRuntime = isTauri();
+        // On mobile (not desktop), default to Google Drive
+        if (!isTauri()) {
+          syncProviderType = "googledrive";
+        }
       })
       .catch(() => {
         desktopRuntime = false;
+        syncProviderType = "googledrive";
       });
   });
 
@@ -5274,63 +5547,93 @@
         </div>
         <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
       </div>
-      {#if desktopRuntime}
-        <div class="data-group">
-          <span class="data-group-label">Device sync</span>
-          <p class="data-help">Keep this device in sync through a folder your devices already share, such as a Nextcloud folder.</p>
-          <div class="sync-mode-options" role="radiogroup" aria-label="Sync method">
-            <label class="sync-mode-option" class:selected={syncMode === "encrypted-file"}>
+      <div class="data-group">
+        <span class="data-group-label">Device sync</span>
+        <p class="data-help">
+          {syncProviderType === "folder"
+            ? "Keep this device in sync through a folder your devices already share, such as a Nextcloud folder."
+            : "Keep this device in sync through Google Drive. Projects are encrypted with your passphrase before they are stored in your app data folder."}
+        </p>
+        {#if desktopRuntime}
+          <div class="sync-provider-selector">
+            <label>
               <input
                 type="radio"
-                name="sync-method"
-                value="encrypted-file"
-                checked={syncMode === "encrypted-file"}
-                onchange={() => setSyncMode("encrypted-file")}
+                name="sync-provider"
+                value="folder"
+                checked={syncProviderType === "folder"}
+                onchange={() => handleSyncProviderChange("folder")}
                 disabled={syncBusy}
               />
-              <span class="sync-mode-copy">
-                <strong>Single encrypted file</strong>
-                <span>All projects in one passphrase-protected file. Best for cloud folders and WebDAV.</span>
-              </span>
+              <span>Local folder</span>
             </label>
-            <label class="sync-mode-option" class:selected={syncMode === "open-folder"}>
+            <label>
               <input
                 type="radio"
-                name="sync-method"
-                value="open-folder"
-                checked={syncMode === "open-folder"}
-                onchange={() => setSyncMode("open-folder")}
+                name="sync-provider"
+                value="googledrive"
+                checked={syncProviderType === "googledrive"}
+                onchange={() => handleSyncProviderChange("googledrive")}
                 disabled={syncBusy}
               />
-              <span class="sync-mode-copy">
-                <strong>Open folder</strong>
-                <span>Plain Markdown and JSON, one folder per project. Not encrypted.</span>
-              </span>
+              <span>Google Drive</span>
             </label>
-            {#if syncMode === "encrypted-folder"}
-              <label class="sync-mode-option selected">
-                <input
-                  type="radio"
-                  name="sync-method"
-                  value="encrypted-folder"
-                  checked
-                  onchange={() => setSyncMode("encrypted-folder")}
-                  disabled={syncBusy}
-                />
-                <span class="sync-mode-copy">
-                  <strong>Encrypted folder (existing layout)</strong>
-                  <span>One encrypted file per project record. Keeps existing sync folders working.</span>
-                </span>
-              </label>
-            {/if}
           </div>
-          {#if syncMode === "open-folder"}
-            <p class="data-warning">This folder is not encrypted. Anyone with access to it can read and edit your writing. Delete scenes in ProseCraft rather than removing their files.</p>
-          {:else if syncMode === "encrypted-file"}
-            <p class="data-help">Writes one <code>prosecraft-sync.prosecraft</code> file. Projects are encrypted with your passphrase before they are written.</p>
-          {:else}
-            <p class="data-help">Writes <code>vault.json</code> and one encrypted file per project record.</p>
+        {/if}
+        <div class="sync-mode-options" role="radiogroup" aria-label="Sync method">
+          <label class="sync-mode-option" class:selected={syncMode === "encrypted-file"}>
+            <input
+              type="radio"
+              name="sync-method"
+              value="encrypted-file"
+              checked={syncMode === "encrypted-file"}
+              onchange={() => setSyncMode("encrypted-file")}
+              disabled={syncBusy}
+            />
+            <span class="sync-mode-copy">
+              <strong>Single encrypted file</strong>
+              <span>All projects in one passphrase-protected file. Best for cloud folders and Google Drive.</span>
+            </span>
+          </label>
+          <label class="sync-mode-option" class:selected={syncMode === "open-folder"}>
+            <input
+              type="radio"
+              name="sync-method"
+              value="open-folder"
+              checked={syncMode === "open-folder"}
+              onchange={() => setSyncMode("open-folder")}
+              disabled={syncBusy}
+            />
+            <span class="sync-mode-copy">
+              <strong>Open folder</strong>
+              <span>Plain Markdown and JSON, one folder per project. Not encrypted.</span>
+            </span>
+          </label>
+          {#if syncMode === "encrypted-folder"}
+            <label class="sync-mode-option selected">
+              <input
+                type="radio"
+                name="sync-method"
+                value="encrypted-folder"
+                checked
+                onchange={() => setSyncMode("encrypted-folder")}
+                disabled={syncBusy}
+              />
+              <span class="sync-mode-copy">
+                <strong>Encrypted folder (existing layout)</strong>
+                <span>One encrypted file per project record. Keeps existing sync folders working.</span>
+              </span>
+            </label>
           {/if}
+        </div>
+        {#if syncMode === "open-folder"}
+          <p class="data-warning">This sync location is not encrypted. Anyone with access to it can read and edit your writing. Delete scenes in ProseCraft rather than removing their files.</p>
+        {:else if syncMode === "encrypted-file"}
+          <p class="data-help">Writes one <code>prosecraft-sync.prosecraft</code> file. Projects are encrypted with your passphrase before they are written.</p>
+        {:else}
+          <p class="data-help">Writes <code>vault.json</code> and one encrypted file per project record.</p>
+        {/if}
+        {#if syncProviderType === "folder"}
           <div class="sync-folder-row">
             <span class="sync-folder-path" title={syncFolder}>{syncFolder || "No folder chosen"}</span>
             <button type="button" class="data-button" onclick={chooseSyncFolder} disabled={syncBusy}>Choose folder…</button>
@@ -5356,12 +5659,75 @@
               >
                 {syncBusy ? "Syncing…" : "Sync now"}
               </button>
-              <button type="button" class="data-button" onclick={forgetSyncFolder} disabled={syncBusy}>Forget folder</button>
+              <button type="button" class="data-button" onclick={forgetSyncSettings} disabled={syncBusy}>Forget folder</button>
             </div>
           {/if}
-          {#if syncStatus}<p class="data-status" role="status">{syncStatus}</p>{/if}
-        </div>
-      {/if}
+        {:else}
+          <div class="google-drive-config">
+            {#if googleDriveConfigured}
+              <p class="google-drive-status">
+                {googleDriveAuthenticated
+                  ? `Connected as ${googleDriveEmail || "your Google account"}`
+                  : "Google Drive is connected. The access token will be refreshed when you sync."}
+              </p>
+            {:else if googleDriveCodeVerifier}
+              <p class="data-help">Paste the authorization code (or the full redirect URL) from your browser below:</p>
+              <input
+                class="preference-select"
+                type="text"
+                aria-label="Authorization code"
+                placeholder="Paste authorization code here"
+                bind:value={googleDriveAuthCode}
+                disabled={syncBusy}
+              />
+              <div class="data-actions">
+                <button type="button" class="data-button" onclick={exchangeAuthCode} disabled={syncBusy || !googleDriveAuthCode}>
+                  Complete connection
+                </button>
+                <button type="button" class="data-button" onclick={cancelGoogleDriveAuth} disabled={syncBusy}>
+                  Cancel
+                </button>
+              </div>
+            {:else if googleDriveAuthorizing}
+              <p class="data-help">Finish approving access in your browser. This window will update automatically.</p>
+              <div class="data-actions">
+                <button type="button" class="data-button" onclick={cancelGoogleDriveAuth}>
+                  Cancel
+                </button>
+              </div>
+            {:else}
+              <div class="data-actions">
+                <button type="button" class="data-button" onclick={connectGoogleDrive} disabled={syncBusy}>Connect to Google Drive</button>
+              </div>
+            {/if}
+          </div>
+          {#if googleDriveConfigured}
+            {#if syncMode !== "open-folder"}
+              <input
+                class="preference-select passphrase-input"
+                type="password"
+                aria-label="Sync passphrase"
+                placeholder="Sync passphrase"
+                autocomplete="current-password"
+                bind:value={syncPassphrase}
+                disabled={syncBusy}
+              />
+            {/if}
+            <div class="data-actions">
+              <button
+                type="button"
+                class="data-button"
+                onclick={runSync}
+                disabled={syncBusy || (syncMode !== "open-folder" && syncPassphrase.length < 8)}
+              >
+                {syncBusy ? "Syncing…" : "Sync now"}
+              </button>
+              <button type="button" class="data-button" onclick={disconnectGoogleDrive} disabled={syncBusy}>Disconnect Google Drive</button>
+            </div>
+          {/if}
+        {/if}
+        {#if syncStatus}<p class="data-status" role="status">{syncStatus}</p>{/if}
+      </div>
       <div class="data-group">
         <span class="data-group-label">Wiki files</span>
         {#if desktopRuntime}
@@ -6258,6 +6624,11 @@
   .sync-mode-copy span { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
   .data-warning { margin: 0 0 8px; color: var(--danger); font-size: 10px; line-height: 1.5; }
   .sync-folder-path { flex: 1; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .sync-provider-selector { display: flex; gap: 16px; margin-bottom: 12px; }
+  .sync-provider-selector label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-primary); cursor: pointer; }
+  .sync-provider-selector input[type="radio"] { margin: 0; }
+  .google-drive-config { margin-bottom: 8px; }
+  .google-drive-status { color: var(--text-muted); font-size: 10px; margin-bottom: 8px; }
   .passphrase-input { margin-bottom: 8px; }
   .passphrase-input:last-of-type { margin-bottom: 0; }
   .passphrase-hint-note { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }

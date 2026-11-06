@@ -1,6 +1,11 @@
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 #[cfg(desktop)]
 use tauri::Emitter;
@@ -455,6 +460,304 @@ fn research_delete_file(
     Ok(())
 }
 
+const OAUTH_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(300);
+
+const OAUTH_SUCCESS_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ProseCraft connected</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.5;">
+<h1>ProseCraft is connected</h1>
+<p>You can close this tab and return to the app.</p>
+</body>
+</html>"#;
+
+const OAUTH_ERROR_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ProseCraft could not connect</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.5;">
+<h1>ProseCraft could not connect</h1>
+<p>Return to the app and try again.</p>
+</body>
+</html>"#;
+
+const OAUTH_NOT_FOUND_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ProseCraft</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.5;">
+<p>This page is only used while connecting ProseCraft to Google Drive.</p>
+</body>
+</html>"#;
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthCallback {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    cancelled: bool,
+}
+
+impl OAuthCallback {
+    fn empty() -> Self {
+        Self {
+            code: None,
+            state: None,
+            error: None,
+            cancelled: false,
+        }
+    }
+}
+
+/// The receiver for the loopback listener currently waiting for Google's
+/// redirect, plus a flag the UI can set to stop waiting.
+static OAUTH_CALLBACK_RX: Mutex<Option<Receiver<OAuthCallback>>> = Mutex::new(None);
+static OAUTH_CANCEL: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let high = (bytes[index + 1] as char).to_digit(16);
+                let low = (bytes[index + 2] as char).to_digit(16);
+                if let (Some(high), Some(low)) = (high, low) {
+                    decoded.push((high * 16 + low) as u8);
+                    index += 3;
+                } else {
+                    decoded.push(b'%');
+                    index += 1;
+                }
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn parse_query_params(query: &str) -> HashMap<String, String> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (percent_decode(key), percent_decode(value))
+        })
+        .collect()
+}
+
+/// Pulls the OAuth result out of the first line of an HTTP request. Requests
+/// without a `code` or `error` (for example a favicon request) return `None` so
+/// the listener can keep waiting for Google's redirect.
+fn parse_callback_request(request: &str) -> Option<OAuthCallback> {
+    let target = request.lines().next()?.split_whitespace().nth(1)?;
+    let (_, query) = target.split_once('?')?;
+    let params = parse_query_params(query);
+
+    if let Some(error) = params.get("error").cloned() {
+        let description = params
+            .get("error_description")
+            .filter(|value| !value.is_empty())
+            .cloned();
+        return Some(OAuthCallback {
+            error: Some(description.unwrap_or(error)),
+            ..OAuthCallback::empty()
+        });
+    }
+
+    let code = params
+        .get("code")
+        .filter(|value| !value.is_empty())?
+        .clone();
+    Some(OAuthCallback {
+        code: Some(code),
+        state: params.get("state").cloned(),
+        ..OAuthCallback::empty()
+    })
+}
+
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") || buffer.len() > 16 * 1024 {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&buffer).to_string())
+}
+
+fn write_http_response(stream: &mut TcpStream, status: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+fn cancel_loopback_session() {
+    if let Ok(mut cancel) = OAUTH_CANCEL.lock()
+        && let Some(flag) = cancel.take()
+    {
+        flag.store(true, Ordering::Relaxed);
+    }
+    if let Ok(mut receiver) = OAUTH_CALLBACK_RX.lock() {
+        receiver.take();
+    }
+}
+
+/// Binds a temporary loopback server on `127.0.0.1` and returns its port. The
+/// server waits for Google's authorization redirect and hands the result to
+/// `oauth_wait_for_callback`.
+#[tauri::command]
+fn oauth_start_loopback() -> Result<u16, String> {
+    cancel_loopback_session();
+
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+
+    let (sender, receiver) = mpsc::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let thread_cancelled = Arc::clone(&cancelled);
+
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + OAUTH_LOOPBACK_TIMEOUT;
+        let mut listener_failed = false;
+        while !thread_cancelled.load(Ordering::Relaxed) && Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = match read_http_request(&mut stream) {
+                        Ok(request) => request,
+                        Err(_) => continue,
+                    };
+                    match parse_callback_request(&request) {
+                        Some(callback) => {
+                            let body = if callback.error.is_some() {
+                                OAUTH_ERROR_HTML
+                            } else {
+                                OAUTH_SUCCESS_HTML
+                            };
+                            write_http_response(&mut stream, "200 OK", body);
+                            let _ = sender.send(callback);
+                            return;
+                        }
+                        None => {
+                            write_http_response(&mut stream, "404 Not Found", OAUTH_NOT_FOUND_HTML)
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => {
+                    listener_failed = true;
+                    break;
+                }
+            }
+        }
+
+        if !thread_cancelled.load(Ordering::Relaxed) {
+            let message = if listener_failed {
+                "The Google Drive authorization listener stopped unexpectedly."
+            } else {
+                "Timed out waiting for Google Drive authorization."
+            };
+            let _ = sender.send(OAuthCallback {
+                error: Some(message.to_string()),
+                ..OAuthCallback::empty()
+            });
+        }
+    });
+
+    *OAUTH_CALLBACK_RX
+        .lock()
+        .map_err(|error| error.to_string())? = Some(receiver);
+    *OAUTH_CANCEL.lock().map_err(|error| error.to_string())? = Some(cancelled);
+
+    Ok(port)
+}
+
+fn wait_for_callback() -> Result<OAuthCallback, String> {
+    let receiver = OAUTH_CALLBACK_RX
+        .lock()
+        .map_err(|error| error.to_string())?
+        .take()
+        .ok_or_else(|| "No Google Drive authorization is in progress.".to_string())?;
+    let cancelled = OAUTH_CANCEL
+        .lock()
+        .ok()
+        .and_then(|cancel| cancel.as_ref().cloned());
+
+    let deadline = Instant::now() + OAUTH_LOOPBACK_TIMEOUT + Duration::from_secs(10);
+    loop {
+        if cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Ok(OAuthCallback {
+                cancelled: true,
+                ..OAuthCallback::empty()
+            });
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(OAuthCallback {
+                error: Some("Timed out waiting for Google Drive authorization.".to_string()),
+                ..OAuthCallback::empty()
+            });
+        }
+
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(250))) {
+            Ok(callback) => return Ok(callback),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Ok(OAuthCallback {
+                    error: Some(
+                        "The Google Drive authorization listener stopped unexpectedly.".to_string(),
+                    ),
+                    ..OAuthCallback::empty()
+                });
+            }
+        }
+    }
+}
+
+/// Blocks until the browser redirects to the loopback server, the user cancels,
+/// or the timeout elapses.
+#[tauri::command]
+async fn oauth_wait_for_callback() -> Result<OAuthCallback, String> {
+    tauri::async_runtime::spawn_blocking(wait_for_callback)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn oauth_cancel_loopback() {
+    cancel_loopback_session();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -610,7 +913,10 @@ pub fn run() {
             research_file_path,
             research_read_markdown,
             research_open_file,
-            research_delete_file
+            research_delete_file,
+            oauth_start_loopback,
+            oauth_wait_for_callback,
+            oauth_cancel_loopback
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -722,5 +1028,32 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn loopback_callback_parses_percent_encoded_code() {
+        let callback = parse_callback_request(
+            "GET /?code=4%2Fabc%2D123&state=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(callback.code.as_deref(), Some("4/abc-123"));
+        assert_eq!(callback.state.as_deref(), Some("xyz"));
+        assert!(callback.error.is_none());
+        assert!(!callback.cancelled);
+    }
+
+    #[test]
+    fn loopback_callback_reports_denied_authorization() {
+        let callback = parse_callback_request(
+            "GET /?error=access_denied&error_description=User+denied+access HTTP/1.1\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(callback.error.as_deref(), Some("User denied access"));
+        assert!(callback.code.is_none());
+    }
+
+    #[test]
+    fn loopback_callback_ignores_unrelated_requests() {
+        assert!(parse_callback_request("GET /favicon.ico HTTP/1.1\r\n\r\n").is_none());
     }
 }
