@@ -420,6 +420,8 @@
   let researchFolders = $state<BinderFolder[]>([]);
   let researchItems = $state<ResearchItem[]>([]);
   let splitPanes = $state<SplitPaneState[]>([]);
+  let splitEditorBasis = $state(690);
+  let splitResize = $state<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   let snapshots = $state<DocumentSnapshot[]>([]);
   let snapshotsDialog: HTMLDialogElement;
   let snapshotNote = $state("");
@@ -438,6 +440,7 @@
   let boardPanDrag = $state<BoardPanDrag | null>(null);
   let boardTouchPoints = $state<Map<number, BoardPoint>>(new Map());
   let boardSpacePan = $state(false);
+  let editorPanel = $state<HTMLDivElement>();
   let storyboardCards = $state<StoryboardCard[]>([]);
   let storyboardDrawings = $state<StoryboardDrawing[]>([]);
   let activeDrawingTool = $state<StoryboardDrawingTool>("select");
@@ -4148,7 +4151,57 @@
   });
 
   function toggleSplitView() {
-    splitPanes = splitPanes.length > 0 ? [] : addSplitPane([], crypto.randomUUID());
+    if (splitPanes.length > 0) {
+      splitPanes = [];
+      return;
+    }
+    if (editorPanel) {
+      resizeSplitEditor(Math.min(690, Math.max(360, (editorPanel.clientWidth - 24) * 0.55)));
+    }
+    splitPanes = addSplitPane([], crypto.randomUUID());
+  }
+
+  function resizeSplitEditor(width: number) {
+    const minimumEditorWidth = 360;
+    const minimumPaneWidth = 260;
+    const splitterSpace = 24;
+    const availableWidth = editorPanel?.clientWidth ?? width;
+    const maximumEditorWidth = Math.max(minimumEditorWidth, availableWidth - minimumPaneWidth - splitterSpace);
+    splitEditorBasis = Math.max(minimumEditorWidth, Math.min(width, maximumEditorWidth));
+  }
+
+  function startSplitResize(event: PointerEvent) {
+    if (event.button !== 0 || !editorColumn) return;
+    event.preventDefault();
+    splitResize = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: editorColumn.getBoundingClientRect().width
+    };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function moveSplitResize(event: PointerEvent) {
+    if (!splitResize || splitResize.pointerId !== event.pointerId) return;
+    resizeSplitEditor(splitResize.startWidth + event.clientX - splitResize.startX);
+  }
+
+  function finishSplitResize(event: PointerEvent) {
+    if (!splitResize || splitResize.pointerId !== event.pointerId) return;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    splitResize = null;
+  }
+
+  function handleSplitResizeKeydown(event: KeyboardEvent) {
+    const step = event.shiftKey ? 40 : 16;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      resizeSplitEditor(splitEditorBasis - step);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      resizeSplitEditor(splitEditorBasis + step);
+    }
   }
 
   async function readResearchBytes(item: ResearchFile): Promise<ArrayBuffer> {
@@ -5619,7 +5672,7 @@
           </button>
         </div>
       </div>
-      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode} class:split-open={splitPanes.length > 0}>
+      <div bind:this={editorPanel} class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode} class:split-open={splitPanes.length > 0} style={`--split-editor-basis: ${splitEditorBasis}px`}>
       <div
         class="editor-column"
         bind:this={editorColumn}
@@ -5767,6 +5820,23 @@
         </footer>
       </div>
       {#if splitPanes.length > 0}
+        <div
+          class="split-resizer"
+          role="slider"
+          tabindex="0"
+          aria-label="Resize editor and reference panes"
+          aria-orientation="vertical"
+          aria-valuemin="360"
+          aria-valuemax={Math.max(360, (editorPanel?.clientWidth ?? 644) - 284)}
+          aria-valuenow={Math.round(splitEditorBasis)}
+          title="Drag to resize editor and reference panes"
+          onpointerdown={startSplitResize}
+          onpointermove={moveSplitResize}
+          onpointerup={finishSplitResize}
+          onpointercancel={finishSplitResize}
+          onlostpointercapture={() => { splitResize = null; }}
+          onkeydown={handleSplitResizeKeydown}
+        ></div>
         <div class="split-panes" style={`--panes: ${splitPanes.length}`}>
           {#each splitPanes as pane (pane.id)}
             <SplitPane
@@ -7181,7 +7251,7 @@
   .save-dot.unsaved { background: var(--warning); }
   .export-button { display: flex; height: 30px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 11px; }
   .export-button:hover { background: var(--control-hover); }
-  .writing-area { display: flex; flex: 1; flex-direction: column; align-items: center; padding: 15px 32px 44px; }
+  .writing-area { display: flex; flex: 1; flex-direction: column; align-items: center; padding: 15px 32px 44px; container: writing-area / inline-size; }
   .workspace-controls {
     position: sticky;
     top: 0;
@@ -7206,15 +7276,20 @@
   .editor-panel.typewriter-mode { padding-bottom: 50vh; }
   .editor-panel-hidden { display: none; }
   .editor-column { position: relative; width: min(100%, 690px); }
-  .editor-panel.split-open { align-items: flex-start; gap: 24px; }
+  .editor-panel.split-open { align-items: flex-start; justify-content: flex-start; gap: 8px; }
   /* The editor gives up width first (down to 360px); the panes then share what is left and scroll sideways. */
-  .editor-panel.split-open .editor-column { width: auto; min-width: 360px; flex: 0 8 690px; }
+  .editor-panel.split-open .editor-column { width: auto; min-width: 360px; flex: 0 1 var(--split-editor-basis); }
   .editor-panel.split-open .toolbar { flex-wrap: wrap; }
-  .split-panes { position: sticky; top: 64px; display: flex; min-width: 0; flex: 0 1 calc(var(--panes) * 300px + (var(--panes) - 1) * 14px); gap: 14px; overflow-x: auto; }
+  .split-resizer { position: relative; z-index: 1; width: 8px; min-width: 8px; align-self: stretch; padding: 0; border: 0; background: transparent; cursor: col-resize; touch-action: none; }
+  .split-resizer::after { position: absolute; inset: 0 3px; border-radius: 3px; background: var(--border); content: ""; opacity: 0; transition: opacity .12s; }
+  .split-resizer:hover::after, .split-resizer:focus-visible::after, .split-resizer:active::after { opacity: 1; }
+  .split-resizer:focus-visible { outline: none; }
+  .split-panes { position: sticky; top: 64px; display: flex; min-width: 0; flex: 1 1 calc(var(--panes) * 300px + (var(--panes) - 1) * 14px); gap: 14px; overflow-x: auto; }
   .panel-toggle.active { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
-  @media (max-width: 1180px) {
+  @container writing-area (max-width: 700px) {
     .editor-panel.split-open { flex-direction: column; align-items: center; }
     .editor-panel.split-open .editor-column { width: min(100%, 690px); flex: none; }
+    .split-resizer { display: none; }
     .split-panes { position: static; width: min(100%, 690px); flex: none; flex-direction: column; overflow: visible; }
   }
   .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
