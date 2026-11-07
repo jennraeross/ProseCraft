@@ -853,6 +853,15 @@
     };
   }
 
+  /**
+   * `saveVault` feeds the data to IndexedDB, which cannot structured-clone
+   * Svelte `$state` proxies. Snapshot the working set so the stored vault is
+   * always plain data.
+   */
+  function saveProjectSnapshot(activeId = activeProjectId) {
+    saveVault($state.snapshot(projects), activeId);
+  }
+
   function persistProjectCollection() {
     if (!activeProjectId) return;
     const current = currentProjectData();
@@ -861,7 +870,7 @@
       ? [...projects, current]
       : projects.map((project) => project.id === activeProjectId ? current : project);
     try {
-      saveVault(projects, activeProjectId);
+      saveProjectSnapshot();
       void syncNativeProjectMenu();
       scheduleSaveState();
     } catch (error) {
@@ -1797,7 +1806,7 @@
       persistNow();
       projects = [...projects, project];
       loadProject(project);
-      saveVault(projects, project.id);
+      saveProjectSnapshot(project.id);
       await flushVaultStorage();
       void syncNativeProjectMenu();
       const images = manuscript.skippedImages;
@@ -4826,7 +4835,7 @@
     if (!project) return;
     if (!(await confirmDestructiveAction(`Permanently delete “${project.name}” and all its contents? This cannot be undone.`))) return;
     projects = projects.filter((item) => item.id !== id);
-    saveVault(projects, activeProjectId);
+    saveProjectSnapshot();
     void syncNativeProjectMenu();
   }
 

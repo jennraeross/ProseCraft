@@ -119,15 +119,47 @@ export async function readVaultRecord(): Promise<unknown> {
   }
 }
 
+function isDataCloneError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "name" in error
+    && (error as { name?: unknown }).name === "DataCloneError";
+}
+
+async function putVaultRecord(database: IDBDatabase, vault: StoredVault): Promise<void> {
+  const transaction = database.transaction(STORE_NAME, "readwrite");
+  try {
+    const request = transaction.objectStore(STORE_NAME).put({ key: RECORD_KEY, vault });
+    await Promise.all([requestResult(request), transactionComplete(transaction)]);
+  } catch (error) {
+    try {
+      transaction.abort();
+    } catch {
+      // The transaction already finished or aborted.
+    }
+    throw error;
+  }
+}
+
+/**
+ * IndexedDB rejects structured-clone-unfriendly values such as Svelte `$state`
+ * proxies with a DataCloneError. Callers should pass plain data, but a missed
+ * snapshot must never leave the app unable to save: fall back to a JSON copy so
+ * the write still succeeds.
+ */
 export async function writeVaultRecord(vault: StoredVault): Promise<void> {
   const database = await openVaultDatabase();
   try {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    const done = transactionComplete(transaction);
-    await Promise.all([
-      requestResult(transaction.objectStore(STORE_NAME).put({ key: RECORD_KEY, vault })),
-      done
-    ]);
+    try {
+      await putVaultRecord(database, vault);
+    } catch (error) {
+      if (!isDataCloneError(error)) throw error;
+      console.warn(
+        "The vault contained values IndexedDB cannot clone; storing a plain copy instead.",
+        error
+      );
+      await putVaultRecord(database, JSON.parse(JSON.stringify(vault)) as StoredVault);
+    }
   } finally {
     database.close();
   }
