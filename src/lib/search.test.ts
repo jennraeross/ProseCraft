@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DocumentData } from "$lib/publish/types";
-import { searchDocuments, type SearchChapter } from "./search";
+import { findFirstMatch, searchDocuments, type SearchChapter } from "./search";
 
 const chapters: SearchChapter[] = [
   { id: "c1", title: "Arrival" },
@@ -134,5 +134,35 @@ describe("searchDocuments", () => {
     expect(hits).toHaveLength(1);
     expect(hits[0].matches).toBe(1200 * 40);
     expect(elapsed).toBeLessThan(5000);
+  });
+});
+
+describe("findFirstMatch", () => {
+  it("returns source offsets of the first occurrence", () => {
+    expect(findFirstMatch("a needle here, another needle", "needle")).toEqual({ start: 2, end: 8 });
+  });
+
+  it("returns null for a blank query or no match", () => {
+    expect(findFirstMatch("some text", "   ")).toBeNull();
+    expect(findFirstMatch("some text", "")).toBeNull();
+    expect(findFirstMatch("some text", "missing")).toBeNull();
+  });
+
+  it("ignores case by default and honours caseSensitive", () => {
+    expect(findFirstMatch("Hello hello", "hello")).toEqual({ start: 0, end: 5 });
+    expect(findFirstMatch("Hello hello", "hello", { caseSensitive: true })).toEqual({ start: 6, end: 11 });
+    expect(findFirstMatch("Hello hello", "HELLO", { caseSensitive: true })).toBeNull();
+  });
+
+  it("matches whole words only when asked to", () => {
+    expect(findFirstMatch("cat concatenate cat", "cat", { wholeWord: true })).toEqual({ start: 0, end: 3 });
+    expect(findFirstMatch("concatenate cat", "cat", { wholeWord: true })).toEqual({ start: 12, end: 15 });
+    expect(findFirstMatch("concatenate", "cat", { wholeWord: true })).toBeNull();
+  });
+
+  it("folds diacritics but reports offsets in the source text", () => {
+    expect(findFirstMatch("Der Käpten", "kapten")).toEqual({ start: 4, end: 10 });
+    expect(findFirstMatch("Der Käpten", "Käpten", { caseSensitive: true })).toEqual({ start: 4, end: 10 });
+    expect(findFirstMatch("Der Käpten", "kapten", { caseSensitive: true })).toBeNull();
   });
 });

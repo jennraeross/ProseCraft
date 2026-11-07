@@ -34,6 +34,7 @@ const WORD_CHARACTER_AT_END = /[\p{L}\p{N}_]$/u;
 const WORD_CHARACTER_AT_START = /^[\p{L}\p{N}_]/u;
 
 type MatchRange = { start: number; length: number };
+export type TextMatch = { start: number; end: number };
 type Matches = { first: MatchRange | null; count: number };
 
 type Candidate = {
@@ -210,4 +211,26 @@ export function searchDocuments(
     || a.documentIndex - b.documentIndex
   );
   return candidates.slice(0, MAX_SEARCH_HITS).map((candidate) => candidate.hit);
+}
+
+/**
+ * Locates the first occurrence of a query in an arbitrary text, with the same
+ * matching rules as the search (diacritic folding unless case-sensitive,
+ * optional whole-word). Offsets are in the original text, so callers can
+ * select the match in an editor. Returns null for a blank query or no match.
+ */
+export function findFirstMatch(text: string, query: string, options: SearchOptions = {}): TextMatch | null {
+  const needle = query.trim();
+  if (!needle) return null;
+  const { caseSensitive = false, wholeWord = false } = options;
+  const haystack = makeHaystack(text, caseSensitive);
+  const searchFor = caseSensitive ? needle : makeHaystack(needle, false).text;
+  let index = haystack.text.indexOf(searchFor);
+  while (index !== -1) {
+    if (!wholeWord || isWholeWord(haystack.text, index, searchFor.length)) {
+      return { start: sourceIndex(haystack, index), end: sourceIndex(haystack, index + searchFor.length) };
+    }
+    index = haystack.text.indexOf(searchFor, index + Math.max(1, searchFor.length));
+  }
+  return null;
 }

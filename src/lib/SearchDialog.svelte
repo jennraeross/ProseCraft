@@ -8,7 +8,10 @@
   type Props = {
     documents: DocumentData[];
     chapters: SearchChapter[];
-    onOpen: (documentId: string) => void;
+    /** Prefills the find field when the dialog opens. */
+    initialQuery?: string;
+    /** Opens a document; `reveal` asks the opener to scroll to and highlight the match. */
+    onOpen: (documentId: string, reveal?: { query: string; caseSensitive: boolean; wholeWord: boolean }) => void;
     onClose: () => void;
     /** Flushes pending editor edits into the documents and returns the current list. */
     onFlush: () => DocumentData[];
@@ -17,7 +20,7 @@
     onReplace: (documents: DocumentData[], changed: ReplaceResult["changed"]) => void;
   };
 
-  let { documents, chapters, onOpen, onClose, onFlush, onSnapshot, onReplace }: Props = $props();
+  let { documents, chapters, initialQuery = "", onOpen, onClose, onFlush, onSnapshot, onReplace }: Props = $props();
 
   const DEBOUNCE_MS = 150;
 
@@ -31,6 +34,7 @@
   let searchInput = $state<HTMLInputElement>();
   let replaceInput = $state<HTMLInputElement>();
   let resultList = $state<HTMLUListElement>();
+  let confirmReplaceButton = $state<HTMLButtonElement>();
   let query = $state("");
   let caseSensitive = $state(false);
   let wholeWord = $state(false);
@@ -63,7 +67,9 @@
 
   onMount(() => {
     if (dialog && !dialog.open) dialog.showModal();
+    query = initialQuery;
     searchInput?.focus();
+    searchInput?.select();
   });
 
   // Only the typed query is debounced; the checkboxes apply right away.
@@ -90,7 +96,12 @@
 
   function openSelection() {
     const hit: SearchHit | undefined = results[activeIndex];
-    if (hit) onOpen(hit.documentId);
+    if (hit) onOpen(hit.documentId, revealRequest());
+  }
+
+  /** Describes the searched text so the opener can scroll to and highlight the match. */
+  function revealRequest() {
+    return { query: debouncedQuery, caseSensitive, wholeWord };
   }
 
   function handleDialogKeydown(event: KeyboardEvent) {
@@ -112,8 +123,17 @@
       onClose();
       return;
     }
-    // Result buttons already open on Enter; only the input needs the shortcut.
-    if (event.key === "Enter" && event.target === searchInput) {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      if (results.length === 0) return;
+      requestReplace(false);
+      // Put the confirmation one Enter away for a full keyboard flow.
+      void tick().then(() => confirmReplaceButton?.focus());
+      return;
+    }
+    // Going to the match is non-destructive, so Enter does it from anywhere
+    // except buttons, which keep their native click behavior.
+    if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
       event.preventDefault();
       openSelection();
     }
@@ -254,7 +274,8 @@
                 type="button"
                 class="search-hit"
                 aria-current={index === activeIndex ? "true" : undefined}
-                onclick={() => onOpen(hit.documentId)}
+                title="Go to match (Enter)"
+                onclick={() => onOpen(hit.documentId, revealRequest())}
                 onpointerenter={() => (selectedIndex = index)}
               >
                 <span class="search-hit-header">
@@ -283,14 +304,15 @@
       <div class="search-confirm" role="group" aria-label="Confirm replace">
         <span>Replace {pendingReplace.result.total} {pendingReplace.result.total === 1 ? "match" : "matches"} in {pendingReplace.result.changed.length} {pendingReplace.result.changed.length === 1 ? "document" : "documents"}? A snapshot of each changed scene is saved first.</span>
         <button type="button" class="search-button" onclick={() => (pendingReplace = null)}>Cancel</button>
-        <button type="button" class="search-button primary" onclick={confirmReplace}>Replace</button>
+        <button type="button" class="search-button primary" bind:this={confirmReplaceButton} onclick={confirmReplace}>Replace</button>
       </div>
     {:else}
       <div class="search-actions">
-        <button type="button" class="search-button" disabled={summaryMatches === 0} onclick={() => requestReplace(false)}>Replace selected</button>
-        <button type="button" class="search-button primary" disabled={results.length === 0} onclick={() => requestReplace(true)}>{replacement ? "Replace all" : "Delete matches"}</button>
+        <button type="button" class="search-button" title="Replace selected (Ctrl+Enter)" disabled={summaryMatches === 0} onclick={() => requestReplace(false)}>Replace selected</button>
+        <button type="button" class="search-button primary" title="Replace all" disabled={results.length === 0} onclick={() => requestReplace(true)}>{replacement ? "Replace all" : "Delete matches"}</button>
       </div>
     {/if}
+    <span class="search-keys-hint">Enter goes to the match · Ctrl+Enter replaces selected · Esc closes</span>
   </div>
 </dialog>
 
@@ -358,6 +380,7 @@
   .search-button:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
   .search-confirm { display: flex; min-width: 0; flex: 1 1 320px; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px 9px; padding: 7px 9px; border: 1px solid var(--border-control); border-radius: 7px; background: var(--control-bg); color: var(--text-secondary); font-size: 9px; line-height: 1.5; }
   .search-confirm span { flex: 1 1 200px; }
+  .search-keys-hint { flex: 1 1 100%; color: var(--text-faint); font-size: 9px; line-height: 1.5; }
   @media (max-width: 640px) {
     .settings-header { padding: 18px 16px 14px; }
     .settings-body { padding: 0 16px; }
