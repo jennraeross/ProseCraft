@@ -5518,6 +5518,12 @@
     return !(event.currentTarget instanceof Node && next instanceof Node && event.currentTarget.contains(next));
   }
 
+  /** A drag can end without a drop on our zones (Escape, drop elsewhere), so the highlight is cleared globally. */
+  function resetTargetDrops() {
+    gridDropActive = false;
+    paneDropActive = null;
+  }
+
   function handleGridDragEnter(event: DragEvent) {
     if (!hasTargetDrag(event)) return;
     const overPane = event.target instanceof Element && Boolean(event.target.closest(".split-tile"));
@@ -7142,6 +7148,8 @@
   onpointermove={updatePointerInteractions}
   onpointerup={finishPointerInteractions}
   onpointercancel={endChapterDrag}
+  ondragend={resetTargetDrops}
+  ondrop={resetTargetDrops}
 />
 
 <svelte:head>
