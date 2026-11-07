@@ -167,6 +167,7 @@
     type ChapterData,
     type DocumentData,
     type BinderFolder,
+    type LabelDef,
     type PublishOptions,
     type ResearchFile,
     type ResearchItem,
@@ -174,6 +175,7 @@
     type SpaceName
   } from "$lib/publish/types";
   import { saveExport } from "$lib/publish/save";
+  import { countByLabel, LABEL_COLORS, labelById, projectLabels, setLabel } from "$lib/labels";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
     createResearchFolderName,
@@ -308,6 +310,7 @@
     userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
   };
   type RowMenuTarget = { kind: "chapter" | "scene"; id: string };
+  type LabelMenuTarget = { kind: "chapter" | "scene"; id: string };
   type StoryboardDrawingTool = "select" | "pan" | "line" | "arrow" | "box" | "text";
   type StoryboardDrawingInteraction = {
     pointerId: number;
@@ -545,6 +548,9 @@
   let boardSpacePan = $state(false);
   let openRowMenu = $state<RowMenuTarget | null>(null);
   let rowMenuElement = $state<HTMLDivElement>();
+  let openLabelMenu = $state<LabelMenuTarget | null>(null);
+  let labelMenuElement = $state<HTMLDivElement>();
+  let labelMenuTrigger = $state<HTMLButtonElement>();
   let installPromptEvent = $state<BeforeInstallPromptEvent | null>(null);
   let installDismissed = $state(false);
   let installedStandalone = $state(false);
@@ -584,6 +590,9 @@
   let documents = $state<DocumentData[]>([]);
   let chapters = $state<ChapterData[]>([]);
   let liveChapters = $derived(chapters.filter((chapter) => !chapter.trashed));
+  let projectLabelList = $derived(
+    projectLabels(projects.find((project) => project.id === activeProjectId) ?? {})
+  );
   let trashCount = $derived(
     documents.filter((doc) => doc.trashed
       && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)).length
@@ -895,6 +904,30 @@
       documents.filter((doc) => doc.chapterId === chapter.id && !doc.space && !doc.trashed).length
     ])
   ));
+  let outlineChapterLabelInfo = $derived.by(() => {
+    const info: Record<string, { name: string; color: string }> = {};
+    for (const chapter of liveChapters) {
+      const label = labelFor(chapter.labelId);
+      if (label) info[chapter.id] = { name: label.name, color: labelColorCss(label.color) };
+    }
+    return info;
+  });
+  let outlineSceneLabelSummary = $derived.by(() => {
+    const summary: Record<string, { id: string; name: string; color: string; count: number }[]> = {};
+    for (const chapter of liveChapters) {
+      const counts = countByLabel(documents.filter((doc) => doc.chapterId === chapter.id && !doc.space));
+      const entries = projectLabelList
+        .filter((label) => (counts[label.id] ?? 0) > 0)
+        .map((label) => ({
+          id: label.id,
+          name: label.name,
+          color: labelColorCss(label.color),
+          count: counts[label.id] ?? 0
+        }));
+      if (entries.length > 0) summary[chapter.id] = entries;
+    }
+    return summary;
+  });
   let calendarCells = $derived.by(() => {
     const year = viewedMonth.getFullYear();
     const month = viewedMonth.getMonth();
@@ -5398,9 +5431,10 @@
         removeStoryboardDrawing(selectedDrawingId);
       }
     }
-    if (event.key === "Escape" && openRowMenu) {
+    if (event.key === "Escape" && (openRowMenu || openLabelMenu)) {
       event.preventDefault();
       openRowMenu = null;
+      closeLabelMenu(true);
       return;
     }
     if (event.key === "Escape" && mobileDrawerOpen) {
@@ -6033,6 +6067,64 @@
     openRowMenu = null;
   }
 
+  function labelColorCss(color: string) {
+    const preset = LABEL_COLORS.find((entry) => entry.key === color);
+    if (preset) return preset.css;
+    return /^#?[0-9a-fA-F]{6}$/.test(color) ? `#${color.replace("#", "")}` : "var(--text-faint)";
+  }
+
+  function labelFor(id?: string): LabelDef | undefined {
+    return id ? labelById(projectLabelList, id) : undefined;
+  }
+
+  function toggleLabelMenu(kind: LabelMenuTarget["kind"], id: string, trigger: HTMLButtonElement) {
+    if (openLabelMenu?.kind === kind && openLabelMenu.id === id) {
+      closeLabelMenu(true);
+      return;
+    }
+    openRowMenu = null;
+    labelMenuTrigger = trigger;
+    openLabelMenu = { kind, id };
+    void tick().then(() => {
+      labelMenuElement?.querySelector<HTMLButtonElement>("button")?.focus();
+    });
+  }
+
+  function closeLabelMenu(restoreFocus = false) {
+    const trigger = labelMenuTrigger;
+    openLabelMenu = null;
+    labelMenuTrigger = undefined;
+    if (restoreFocus) trigger?.focus();
+  }
+
+  function applyLabel(kind: LabelMenuTarget["kind"], id: string, labelId: string | undefined) {
+    closeLabelMenu(true);
+    if (kind === "chapter") {
+      chapters = chapters.map((chapter) => chapter.id === id ? setLabel(chapter, labelId) : chapter);
+      persistChapters();
+      return;
+    }
+    documents = documents.map((doc) => doc.id === id ? setLabel(doc, labelId) : doc);
+    persist();
+  }
+
+  function handleLabelMenuKeydown(event: KeyboardEvent) {
+    if (!openLabelMenu) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeLabelMenu(true);
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const items = Array.from(labelMenuElement?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+    if (items.length === 0) return;
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    items[(index + step + items.length) % items.length]?.focus();
+  }
+
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     if (publishTimer) clearTimeout(publishTimer);
@@ -6306,10 +6398,11 @@
 
   onMount(() => {
     const onPointerDown = (event: PointerEvent) => {
-      if (!openRowMenu) return;
+      if (!openRowMenu && !openLabelMenu) return;
       const target = event.target;
-      if (target instanceof Element && target.closest(".row-menu-wrap")) return;
+      if (target instanceof Element && target.closest(".row-menu-wrap, .label-menu-wrap")) return;
       openRowMenu = null;
+      closeLabelMenu();
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
@@ -6388,6 +6481,7 @@
       </div>
       <div class="chapter-list">
         {#each liveChapters as chapter (chapter.id)}
+          {@const chapterLabelDef = labelFor(chapter.labelId)}
           <div
             class="chapter-group"
             class:dragging={draggedChapterId === chapter.id}
@@ -6426,6 +6520,38 @@
                 </button>
               {/if}
               <div class="chapter-actions">
+                <div class="label-menu-wrap">
+                  <button
+                    class="label-trigger"
+                    class:has-label={chapterLabelDef !== undefined}
+                    aria-label="Label for {chapterLabel(chapter)}: {chapterLabelDef?.name ?? 'none'}"
+                    aria-haspopup="menu"
+                    aria-expanded={openLabelMenu?.kind === "chapter" && openLabelMenu.id === chapter.id}
+                    title={chapterLabelDef ? `Label: ${chapterLabelDef.name}` : "Set label"}
+                    onclick={(event) => { event.stopPropagation(); toggleLabelMenu("chapter", chapter.id, event.currentTarget as HTMLButtonElement); }}
+                  >
+                    <span class="label-dot" style={chapterLabelDef ? `--label-color: ${labelColorCss(chapterLabelDef.color)}` : undefined}></span>
+                  </button>
+                  {#if openLabelMenu?.kind === "chapter" && openLabelMenu.id === chapter.id}
+                    <div
+                      class="label-menu"
+                      role="menu"
+                      tabindex="-1"
+                      aria-label="Labels for {chapterLabel(chapter)}"
+                      bind:this={labelMenuElement}
+                      onpointerdown={(event) => event.stopPropagation()}
+                      onkeydown={handleLabelMenuKeydown}
+                    >
+                      {#each projectLabelList as label (label.id)}
+                        <button type="button" role="menuitemradio" aria-checked={chapter.labelId === label.id} onclick={() => applyLabel("chapter", chapter.id, label.id)}>
+                          <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
+                          <span class="label-menu-name">{label.name}</span>
+                        </button>
+                      {/each}
+                      <button type="button" role="menuitemradio" aria-checked={!chapter.labelId} class="label-menu-none" onclick={() => applyLabel("chapter", chapter.id, undefined)}>No label</button>
+                    </div>
+                  {/if}
+                </div>
                 <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}><Pencil size={13} aria-hidden="true" /></button>
                 <button class="chapter-action chapter-move-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}><ArrowUp size={13} aria-hidden="true" /></button>
                 <button class="chapter-action chapter-move-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}><ArrowDown size={13} aria-hidden="true" /></button>
@@ -6461,11 +6587,44 @@
             {#if chapter.expanded}
               <div class="scene-list">
                 {#each documents.filter((doc) => doc.chapterId === chapter.id && !doc.trashed) as doc (doc.id)}
+                  {@const sceneLabel = labelFor(doc.labelId)}
                   <div class:current={doc.id === activeDocumentId} class="document-row scene-row">
                     <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(doc.id)}>
                       <span class="scene-mark">¶</span>
                       <span class="tree-name">{doc.title || "Untitled scene"}</span>
                     </button>
+                    <div class="label-menu-wrap">
+                      <button
+                        class="label-trigger"
+                        class:has-label={sceneLabel !== undefined}
+                        aria-label="Label for {doc.title || 'Untitled scene'}: {sceneLabel?.name ?? 'none'}"
+                        aria-haspopup="menu"
+                        aria-expanded={openLabelMenu?.kind === "scene" && openLabelMenu.id === doc.id}
+                        title={sceneLabel ? `Label: ${sceneLabel.name}` : "Set label"}
+                        onclick={(event) => { event.stopPropagation(); toggleLabelMenu("scene", doc.id, event.currentTarget as HTMLButtonElement); }}
+                      >
+                        <span class="label-dot" style={sceneLabel ? `--label-color: ${labelColorCss(sceneLabel.color)}` : undefined}></span>
+                      </button>
+                      {#if openLabelMenu?.kind === "scene" && openLabelMenu.id === doc.id}
+                        <div
+                          class="label-menu"
+                          role="menu"
+                          tabindex="-1"
+                          aria-label="Labels for {doc.title || 'Untitled scene'}"
+                          bind:this={labelMenuElement}
+                          onpointerdown={(event) => event.stopPropagation()}
+                          onkeydown={handleLabelMenuKeydown}
+                        >
+                          {#each projectLabelList as label (label.id)}
+                            <button type="button" role="menuitemradio" aria-checked={doc.labelId === label.id} onclick={() => applyLabel("scene", doc.id, label.id)}>
+                              <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
+                              <span class="label-menu-name">{label.name}</span>
+                            </button>
+                          {/each}
+                          <button type="button" role="menuitemradio" aria-checked={!doc.labelId} class="label-menu-none" onclick={() => applyLabel("scene", doc.id, undefined)}>No label</button>
+                        </div>
+                      {/if}
+                    </div>
                     <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
                     <div class="row-menu-wrap">
                       <button
@@ -7064,6 +7223,8 @@
             chapters={liveChapters}
             {chapterWordCounts}
             {chapterSceneCounts}
+            chapterLabels={outlineChapterLabelInfo}
+            sceneLabelSummary={outlineSceneLabelSummary}
             onAddChapter={addOutlineChapter}
             onSummaryChange={updateChapterSummary}
           />
@@ -8555,6 +8716,19 @@
   .row-menu button:disabled { opacity: .4; cursor: default; }
   .row-menu button.danger { color: var(--danger); }
   .row-menu button.danger:hover:not(:disabled), .row-menu button.danger:focus-visible { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+  .label-menu-wrap { position: relative; display: flex; flex: 0 0 auto; align-items: center; }
+  .label-trigger { display: grid; width: 16px; height: 22px; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
+  .label-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .label-trigger .label-dot { width: 9px; height: 9px; border: 1px solid var(--border-control); border-radius: 50%; opacity: 0; transition: opacity .12s ease; }
+  .document-row:hover .label-trigger .label-dot, .chapter-row:hover .label-trigger .label-dot, .label-trigger:focus-visible .label-dot { opacity: 1; }
+  .label-trigger.has-label .label-dot { border-color: var(--label-color); background: var(--label-color); opacity: 1; }
+  .label-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; width: 170px; max-height: 230px; flex-direction: column; gap: 1px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+  .label-menu button { display: flex; min-height: 30px; align-items: center; gap: 7px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 11px; text-align: left; }
+  .label-menu button:hover, .label-menu button:focus-visible { background: var(--hover-bg); color: var(--text-heading); outline: none; }
+  .label-menu button[aria-checked="true"] { color: var(--text-heading); font-weight: 600; }
+  .label-menu .label-dot { width: 9px; height: 9px; flex: 0 0 auto; border: 0; border-radius: 50%; background: var(--label-color); opacity: 1; }
+  .label-menu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .label-menu-none { color: var(--text-muted); }
   .scene-list, .space-items { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 5px 22px; padding-left: 7px; border-left: 1px solid var(--tree-divider); }
   .note-folder-row { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 1px; padding-right: 2px; border-radius: 5px; }
   .note-folder-row:hover { background: var(--hover-bg); }
@@ -9189,6 +9363,8 @@
     .scene-row > .row-action { display: none; }
     .row-menu-wrap { display: block; }
     .row-menu-trigger { width: 40px; height: 40px; }
+    .label-trigger { width: 26px; height: 26px; }
+    .label-trigger .label-dot { opacity: .5; }
     .note-folder-row { flex-wrap: wrap; padding-bottom: 2px; }
     .note-folder-actions { flex-wrap: wrap; justify-content: flex-end; }
     .storyboard-view { grid-template-columns: 1fr; }
