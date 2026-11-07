@@ -2765,8 +2765,13 @@
     png: "image/png",
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
-    webp: "image/webp"
+    webp: "image/webp",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    avif: "image/avif"
   };
+  const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/avif"];
+  const IMAGE_ERROR_MESSAGE = "Use a PNG, JPG, WebP, GIF, BMP, or AVIF image.";
 
   function imageFiles(files: FileList | null | undefined): File[] {
     return Array.from(files ?? []).filter((file) =>
@@ -2776,7 +2781,7 @@
 
   function isSupportedImage(file: File): boolean {
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-    return ["image/png", "image/jpeg", "image/webp"].includes(file.type)
+    return IMAGE_MIME_TYPES.includes(file.type)
       || (!file.type || file.type === "application/octet-stream" || file.type === "image/jpg")
         && extension in IMAGE_MIME_BY_EXTENSION;
   }
@@ -2806,7 +2811,7 @@
   }
 
   async function imageFileToDataUrl(file: File): Promise<string> {
-    if (!isSupportedImage(file)) throw new Error("Use a PNG, JPG, or WebP image.");
+    if (!isSupportedImage(file)) throw new Error(IMAGE_ERROR_MESSAGE);
     if (file.size > MAX_IMAGE_FILE_BYTES) throw new Error("Images must be 15 MB or smaller.");
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
     const source = !file.type || file.type === "application/octet-stream"
@@ -2958,7 +2963,7 @@
   async function insertImageFiles(files: File[], range: Range | null, markdownPosition: number | null) {
     const documentId = activeDocumentId;
     if (files.some((file) => !isSupportedImage(file))) {
-      imageInsertError = "Use a PNG, JPG, or WebP image.";
+      imageInsertError = IMAGE_ERROR_MESSAGE;
       return;
     }
     imageInsertError = "";
@@ -2981,8 +2986,41 @@
     }
   }
 
+  /** file:// entries of a drop; WebKitGTK reports files from a file manager only as a URI list. */
+  function droppedFileUris(dataTransfer: DataTransfer | null | undefined): string[] {
+    const raw = dataTransfer?.getData("text/uri-list") ?? "";
+    return raw.split(/\r?\n/).filter((line) => line.startsWith("file://"));
+  }
+
+  function pathFromFileUri(uri: string): string | null {
+    try {
+      const url = new URL(uri);
+      let path = decodeURIComponent(url.pathname);
+      if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
+      return path;
+    } catch {
+      return null;
+    }
+  }
+
+  async function readDroppedImagePaths(uris: string[]): Promise<File[]> {
+    const { invoke, isTauri } = await import("@tauri-apps/api/core");
+    if (!isTauri()) return [];
+    const files: File[] = [];
+    for (const uri of uris) {
+      const path = pathFromFileUri(uri);
+      const extension = path?.split(".").pop()?.toLowerCase() ?? "";
+      if (!path || !(extension in IMAGE_MIME_BY_EXTENSION)) continue;
+      const bytes = await invoke<ArrayBuffer>("read_import_file", { path });
+      const name = path.split(/[\\/]/).pop() || `image.${extension}`;
+      files.push(new File([bytes], name, { type: IMAGE_MIME_BY_EXTENSION[extension] }));
+    }
+    return files;
+  }
+
   function handleImageDragOver(event: DragEvent) {
-    if (!event.dataTransfer?.types.includes("Files")) return;
+    const types = event.dataTransfer?.types;
+    if (!types?.includes("Files") && !types?.includes("text/uri-list")) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
     imageDropActive = true;
@@ -2996,12 +3034,23 @@
 
   function handleImageDrop(event: DragEvent) {
     const files = imageFiles(event.dataTransfer?.files);
-    if (!files.length) return;
+    const uris = files.length ? [] : droppedFileUris(event.dataTransfer);
+    if (!files.length && !uris.length) return;
     event.preventDefault();
     imageDropActive = false;
     const range = markdownEditorMode ? null : editorRangeAtPoint(event);
     const position = markdownEditorMode ? markdownImagePosition(event) : null;
-    void insertImageFiles(files, range, position);
+    if (files.length) {
+      void insertImageFiles(files, range, position);
+      return;
+    }
+    readDroppedImagePaths(uris).then((read) => {
+      if (read.length) void insertImageFiles(read, range, position);
+      else imageInsertError = IMAGE_ERROR_MESSAGE;
+    }).catch((error) => {
+      console.error("Could not read the dropped file.", error);
+      imageInsertError = "Could not read the dropped file.";
+    });
   }
 
   function handleImagePaste(event: ClipboardEvent) {
