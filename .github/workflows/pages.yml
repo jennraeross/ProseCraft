@@ -42,6 +42,20 @@ jobs:
         run: npm run build
         env:
           PAGES_BASE: /ProseCraft/app
+          # Optional: set VITE_GOOGLE_CLIENT_SECRET in repo Actions secrets so
+          # hardware QA can test Google Drive sync. Local .env.local is never
+          # committed; an empty secret still builds, Drive just reports config error.
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+
+      - name: Verify PWA output
+        run: |
+          test -f build/manifest.webmanifest
+          test -f build/service-worker.js
+          test -f build/icons/icon-192.png
+          test -f build/icons/icon-512.png
+          test -f build/icons/maskable-512.png
+          test -f build/icons/apple-touch-icon.png
+          grep -q '/ProseCraft/app/manifest.webmanifest' build/index.html
 
       - name: Assemble the site
         run: |

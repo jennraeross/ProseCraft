@@ -11,16 +11,30 @@ const MAX_DRAWING_COORDINATE = 10_000_000;
 
 export type DrawingBounds = { x: number; y: number; width: number; height: number };
 
-/** Converts a pointer position in the viewport to the translated canvas world. */
+export const BOARD_MIN_ZOOM = 0.4;
+export const BOARD_MAX_ZOOM = 2.5;
+
+/** Keeps the storyboard zoom inside the range the UI can navigate safely. */
+export function clampBoardZoom(zoom: number): number {
+  if (!Number.isFinite(zoom)) return 1;
+  return Math.min(BOARD_MAX_ZOOM, Math.max(BOARD_MIN_ZOOM, zoom));
+}
+
+/**
+ * Converts a pointer position in the viewport to the translated and scaled
+ * canvas world. `pan` is the world point shown at the viewport's top-left.
+ */
 export function boardPointFromClient(
   clientX: number,
   clientY: number,
   rect: BoardViewportRect,
-  pan: BoardPoint
+  pan: BoardPoint,
+  zoom = 1
 ): BoardPoint {
+  const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
   return {
-    x: clientX - rect.left + pan.x,
-    y: clientY - rect.top + pan.y
+    x: (clientX - rect.left) / scale + pan.x,
+    y: (clientY - rect.top) / scale + pan.y
   };
 }
 
@@ -58,11 +72,13 @@ export function boardPointAtViewportCenter(
   width: number,
   height: number,
   pan: BoardPoint,
-  offset = 0
+  offset = 0,
+  zoom = 1
 ): BoardPoint {
+  const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
   return {
-    x: Math.round(pan.x + width / 2 - 110 + offset),
-    y: Math.round(pan.y + height / 2 - 80 + offset)
+    x: Math.round(pan.x + width / (2 * scale) - 110 + offset),
+    y: Math.round(pan.y + height / (2 * scale) - 80 + offset)
   };
 }
 

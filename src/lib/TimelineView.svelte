@@ -283,6 +283,9 @@
     .timeline-header { align-items: flex-start; flex-direction: column; gap: 12px; }
     .timeline-header-actions { width: 100%; justify-content: space-between; }
     .timeline-count { white-space: normal; }
+    .timeline-add { height: 40px; padding: 0 14px; font-size: 12px; }
+    .timeline-drag, .timeline-action, .timeline-remove { width: 36px; height: 36px; }
+    .timeline-description { font-size: 16px; }
     .timeline-when { grid-template-columns: 1fr; }
   }
 

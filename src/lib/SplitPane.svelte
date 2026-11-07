@@ -141,7 +141,7 @@
 </aside>
 
 <style>
-  .split-pane { display: flex; min-width: 0; max-height: calc(100vh - 88px); flex: 1 0 260px; max-width: 520px; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .split-pane { display: flex; min-width: 0; max-height: calc(100vh - 88px); max-height: calc(100dvh - 88px); flex: 1 0 260px; max-width: 520px; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
   .split-pane-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
   .split-pane-header select { min-width: 0; flex: 1; padding: 5px 8px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
   .split-button { width: 26px; height: 26px; flex: none; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; }

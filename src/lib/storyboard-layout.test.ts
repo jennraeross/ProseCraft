@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   boardPointAtViewportCenter,
   boardPointFromClient,
+  clampBoardZoom,
   drawingBoundsFromPoints,
   moveStoryboardDrawing,
   normalizeStoryboardDrawings,
@@ -50,6 +51,19 @@ describe("storyboard canvas layout", () => {
   it("converts viewport pointers into translated world coordinates", () => {
     expect(boardPointFromClient(150, 260, { left: 20, top: 60 }, { x: 300, y: 500 }))
       .toEqual({ x: 430, y: 700 });
+  });
+
+  it("accounts for zoom when converting pointers and centering new cards", () => {
+    expect(boardPointFromClient(150, 260, { left: 20, top: 60 }, { x: 300, y: 500 }, 2))
+      .toEqual({ x: 365, y: 600 });
+    expect(boardPointAtViewportCenter(800, 600, { x: 100, y: 200 }, 24, 2))
+      .toEqual({ x: 214, y: 294 });
+  });
+
+  it("clamps zoom to a usable range", () => {
+    expect(clampBoardZoom(0.1)).toBe(0.4);
+    expect(clampBoardZoom(4)).toBe(2.5);
+    expect(clampBoardZoom(Number.NaN)).toBe(1);
   });
 
   it("places new cards around the visible viewport center", () => {

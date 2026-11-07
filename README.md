@@ -114,6 +114,8 @@ pasting the authorization code back into ProseCraft.
 - [x] Import Epub as Project
 
 #### Mobile
-- [ ] Fully responsive interface (partial)
-- [ ] Mobile syncing
-- [ ] Touch dragging capability for chapters and cards
+- [x] Fully responsive interface
+- [x] Mobile syncing through Google Drive (paste the authorization code when the browser cannot return automatically)
+- [x] Touch dragging capability for chapters and cards
+- [x] Installable PWA with an offline app shell
+- [ ] Real-device QA on iOS Safari and Android Chrome

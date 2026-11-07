@@ -138,6 +138,9 @@
     .outline-header { align-items: flex-start; flex-direction: column; gap: 12px; }
     .outline-header-actions { width: 100%; justify-content: space-between; }
     .outline-count { white-space: normal; }
+    .outline-add { height: 40px; padding: 0 14px; font-size: 12px; }
+    .outline-add-card { min-height: 76px; }
+    .outline-summary { font-size: 16px; }
     .outline-card { grid-template-columns: 39px minmax(0, 1fr); }
     .outline-rail { padding-right: 5px; padding-left: 5px; }
     .outline-body { padding-right: 13px; padding-left: 13px; }
@@ -147,6 +150,5 @@
     .outline-header-actions { align-items: flex-start; flex-direction: column; gap: 7px; }
     .outline-meta { white-space: normal; }
     .outline-card-header { align-items: flex-start; flex-direction: column; gap: 3px; }
-    .outline-summary { font-size: 12px; }
   }
 </style>

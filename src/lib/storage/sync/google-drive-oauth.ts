@@ -71,6 +71,8 @@ export type AuthResult = {
   pending?: boolean;
   /** True when the user stopped an in-progress loopback authorization. */
   cancelled?: boolean;
+  /** Authorization URL to open manually when a popup was blocked. */
+  authorizationUrl?: string;
 };
 
 /** Receives progress messages while the browser authorization is running. */
@@ -86,6 +88,8 @@ type LoopbackCallback = {
 /** Fallbacks for environments without sessionStorage (tests and SSR). */
 let pendingVerifier = "";
 let pendingState = "";
+/** The popup opened during the user gesture, if the browser allowed one. */
+let pendingAuthWindow: Window | null = null;
 
 function readSession(key: string): string {
   try {
@@ -167,14 +171,78 @@ async function isTauriRuntime(): Promise<boolean> {
   }
 }
 
-/** Open the OAuth authorization URL in the system browser. */
-async function openAuthUrl(url: string): Promise<void> {
+function isTauriRuntimeSync(): boolean {
+  return typeof globalThis !== "undefined"
+    && Boolean((globalThis as { isTauri?: boolean }).isTauri);
+}
+
+/**
+ * Open an empty tab while the click is still being handled. Mobile Safari and
+ * Chrome reject window.open calls that happen after an await, so the window is
+ * created first and navigated to Google once the PKCE values are ready.
+ * `noopener` cannot be used because it would return null instead of a handle;
+ * the opener is severed manually before the navigation.
+ */
+function openAuthWindowSync(): Window | null {
+  if (typeof window === "undefined") return null;
+  let popup: Window | null = null;
+  try {
+    popup = window.open("", "_blank");
+  } catch {
+    popup = null;
+  }
+  if (!popup) return null;
+  try {
+    popup.opener = null;
+  } catch {
+    // Some embedded webviews do not expose opener.
+  }
+  try {
+    popup.document.title = "ProseCraft — Google Drive";
+    popup.document.body.style.fontFamily = "system-ui, sans-serif";
+    popup.document.body.style.padding = "24px";
+    popup.document.body.textContent = "Opening Google Drive…";
+  } catch {
+    // A blank window may not be scriptable in every browser.
+  }
+  pendingAuthWindow = popup;
+  return popup;
+}
+
+/** Open the OAuth authorization URL in the system browser or the pending tab. */
+async function openAuthUrl(url: string, popup: Window | null): Promise<boolean> {
   if (await isTauriRuntime()) {
+    try {
+      popup?.close();
+    } catch {
+      // No popup was opened, or the webview already closed it.
+    }
     const { openUrl } = await import("@tauri-apps/plugin-opener");
     await openUrl(url);
-    return;
+    return true;
   }
-  window.open(url, "_blank", "noopener,noreferrer");
+  if (popup && !popup.closed) {
+    try {
+      popup.location.replace(url);
+      return true;
+    } catch {
+      try {
+        popup.location.href = url;
+        return true;
+      } catch {
+        popup.close();
+      }
+    }
+  }
+  const opened = window.open(url, "_blank");
+  if (!opened) return false;
+  pendingAuthWindow = opened;
+  try {
+    opened.opener = null;
+  } catch {
+    // Ignore; the window still works for authorization.
+  }
+  return true;
 }
 
 /** Ask the Tauri backend for a temporary loopback port. */
@@ -241,10 +309,14 @@ function buildAuthUrl(
 export async function authenticateGoogleDrive(
   onProgress?: GoogleDriveAuthProgress
 ): Promise<AuthResult> {
-  try {
-    const configurationError = missingClientSecret();
-    if (configurationError) return configurationError;
+  const configurationError = missingClientSecret();
+  if (configurationError) return configurationError;
 
+  // Create the window here, before any await, while the click gesture is
+  // still active. Desktop Tauri builds use the system browser instead.
+  let authWindow = isTauriRuntimeSync() ? null : openAuthWindowSync();
+
+  try {
     const codeVerifier = generateCodeVerifier();
     const codeChallenge = await generateCodeChallenge(codeVerifier);
     const state = generateState();
@@ -256,14 +328,20 @@ export async function authenticateGoogleDrive(
       : GOOGLE_REDIRECT_URI;
     const authUrl = buildAuthUrl(codeChallenge, state, redirectUri);
 
-    await openAuthUrl(authUrl.toString());
+    const opened = await openAuthUrl(authUrl.toString(), authWindow);
+    if (!opened) {
+      authWindow = null;
+      pendingAuthWindow = null;
+    }
 
     if (!loopback) {
       return {
         success: false,
         pending: true,
-        error:
-          "Authorization page opened. After approving access, copy the `code` parameter from the browser address bar and paste it below."
+        authorizationUrl: authUrl.toString(),
+        error: opened
+          ? "Authorization page opened. After approving access, copy the `code` parameter from the browser address bar and paste it below."
+          : "Your browser blocked the authorization window. Open the Google authorization page below, approve access, then paste the code."
       };
     }
 
@@ -293,10 +371,18 @@ export async function authenticateGoogleDrive(
       };
     }
 
-    return await exchangeCodeForToken(callback.code, codeVerifier, redirectUri);
+    const result = await exchangeCodeForToken(callback.code, codeVerifier, redirectUri);
+    if (result.success) pendingAuthWindow = null;
+    return result;
   } catch (error) {
     clearPendingFlow();
     void cancelLoopback();
+    try {
+      (authWindow ?? pendingAuthWindow)?.close();
+    } catch {
+      // The tab may already have been closed by the user.
+    }
+    pendingAuthWindow = null;
     return {
       success: false,
       error: error instanceof Error ? error.message : "Authentication failed."
@@ -308,6 +394,12 @@ export async function authenticateGoogleDrive(
 export function cancelGoogleDriveAuthorization(): void {
   clearPendingFlow();
   void cancelLoopback();
+  try {
+    pendingAuthWindow?.close();
+  } catch {
+    // The tab may already have been closed by the user.
+  }
+  pendingAuthWindow = null;
 }
 
 /**

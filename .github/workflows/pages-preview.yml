@@ -1,0 +1,61 @@
+name: Pages Preview (no deploy)
+
+# Hardware QA without overwriting production Pages.
+# Run manually from your test branch, download the test-site artifact,
+# and serve it over HTTPS (e.g. via a tunnel) for real-device testing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build web app for the /app/ subpath
+        run: npm run build
+        env:
+          PAGES_BASE: /ProseCraft/app
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+
+      - name: Verify PWA output
+        run: |
+          test -f build/manifest.webmanifest
+          test -f build/service-worker.js
+          test -f build/icons/icon-192.png
+          test -f build/icons/icon-512.png
+          test -f build/icons/maskable-512.png
+          test -f build/icons/apple-touch-icon.png
+          grep -q '/ProseCraft/app/manifest.webmanifest' build/index.html
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/app
+          cp -r site/. _site/
+          cp -r build/. _site/app/
+
+      - name: Upload test site
+        uses: actions/upload-artifact@v4
+        with:
+          name: prosecraft-test-site
+          path: _site
+          if-no-files-found: error
+          retention-days: 7

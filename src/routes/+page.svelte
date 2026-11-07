@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { base } from "$app/paths";
   import { history, historyKeymap, isolateHistory, redo as redoMarkdown, undo as undoMarkdown, undoDepth } from "@codemirror/commands";
   import {
     ArrowDown,
@@ -11,6 +12,7 @@
     ChevronLeft,
     ChevronRight,
     Download,
+    Ellipsis,
     ExternalLink,
     FileText,
     Folder,
@@ -206,6 +208,7 @@
   import {
     boardPointAtViewportCenter,
     boardPointFromClient,
+    clampBoardZoom,
     drawingBoundsFromPoints,
     moveStoryboardDrawing,
     normalizeStoryboardDrawings,
@@ -269,7 +272,15 @@
     startY: number;
     originX: number;
     originY: number;
+    originZoom: number;
+    startDistance?: number;
+    anchor?: BoardPoint;
   };
+  type BeforeInstallPromptEvent = Event & {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+  };
+  type RowMenuTarget = { kind: "chapter" | "scene"; id: string };
   type StoryboardDrawingTool = "select" | "pan" | "line" | "arrow" | "box" | "text";
   type StoryboardDrawingInteraction = {
     pointerId: number;
@@ -343,6 +354,7 @@
   let googleDriveAuthenticated = $state(false);
   let googleDriveAuthCode = $state("");
   let googleDriveCodeVerifier = $state("");
+  let googleDriveAuthUrl = $state("");
   let googleDriveAuthorizing = $state(false);
   let googleDriveConfigured = $derived(Boolean(googleDriveAccessToken || googleDriveRefreshToken));
   let lastEditorWordCount = 0;
@@ -411,12 +423,23 @@
   let wordCount = $state(0);
   let characterCount = $state(0);
   const initialViewportWidth = typeof window === "undefined" ? 1280 : window.innerWidth;
-  let leftSidebarVisible = $state(initialViewportWidth > 760);
+  const initialViewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
+  const initialCoarsePointer = typeof window !== "undefined"
+    && window.matchMedia("(pointer: coarse)").matches;
+  const initialPhoneLayout = initialViewportWidth <= 760
+    || (initialCoarsePointer && initialViewportHeight <= 520);
+  let leftSidebarVisible = $state(!initialPhoneLayout);
   let rightSidebarVisible = $state(initialViewportWidth > 1050);
-  let compactChapterLayout = initialViewportWidth <= 760;
-  let compactProgressLayout = initialViewportWidth <= 1050;
+  let compactChapterLayout = $state(initialPhoneLayout);
+  let compactProgressLayout = $state(initialViewportWidth <= 1050);
   let leftSidebarHovered = $state(false);
   let rightSidebarHovered = $state(false);
+  // On phones both sidebars are overlay drawers. On tablets the progress
+  // sidebar still overlays, but the binder remains part of the layout.
+  let mobileDrawerOpen = $derived(
+    compactChapterLayout && (leftSidebarVisible || rightSidebarVisible)
+  );
+  let drawerTrigger: HTMLElement | null = null;
   let editingChapterId = $state<string | null>(null);
   let chapterNameDraft = $state("");
   let researchFolderInput = $state<HTMLInputElement>();
@@ -465,9 +488,26 @@
   let boardDropPosition = $state<BoardPoint | null>(null);
   let boardViewport = $state<HTMLDivElement>();
   let boardPan = $state<BoardPoint>({ x: 0, y: 0 });
+  let boardZoom = $state(1);
   let boardPanDrag = $state<BoardPanDrag | null>(null);
   let boardTouchPoints = $state<Map<number, BoardPoint>>(new Map());
   let boardSpacePan = $state(false);
+  let openRowMenu = $state<RowMenuTarget | null>(null);
+  let rowMenuElement = $state<HTMLDivElement>();
+  let installPromptEvent = $state<BeforeInstallPromptEvent | null>(null);
+  let installDismissed = $state(false);
+  let installedStandalone = $state(false);
+  let isIosDevice = $state(false);
+  let updateReady = $state(false);
+  let updateApplying = $state(false);
+  let updateDismissed = $state(false);
+  let serviceWorkerRegistration: ServiceWorkerRegistration | null = null;
+  let canInstallApp = $derived(Boolean(installPromptEvent));
+  let showInstallBanner = $derived(
+    !installedStandalone && !installDismissed
+      && (isIosDevice || (canInstallApp && initialCoarsePointer))
+  );
+  let showUpdateBanner = $derived(updateReady && !updateDismissed);
   let editorPanel = $state<HTMLDivElement>();
   let storyboardCards = $state<StoryboardCard[]>([]);
   let storyboardDrawings = $state<StoryboardDrawing[]>([]);
@@ -946,6 +986,8 @@
     const project = migrateProjectToWiki(sourceProject);
     activeProjectId = project.id;
     boardPan = { x: 0, y: 0 };
+    boardZoom = 1;
+    openRowMenu = null;
     projectName = project.name;
     authorName = project.author;
     researchFolders = normalizeBinderFolders(project.researchFolders);
@@ -1083,22 +1125,91 @@
   }
 
   function handleViewportResize() {
-    const compactChapter = window.innerWidth <= 760;
+    const compactChapter = window.innerWidth <= 760
+      || (window.matchMedia("(pointer: coarse)").matches && window.innerHeight <= 520);
     if (compactChapter && !compactChapterLayout) {
       leftSidebarVisible = false;
+      leftSidebarHovered = false;
       if (workspaceView !== "writing") writingSidebarState.left = false;
     }
     compactChapterLayout = compactChapter;
     const compactProgress = window.innerWidth <= 1050;
     if (compactProgress && !compactProgressLayout) {
       rightSidebarVisible = false;
+      rightSidebarHovered = false;
       if (workspaceView !== "writing") writingSidebarState.right = false;
     }
     compactProgressLayout = compactProgress;
   }
 
+  function rememberDrawerTrigger() {
+    drawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
+
+  async function focusDrawer(selector: string) {
+    await tick();
+    document.querySelector<HTMLElement>(selector)?.focus();
+  }
+
+  function closeSidebarDrawers(restoreFocus = true) {
+    if (compactChapterLayout) leftSidebarVisible = false;
+    if (compactProgressLayout) rightSidebarVisible = false;
+    const trigger = drawerTrigger;
+    drawerTrigger = null;
+    if (restoreFocus && trigger) {
+      // Wait for the drawer backdrop/inert state to clear before restoring focus.
+      void tick().then(() => trigger.focus());
+    }
+  }
+
+  function toggleLeftSidebar() {
+    if (!compactChapterLayout) {
+      leftSidebarVisible = !leftSidebarVisible;
+      return;
+    }
+    if (leftSidebarVisible) {
+      closeSidebarDrawers();
+      return;
+    }
+    rememberDrawerTrigger();
+    rightSidebarVisible = false;
+    leftSidebarVisible = true;
+    void focusDrawer(".sidebar-mobile-close");
+  }
+
+  function toggleRightSidebar() {
+    if (!compactProgressLayout) {
+      rightSidebarVisible = !rightSidebarVisible;
+      return;
+    }
+    if (rightSidebarVisible) {
+      closeSidebarDrawers();
+      return;
+    }
+    rememberDrawerTrigger();
+    if (compactChapterLayout) leftSidebarVisible = false;
+    rightSidebarVisible = true;
+    void focusDrawer(".progress-close");
+  }
+
+  // Keep the page behind an open drawer from scrolling on phones.
+  $effect(() => {
+    if (typeof document === "undefined" || !mobileDrawerOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  });
+
   function handleSidebarPointerMove(event: PointerEvent) {
     if (event.pointerType !== "mouse") return;
+    // Phones use explicit drawer buttons; edge-hover peeking would fight them.
+    if (compactChapterLayout) {
+      leftSidebarHovered = false;
+      rightSidebarHovered = false;
+      return;
+    }
 
     const viewportWidth = window.innerWidth;
     const leftWidth = viewportWidth <= 440 ? 174 : viewportWidth <= 760 ? 220 : 258;
@@ -2149,6 +2260,7 @@
     googleDriveAuthenticated = true;
     googleDriveAuthCode = "";
     googleDriveCodeVerifier = "";
+    googleDriveAuthUrl = "";
     syncProviderType = "googledrive";
     syncProvider = undefined;
     syncProviderKey = "";
@@ -2158,6 +2270,7 @@
   async function connectGoogleDrive() {
     if (syncBusy) return;
     syncStatus = "";
+    googleDriveAuthUrl = "";
     syncBusy = true;
     googleDriveAuthorizing = true;
     try {
@@ -2169,12 +2282,15 @@
         syncStatus = googleDriveReadyMessage();
       } else if (result.cancelled) {
         googleDriveCodeVerifier = "";
+        googleDriveAuthUrl = "";
         syncStatus = "Google Drive authorization cancelled.";
       } else if (result.pending) {
         googleDriveCodeVerifier = "pending";
+        googleDriveAuthUrl = result.authorizationUrl ?? "";
         syncStatus = result.error
           ?? "Complete authorization in your browser, then paste the code below.";
       } else {
+        googleDriveAuthUrl = "";
         syncStatus = result.error ?? "Could not start Google Drive authorization.";
       }
     } catch (error) {
@@ -2210,6 +2326,7 @@
     cancelGoogleDriveAuthorization();
     googleDriveAuthCode = "";
     googleDriveCodeVerifier = "";
+    googleDriveAuthUrl = "";
     if (!googleDriveAuthorizing) syncStatus = "";
   }
 
@@ -2229,6 +2346,7 @@
       googleDriveAuthenticated = false;
       googleDriveAuthCode = "";
       googleDriveCodeVerifier = "";
+      googleDriveAuthUrl = "";
       syncPassphrase = "";
       syncProvider = undefined;
       syncProviderKey = "";
@@ -2256,6 +2374,7 @@
     googleDriveAuthenticated = false;
     googleDriveAuthCode = "";
     googleDriveCodeVerifier = "";
+    googleDriveAuthUrl = "";
     syncProvider = undefined;
     syncProviderKey = "";
     syncPassphrase = "";
@@ -3413,7 +3532,11 @@
 
   function openSidebarDocument(id: string) {
     openDocument(id);
+    closeSidebarDrawers(false);
     setWorkspaceView("writing");
+    if (compactChapterLayout) {
+      void tick().then(() => editor?.focus());
+    }
   }
 
   function createScene(
@@ -3568,8 +3691,8 @@
       pointerId: event.pointerId,
       kind,
       sourceId,
-      offsetX: rect ? event.clientX - rect.left : 110,
-      offsetY: rect ? event.clientY - rect.top : 80
+      offsetX: rect ? (event.clientX - rect.left) / boardZoom : 110,
+      offsetY: rect ? (event.clientY - rect.top) / boardZoom : 80
     };
     boardDropPosition = null;
     handle.setPointerCapture(event.pointerId);
@@ -3583,7 +3706,7 @@
       || event.clientY < rect.top || event.clientY > rect.bottom) {
       return null;
     }
-    const point = boardPointFromClient(event.clientX, event.clientY, rect, boardPan);
+    const point = boardPointFromClient(event.clientX, event.clientY, rect, boardPan, boardZoom);
     return { x: point.x - drag.offsetX, y: point.y - drag.offsetY };
   }
 
@@ -3598,15 +3721,23 @@
       const points = new Map(boardTouchPoints);
       points.set(event.pointerId, { x: event.clientX, y: event.clientY });
       boardTouchPoints = points;
-      if (points.size >= 2 && !boardPanDrag) {
+      if (points.size >= 2) {
         cancelStoryboardDrawingInteraction();
         const [first, second] = [...points.values()];
+        const rect = boardViewport?.getBoundingClientRect();
+        const midX = (first.x + second.x) / 2;
+        const midY = (first.y + second.y) / 2;
         boardPanDrag = {
           pointerId: "touch",
-          startX: (first.x + second.x) / 2,
-          startY: (first.y + second.y) / 2,
+          startX: midX,
+          startY: midY,
           originX: boardPan.x,
-          originY: boardPan.y
+          originY: boardPan.y,
+          originZoom: boardZoom,
+          startDistance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+          anchor: rect
+            ? boardPointFromClient(midX, midY, rect, boardPan, boardZoom)
+            : undefined
         };
       }
       return;
@@ -3620,7 +3751,8 @@
       startX: event.clientX,
       startY: event.clientY,
       originX: boardPan.x,
-      originY: boardPan.y
+      originY: boardPan.y,
+      originZoom: boardZoom
     };
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   }
@@ -3630,20 +3762,36 @@
       const points = new Map(boardTouchPoints);
       points.set(event.pointerId, { x: event.clientX, y: event.clientY });
       boardTouchPoints = points;
-      if (boardPanDrag?.pointerId === "touch") {
+      const drag = boardPanDrag;
+      if (drag?.pointerId === "touch" && points.size >= 2) {
         const [first, second] = [...points.values()];
-        boardPan = {
-          x: boardPanDrag.originX - ((first.x + second.x) / 2 - boardPanDrag.startX),
-          y: boardPanDrag.originY - ((first.y + second.y) / 2 - boardPanDrag.startY)
-        };
+        const rect = boardViewport?.getBoundingClientRect();
+        if (drag.anchor && drag.startDistance && rect) {
+          // Keep the world point under the pinch midpoint anchored while the
+          // fingers move, so zooming does not drift toward the viewport corner.
+          const midX = (first.x + second.x) / 2;
+          const midY = (first.y + second.y) / 2;
+          const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+          const zoom = clampBoardZoom(drag.originZoom * (distance / drag.startDistance));
+          boardZoom = zoom;
+          boardPan = {
+            x: drag.anchor.x - (midX - rect.left) / zoom,
+            y: drag.anchor.y - (midY - rect.top) / zoom
+          };
+        } else {
+          boardPan = {
+            x: drag.originX - ((first.x + second.x) / 2 - drag.startX) / drag.originZoom,
+            y: drag.originY - ((first.y + second.y) / 2 - drag.startY) / drag.originZoom
+          };
+        }
       }
       return;
     }
     const drag = boardPanDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     boardPan = {
-      x: drag.originX - (event.clientX - drag.startX),
-      y: drag.originY - (event.clientY - drag.startY)
+      x: drag.originX - (event.clientX - drag.startX) / drag.originZoom,
+      y: drag.originY - (event.clientY - drag.startY) / drag.originZoom
     };
   }
 
@@ -3657,12 +3805,20 @@
           boardPanDrag = null;
         } else {
           const [first, second] = [...points.values()];
+          const rect = boardViewport?.getBoundingClientRect();
+          const midX = (first.x + second.x) / 2;
+          const midY = (first.y + second.y) / 2;
           boardPanDrag = {
             pointerId: "touch",
-            startX: (first.x + second.x) / 2,
-            startY: (first.y + second.y) / 2,
+            startX: midX,
+            startY: midY,
             originX: boardPan.x,
-            originY: boardPan.y
+            originY: boardPan.y,
+            originZoom: boardZoom,
+            startDistance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+            anchor: rect
+              ? boardPointFromClient(midX, midY, rect, boardPan, boardZoom)
+              : undefined
           };
         }
       }
@@ -3671,13 +3827,26 @@
     }
   }
 
+  function resetBoardView() {
+    boardPan = { x: 0, y: 0 };
+    boardZoom = 1;
+  }
+
+  function boardGridStyle(): string {
+    const size = 24 * boardZoom;
+    const x = 8 * boardZoom - ((boardPan.x * boardZoom) % size);
+    const y = 8 * boardZoom - ((boardPan.y * boardZoom) % size);
+    return `background-size: ${size}px ${size}px; background-position: ${x}px ${y}px;`;
+  }
+
   function storyboardDrawingPoint(event: PointerEvent): BoardPoint | null {
     if (!boardViewport) return null;
     return boardPointFromClient(
       event.clientX,
       event.clientY,
       boardViewport.getBoundingClientRect(),
-      boardPan
+      boardPan,
+      boardZoom
     );
   }
 
@@ -3932,7 +4101,8 @@
       boardViewport?.clientWidth ?? 700,
       boardViewport?.clientHeight ?? 600,
       boardPan,
-      offset
+      offset,
+      boardZoom
     );
     storyboardCards = [...storyboardCards, { ...card, rowId, ...position }];
     persist();
@@ -4858,6 +5028,16 @@
         removeStoryboardDrawing(selectedDrawingId);
       }
     }
+    if (event.key === "Escape" && openRowMenu) {
+      event.preventDefault();
+      openRowMenu = null;
+      return;
+    }
+    if (event.key === "Escape" && mobileDrawerOpen) {
+      event.preventDefault();
+      closeSidebarDrawers();
+      return;
+    }
     if (event.key === "Escape") showZenInterface();
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
       event.preventDefault();
@@ -5403,6 +5583,78 @@
     void refreshStorageUsage();
   }
 
+  const INSTALL_DISMISSED_KEY = "prosecraft-install-dismissed";
+
+  function isStandaloneDisplay(): boolean {
+    if (typeof window === "undefined") return false;
+    const standaloneNavigator = navigator as Navigator & { standalone?: boolean };
+    return window.matchMedia("(display-mode: standalone)").matches
+      || standaloneNavigator.standalone === true;
+  }
+
+  function dismissInstallBanner() {
+    installDismissed = true;
+    try {
+      localStorage.setItem(INSTALL_DISMISSED_KEY, "1");
+    } catch {
+      // Private browsing may not allow persistence; hide it for this session.
+    }
+  }
+
+  function handleInstallAction() {
+    if (!canInstallApp) {
+      dismissInstallBanner();
+      openSettings();
+      return;
+    }
+    void installApp();
+  }
+
+  async function installApp() {
+    const prompt = installPromptEvent;
+    if (!prompt) {
+      openSettings();
+      return;
+    }
+    try {
+      await prompt.prompt();
+      const choice = await prompt.userChoice;
+      installPromptEvent = null;
+      if (choice.outcome === "accepted") {
+        installedStandalone = true;
+      } else {
+        dismissInstallBanner();
+      }
+    } catch (error) {
+      console.error("Could not open the install prompt.", error);
+    }
+  }
+
+  function applyServiceWorkerUpdate() {
+    const waiting = serviceWorkerRegistration?.waiting;
+    if (!waiting) {
+      void serviceWorkerRegistration?.update().catch(() => undefined);
+      return;
+    }
+    updateApplying = true;
+    waiting.postMessage({ type: "SKIP_WAITING" });
+  }
+
+  function toggleRowMenu(kind: RowMenuTarget["kind"], id: string) {
+    if (openRowMenu?.kind === kind && openRowMenu.id === id) {
+      openRowMenu = null;
+      return;
+    }
+    openRowMenu = { kind, id };
+    void tick().then(() => {
+      rowMenuElement?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    });
+  }
+
+  function closeRowMenu() {
+    openRowMenu = null;
+  }
+
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     if (publishTimer) clearTimeout(publishTimer);
@@ -5429,6 +5681,16 @@
       window.removeEventListener("pagehide", flush);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
+  });
+
+  // Browsers may evict site data under storage pressure. Ask for persistent
+  // storage once the app is running; the vault itself remains in IndexedDB.
+  onMount(() => {
+    if (!navigator.storage?.persist) return;
+    void navigator.storage
+      .persisted()
+      .then((persisted) => (persisted ? undefined : navigator.storage.persist()))
+      .catch(() => undefined);
   });
 
   onMount(() => {
@@ -5575,6 +5837,101 @@
       unlisten.forEach((stop) => stop());
     };
   });
+
+  onMount(() => {
+    installedStandalone = isStandaloneDisplay();
+    isIosDevice = /iPad|iPhone|iPod/.test(navigator.userAgent)
+      || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    try {
+      installDismissed = localStorage.getItem(INSTALL_DISMISSED_KEY) === "1";
+    } catch {
+      installDismissed = false;
+    }
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      installPromptEvent = event as BeforeInstallPromptEvent;
+    };
+    const onAppInstalled = () => {
+      installPromptEvent = null;
+      installedStandalone = true;
+      installDismissed = false;
+    };
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onAppInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onAppInstalled);
+    };
+  });
+
+  onMount(() => {
+    if (!("serviceWorker" in navigator)) return;
+    if (location.protocol !== "https:" || location.hostname.endsWith("localhost")) return;
+
+    let disposed = false;
+    let refreshing = false;
+    const onControllerChange = () => {
+      if (!updateApplying || refreshing) return;
+      refreshing = true;
+      location.reload();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+
+    const watchInstalling = (worker: ServiceWorker | null) => {
+      if (!worker) return;
+      worker.addEventListener("statechange", () => {
+        if (worker.state === "installed" && navigator.serviceWorker.controller) {
+          updateReady = true;
+          updateDismissed = false;
+        }
+      });
+    };
+
+    const watchRegistration = (registration: ServiceWorkerRegistration) => {
+      if (disposed) return;
+      serviceWorkerRegistration = registration;
+      if (registration.waiting && navigator.serviceWorker.controller) {
+        updateReady = true;
+      }
+      registration.addEventListener("updatefound", () => {
+        watchInstalling(registration.installing);
+      });
+      // The registration may already be installing before this page attached
+      // its listeners (for example after a fast reload).
+      watchInstalling(registration.installing);
+    };
+
+    navigator.serviceWorker
+      .register(`${base}/service-worker.js`)
+      .then(watchRegistration)
+      .catch((error) => {
+        console.error("Could not register the offline worker.", error);
+      });
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || !serviceWorkerRegistration) return;
+      void serviceWorkerRegistration.update().catch(() => undefined);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      disposed = true;
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  });
+
+  onMount(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (!openRowMenu) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest(".row-menu-wrap")) return;
+      openRowMenu = null;
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  });
 </script>
 
 <svelte:window
@@ -5592,6 +5949,15 @@
 </svelte:head>
 
 <div class="app-shell" class:zen-hidden={zenInterfaceHidden}>
+  {#if mobileDrawerOpen}
+    <button
+      type="button"
+      class="drawer-backdrop"
+      tabindex="-1"
+      aria-label="Close side panel"
+      onclick={() => closeSidebarDrawers()}
+    ></button>
+  {/if}
   <aside
     class="sidebar"
     class:peek={!leftSidebarVisible}
@@ -5599,6 +5965,15 @@
     inert={zenInterfaceHidden || (!leftSidebarVisible && !leftSidebarHovered)}
     aria-label="Chapter and story navigation"
   >
+    <div class="sidebar-mobile-head">
+      <span class="nav-label">NAVIGATION</span>
+      <button
+        class="sidebar-mobile-close"
+        type="button"
+        aria-label="Close chapters sidebar"
+        onclick={() => closeSidebarDrawers()}
+      ><X size={18} aria-hidden="true" /></button>
+    </div>
     <div class="project-identity">
       <select aria-label="Switch project" value={activeProjectId} onchange={(event) => switchProject((event.currentTarget as HTMLSelectElement).value)}>
         {#each liveProjects as project (project.id)}
@@ -5670,21 +6045,68 @@
               {/if}
               <div class="chapter-actions">
                 <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}><Pencil size={13} aria-hidden="true" /></button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}><ArrowUp size={13} aria-hidden="true" /></button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}><ArrowDown size={13} aria-hidden="true" /></button>
+                <button class="chapter-action chapter-move-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}><ArrowUp size={13} aria-hidden="true" /></button>
+                <button class="chapter-action chapter-move-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}><ArrowDown size={13} aria-hidden="true" /></button>
                 <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} to Trash" title="Move chapter and scenes to Trash" onclick={() => trashChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
                 <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}><Plus size={13} aria-hidden="true" /></button>
+                <div class="row-menu-wrap">
+                  <button
+                    class="row-menu-trigger"
+                    aria-label="More actions for {chapterLabel(chapter)}"
+                    aria-haspopup="menu"
+                    aria-expanded={openRowMenu?.kind === "chapter" && openRowMenu.id === chapter.id}
+                    onclick={(event) => { event.stopPropagation(); toggleRowMenu("chapter", chapter.id); }}
+                  ><Ellipsis size={16} aria-hidden="true" /></button>
+                  {#if openRowMenu?.kind === "chapter" && openRowMenu.id === chapter.id}
+                    <div
+                      class="row-menu"
+                      role="menu"
+                      tabindex="-1"
+                      aria-label="Actions for {chapterLabel(chapter)}"
+                      bind:this={rowMenuElement}
+                      onpointerdown={(event) => event.stopPropagation()}
+                    >
+                      <button type="button" role="menuitem" onclick={() => { closeRowMenu(); startChapterRename(chapter); }}>Rename chapter</button>
+                      <button type="button" role="menuitem" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => { closeRowMenu(); moveChapter(chapter.id, -1); }}>Move up</button>
+                      <button type="button" role="menuitem" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => { closeRowMenu(); moveChapter(chapter.id, 1); }}>Move down</button>
+                      <button type="button" role="menuitem" onclick={() => { closeRowMenu(); createScene(chapter.id); }}>Add scene</button>
+                      <button type="button" role="menuitem" class="danger" onclick={() => { closeRowMenu(); trashChapter(chapter.id); }}>Move to Trash</button>
+                    </div>
+                  {/if}
+                </div>
               </div>
             </div>
             {#if chapter.expanded}
               <div class="scene-list">
                 {#each documents.filter((doc) => doc.chapterId === chapter.id && !doc.trashed) as doc (doc.id)}
-                  <div class:current={doc.id === activeDocumentId} class="document-row">
+                  <div class:current={doc.id === activeDocumentId} class="document-row scene-row">
                     <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(doc.id)}>
                       <span class="scene-mark">¶</span>
                       <span class="tree-name">{doc.title || "Untitled scene"}</span>
                     </button>
                     <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                    <div class="row-menu-wrap">
+                      <button
+                        class="row-menu-trigger"
+                        aria-label="More actions for {doc.title || 'Untitled scene'}"
+                        aria-haspopup="menu"
+                        aria-expanded={openRowMenu?.kind === "scene" && openRowMenu.id === doc.id}
+                        onclick={(event) => { event.stopPropagation(); toggleRowMenu("scene", doc.id); }}
+                      ><Ellipsis size={16} aria-hidden="true" /></button>
+                      {#if openRowMenu?.kind === "scene" && openRowMenu.id === doc.id}
+                        <div
+                          class="row-menu"
+                          role="menu"
+                          tabindex="-1"
+                          aria-label="Actions for {doc.title || 'Untitled scene'}"
+                          bind:this={rowMenuElement}
+                          onpointerdown={(event) => event.stopPropagation()}
+                        >
+                          <button type="button" role="menuitem" onclick={() => { closeRowMenu(); openSidebarDocument(doc.id); }}>Open scene</button>
+                          <button type="button" role="menuitem" class="danger" onclick={() => { closeRowMenu(); moveToTrash(doc.id); }}>Move to Trash</button>
+                        </div>
+                      {/if}
+                    </div>
                   </div>
                 {/each}
                 {#if !documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed)}
@@ -5914,7 +6336,33 @@
     </div>
   </aside>
 
-  <main class="main-panel" class:left-hidden={!leftSidebarVisible} class:right-hidden={!rightSidebarVisible}>
+  <main class="main-panel" class:left-hidden={!leftSidebarVisible} class:right-hidden={!rightSidebarVisible} inert={mobileDrawerOpen}>
+    {#if showUpdateBanner}
+      <div class="app-banner" role="status">
+        <span class="app-banner-message"><strong>A new version is ready.</strong> Reload when you reach a stopping point.</span>
+        <span class="app-banner-actions">
+          <button type="button" class="data-button" onclick={applyServiceWorkerUpdate} disabled={updateApplying}>
+            {updateApplying ? "Updating…" : "Reload to update"}
+          </button>
+          <button type="button" class="app-banner-dismiss" aria-label="Dismiss update notice" onclick={() => updateDismissed = true}><X size={14} aria-hidden="true" /></button>
+        </span>
+      </div>
+    {:else if showInstallBanner}
+      <div class="app-banner" role="status">
+        <span class="app-banner-message">
+          <strong>Install ProseCraft.</strong>
+          {isIosDevice
+            ? "Add it to your Home Screen for full-screen, offline writing."
+            : "Keep it on your Home Screen and write offline."}
+        </span>
+        <span class="app-banner-actions">
+          <button type="button" class="data-button" onclick={handleInstallAction}>
+            {isIosDevice && !canInstallApp ? "How to install" : "Install"}
+          </button>
+          <button type="button" class="app-banner-dismiss" aria-label="Dismiss install suggestion" onclick={dismissInstallBanner}><X size={14} aria-hidden="true" /></button>
+        </span>
+      </div>
+    {/if}
     {#if storageError}
       <div class="storage-banner" role="alert">
         <span class="storage-banner-message">{storageError}</span>
@@ -5935,15 +6383,15 @@
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
         <div class="panel-toggles">
-          <button class="panel-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
+          <button class="panel-toggle split-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
             <Columns2 size={15} aria-hidden="true" />
             <span>Split</span>
           </button>
-          <button class="panel-toggle" aria-label={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} title={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} aria-pressed={leftSidebarVisible} onclick={() => leftSidebarVisible = !leftSidebarVisible}>
+          <button class="panel-toggle" aria-label={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} title={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} aria-pressed={leftSidebarVisible} onclick={toggleLeftSidebar}>
             <PanelLeft size={15} aria-hidden="true" />
             <span>Chapters</span>
           </button>
-          <button class="panel-toggle" aria-label={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} title={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} aria-pressed={rightSidebarVisible} onclick={() => rightSidebarVisible = !rightSidebarVisible}>
+          <button class="panel-toggle" aria-label={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} title={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} aria-pressed={rightSidebarVisible} onclick={toggleRightSidebar}>
             <PanelRight size={15} aria-hidden="true" />
             <span>Progress</span>
           </button>
@@ -6259,6 +6707,8 @@
               <div><span class="board-eyebrow">PLAN YOUR STORY</span><h1>Storyboard</h1></div>
               <div class="storyboard-header-actions">
                 <span class="board-card-count">{storyboardCards.length} {storyboardCards.length === 1 ? "card" : "cards"}</span>
+                <span class="board-zoom-level" aria-live="polite">{Math.round(boardZoom * 100)}%</span>
+                <button class="add-timeline-row" title="Reset zoom and position" onclick={resetBoardView}><RotateCcw size={14} aria-hidden="true" /> Reset view</button>
                 <button class="add-timeline-row" onclick={() => addStoryboardCard("blank", "")}><Plus size={14} aria-hidden="true" /> Add blank card</button>
               </div>
             </header>
@@ -6306,13 +6756,13 @@
               tabindex="0"
               onpointerdown={startStoryboardCanvasInteraction}
               class:board-pan-tool={activeDrawingTool === "pan"}
-              style:background-position={`${8 - (boardPan.x % 24)}px ${8 - (boardPan.y % 24)}px`}
-              aria-label="Freeform storyboard canvas. Select a diagram tool to draw. Hold Space while dragging to pan, or use two fingers on touch screens."
+              style={boardGridStyle()}
+              aria-label="Freeform storyboard canvas. Select a diagram tool to draw. Hold Space while dragging to pan, pinch to zoom, or use two fingers on touch screens."
             >
               <div class="storyboard-pan-surface" aria-hidden="true" onpointerdown={startStoryboardPan}></div>
               <div
                 class="storyboard-world"
-                style:transform={`translate3d(${-boardPan.x}px, ${-boardPan.y}px, 0)`}
+                style:transform={`scale(${boardZoom}) translate3d(${-boardPan.x}px, ${-boardPan.y}px, 0)`}
               >
                 <svg class="storyboard-drawing-layer" role="group" aria-label="Diagram shapes">
                   <defs>
@@ -6432,7 +6882,7 @@
                 <p class="storyboard-empty-hint">Add a card or choose a diagram tool to start planning on the canvas.</p>
               {/if}
             </div>
-            <p class="storyboard-pan-hint">Draw with the toolbar · Pan tool, Space + drag, or middle mouse · Two fingers on empty canvas</p>
+            <p class="storyboard-pan-hint">Draw with the toolbar · Pan tool, Space + drag, or middle mouse · Pinch or two fingers to zoom and move</p>
           </section>
         </div>
         {#if workspaceView === "timeline"}
@@ -6473,7 +6923,7 @@
           <span class="progress-eyebrow">YOUR WRITING</span>
           <h2>Progress</h2>
         </div>
-        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => rightSidebarVisible = false}><X size={15} aria-hidden="true" /></button>
+        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => closeSidebarDrawers()}><X size={15} aria-hidden="true" /></button>
       </div>
 
       <section class="progress-section project-progress">
@@ -6617,6 +7067,31 @@
         {/each}
       </select>
     </section>
+    {#if !desktopRuntime}
+      <section class="preference-section">
+        <div class="preference-heading"><strong>Install app</strong><span>Keep ProseCraft on this device</span></div>
+        {#if installedStandalone}
+          <p class="preference-help">ProseCraft is installed and running as an app on this device. The app shell opens offline; your projects stay in this device’s local database.</p>
+        {:else if canInstallApp}
+          <div class="data-actions">
+            <button type="button" class="data-button" onclick={installApp}>Install ProseCraft</button>
+          </div>
+          <p class="preference-help">Install adds ProseCraft to your Home Screen or applications menu and keeps the writing app available offline.</p>
+        {:else if isIosDevice}
+          <p class="preference-help">On iPhone or iPad, open ProseCraft in Safari, tap the Share button, then choose <strong>Add to Home Screen</strong>. It will open full-screen and keep working offline.</p>
+        {:else}
+          <p class="preference-help">Use your browser’s install option to add ProseCraft to your device. In Chrome or Edge, choose <strong>Install app</strong> from the menu; in Firefox, choose <strong>Add to Home Screen</strong>. The app shell then opens offline.</p>
+        {/if}
+        {#if updateReady}
+          <div class="data-actions">
+            <button type="button" class="data-button" onclick={applyServiceWorkerUpdate} disabled={updateApplying}>
+              {updateApplying ? "Updating…" : "Reload to update"}
+            </button>
+          </div>
+          <p class="preference-help">An update is ready. Reloading keeps your writing saved and switches to the newest version.</p>
+        {/if}
+      </section>
+    {/if}
     <section class="preference-section">
       <div class="preference-heading"><strong>Writing fonts</strong><span>Choose typefaces for the writing area and Markdown source</span></div>
       <label class="preference-label" for="rich-text-font-preference">Writing font</label>
@@ -6863,12 +7338,18 @@
                   : "Google Drive is connected. The access token will be refreshed when you sync."}
               </p>
             {:else if googleDriveCodeVerifier}
-              <p class="data-help">Paste the authorization code (or the full redirect URL) from your browser below:</p>
+              <p class="data-help">Google will redirect to a local address that may show a “can’t open the page” error. That is expected. Copy the entire address bar, or just the <code>code=</code> value, and paste it below.</p>
+              {#if googleDriveAuthUrl}
+                <div class="data-actions">
+                  <a class="data-button data-link" href={googleDriveAuthUrl} target="_blank" rel="noreferrer">Open authorization page</a>
+                </div>
+              {/if}
+              <p class="data-help">On a phone, switch back to ProseCraft after approving access. If the code expired, choose Cancel and start again.</p>
               <input
                 class="preference-select"
                 type="text"
                 aria-label="Authorization code"
-                placeholder="Paste authorization code here"
+                placeholder="Paste authorization code or redirect URL"
                 bind:value={googleDriveAuthCode}
                 disabled={syncBusy}
               />
@@ -7455,19 +7936,37 @@
   :global(html[data-markdown-font="menlo"]) { --markdown-editor-font: Menlo, "SFMono-Regular", monospace; }
   :global(html[data-markdown-font="monaco"]) { --markdown-editor-font: Monaco, "SFMono-Regular", monospace; }
   :global(html[data-markdown-font="courier"]) { --markdown-editor-font: "Courier New", Courier, monospace; }
+  :global(html) { min-height: 100%; background: var(--page-bg); -webkit-text-size-adjust: 100%; }
   :global(body) {
     margin: 0;
     min-width: 320px;
     min-height: 100vh;
+    min-height: 100dvh;
     color: var(--text-primary);
     font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 13px;
+    overscroll-behavior-y: none;
     -webkit-font-smoothing: antialiased;
   }
   :global(button), :global(input), :global(select) { font: inherit; }
   :global(button) { color: inherit; }
+  :global(button), :global(a) { -webkit-tap-highlight-color: transparent; }
+  :global(button) { touch-action: manipulation; }
 
-  .app-shell { display: flex; min-height: 100vh; }
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: block;
+    padding: 0;
+    border: 0;
+    background: var(--backdrop);
+    backdrop-filter: blur(1px);
+    cursor: pointer;
+  }
+  .sidebar-mobile-head { display: none; }
+
+  .app-shell { display: flex; min-height: 100vh; min-height: 100dvh; }
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
@@ -7510,7 +8009,7 @@
   .chapter-row:hover, .space-heading:hover { background: var(--hover-bg); }
   .chapter-toggle, .space-toggle { display: flex; min-width: 0; height: 30px; flex: 1; align-items: center; gap: 7px; padding: 0 3px; border: 0; background: transparent; color: var(--text-nav); cursor: pointer; text-align: left; }
   .chapter-drag, .chapter-action { display: grid; width: 19px; height: 23px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 12px; line-height: 1; }
-  .chapter-drag { cursor: grab; font-size: 15px; }
+  .chapter-drag { cursor: grab; font-size: 15px; touch-action: none; }
   .chapter-drag:active { cursor: grabbing; }
   .chapter-actions { display: flex; flex: 0 0 auto; align-items: center; }
   .chapter-action { opacity: .45; }
@@ -7529,6 +8028,16 @@
   .row-add.research-add { opacity: .55; }
   .space-heading:hover .row-add.research-add:not(:disabled), .row-add.research-add:focus-visible { opacity: 1; }
   .row-add:disabled { opacity: .18; cursor: default; }
+  .row-menu-wrap { position: relative; display: none; flex: 0 0 auto; }
+  .row-menu-trigger { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .row-menu-trigger:hover, .row-menu-trigger[aria-expanded="true"] { background: var(--hover-bg); color: var(--text-primary); }
+  .row-menu-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; min-width: 190px; flex-direction: column; gap: 1px; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+  .row-menu button { display: flex; width: 100%; min-height: 38px; align-items: center; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 12px; text-align: left; }
+  .row-menu button:hover:not(:disabled), .row-menu button:focus-visible { background: var(--hover-bg); color: var(--text-heading); outline: none; }
+  .row-menu button:disabled { opacity: .4; cursor: default; }
+  .row-menu button.danger { color: var(--danger); }
+  .row-menu button.danger:hover:not(:disabled), .row-menu button.danger:focus-visible { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
   .scene-list, .space-items { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 5px 22px; padding-left: 7px; border-left: 1px solid var(--tree-divider); }
   .note-folder-row { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 1px; padding-right: 2px; border-radius: 5px; }
   .note-folder-row:hover { background: var(--hover-bg); }
@@ -7628,7 +8137,7 @@
   .calendar-legend i:nth-of-type(4) { background: var(--heat-4); }
   .activity-note { margin: 10px 0 0; color: var(--text-muted); font-size: 8px; line-height: 1.5; }
 
-  .main-panel { display: flex; min-width: 0; min-height: 100vh; flex: 1; flex-direction: column; margin-right: 286px; margin-left: 258px; transition: margin .18s ease; }
+  .main-panel { display: flex; min-width: 0; min-height: 100vh; min-height: 100dvh; flex: 1; flex-direction: column; margin-right: 286px; margin-left: 258px; transition: margin .18s ease; }
   .main-panel.left-hidden { margin-left: 0; }
   .main-panel.right-hidden { margin-right: 0; }
   .storage-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-control); background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
@@ -7636,6 +8145,12 @@
   .storage-banner-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
   .storage-banner-dismiss { width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; line-height: 1; }
   .storage-banner-dismiss:hover { background: var(--hover-bg); color: var(--text-heading); }
+  .app-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-control); background: var(--surface-raised); color: var(--text-primary); font-size: 11px; }
+  .app-banner-message { min-width: 0; line-height: 1.5; }
+  .app-banner-message strong { color: var(--text-heading); font-weight: 600; }
+  .app-banner-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+  .app-banner-dismiss { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .app-banner-dismiss:hover { background: var(--hover-bg); color: var(--text-heading); }
   .storage-warning { color: var(--danger); }
   .save-indicator { display: flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 10px; }
   .save-dot.unsaved { background: var(--warning); }
@@ -7790,6 +8305,7 @@
   .storyboard-header h1 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 25px; font-weight: 500; }
   .storyboard-header-actions { display: flex; align-items: center; gap: 10px; }
   .board-card-count { padding-bottom: 3px; color: var(--text-muted); font-size: 9px; }
+  .board-zoom-level { padding-bottom: 3px; color: var(--text-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
   .add-timeline-row { height: 28px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
   .add-timeline-row:hover { background: var(--control-hover); color: var(--selected-text); }
   .storyboard-drawing-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: -7px 0 10px; }
@@ -7808,7 +8324,7 @@
   .storyboard-viewport.board-pan-tool.board-panning { cursor: grabbing; }
   .storyboard-pan-surface { position: absolute; z-index: 0; inset: 0; cursor: grab; touch-action: none; }
   .storyboard-viewport.board-panning .storyboard-pan-surface { cursor: grabbing; }
-  .storyboard-world { position: absolute; z-index: 1; inset: 0; pointer-events: none; will-change: transform; }
+  .storyboard-world { position: absolute; z-index: 1; inset: 0; pointer-events: none; will-change: transform; transform-origin: 0 0; }
   .storyboard-drawing-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
   .storyboard-drawing-layer marker path { fill: var(--accent); }
   .storyboard-vector { pointer-events: visiblePainted; cursor: move; }
@@ -7911,6 +8427,7 @@
   .data-group:last-of-type { margin-bottom: 4px; }
   .data-group-label { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; }
   .data-button { height: 32px; padding: 0 13px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 11px; }
+  .data-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
   .data-button:hover { border-color: var(--accent); color: var(--text-heading); }
   .danger-button { color: var(--danger); }
   .danger-button:hover { border-color: var(--danger); color: var(--danger); }
@@ -8022,7 +8539,7 @@
   .done-button:hover { background: var(--accent-strong-hover); }
 
   @media (hover: none) {
-    .row-add, .chapter-action { opacity: .55; }
+    .row-add, .chapter-action { opacity: .75; }
     .note-folder-select { width: auto; max-width: 88px; appearance: auto; opacity: 1; }
   }
 
@@ -8033,40 +8550,184 @@
     .workspace-controls { justify-content: flex-start; gap: 8px; }
     .storyboard-view { gap: 14px; }
   }
-  @media (max-width: 760px) {
-    .sidebar { width: 220px; padding-right: 10px; padding-left: 10px; }
-    .main-panel { margin-left: 220px; }
-    .writing-area { padding: 15px 20px 35px; }
-    .workspace-controls { flex-wrap: wrap; margin-bottom: 16px; }
-    .toolbar { top: 86px; }
+  @media (max-width: 760px), (pointer: coarse) and (max-height: 520px) {
+    .sidebar {
+      z-index: 40;
+      width: min(340px, 92vw);
+      height: 100vh;
+      height: 100dvh;
+      padding-top: calc(12px + env(safe-area-inset-top));
+      padding-right: max(12px, env(safe-area-inset-right));
+      padding-bottom: calc(12px + env(safe-area-inset-bottom));
+      padding-left: max(12px, env(safe-area-inset-left));
+      box-shadow: var(--shadow-panel);
+    }
+    .sidebar.peek { box-shadow: none; }
+    .sidebar-mobile-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 4px 8px;
+    }
+    .sidebar-mobile-close {
+      display: grid;
+      width: 40px;
+      height: 40px;
+      place-items: center;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .sidebar-mobile-close:hover { background: var(--hover-bg); color: var(--text-primary); }
+    .sidebar-mobile-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .sidebar .project-identity { margin-top: 0; }
+    .progress-sidebar {
+      z-index: 40;
+      width: min(340px, 92vw);
+      height: 100vh;
+      height: 100dvh;
+      padding-top: calc(20px + env(safe-area-inset-top));
+      padding-right: max(16px, env(safe-area-inset-right));
+      padding-bottom: calc(18px + env(safe-area-inset-bottom));
+    }
+    .main-panel,
+    .main-panel.left-hidden,
+    .main-panel.right-hidden { margin-right: 0; margin-left: 0; }
+    .writing-area {
+      padding-top: calc(12px + env(safe-area-inset-top));
+      padding-right: max(16px, env(safe-area-inset-right));
+      padding-bottom: calc(32px + env(safe-area-inset-bottom));
+      padding-left: max(16px, env(safe-area-inset-left));
+    }
+    .workspace-controls {
+      position: static;
+      flex-wrap: wrap;
+      margin-top: calc(-12px - env(safe-area-inset-top));
+      margin-bottom: 14px;
+      padding-top: calc(12px + env(safe-area-inset-top));
+    }
+    .toolbar { top: calc(8px + env(safe-area-inset-top)); }
     .panel-toggles { margin-left: auto; }
     .panel-toggle span { display: none; }
+    .split-toggle { display: none; }
+    .storage-banner { align-items: flex-start; flex-direction: column; gap: 8px; }
+    .storage-banner-actions { width: 100%; }
+    .storage-banner .data-button { flex: 1; }
+    .app-banner { align-items: flex-start; flex-direction: column; gap: 8px; }
+    .app-banner-actions { width: 100%; }
+    .app-banner .data-button { flex: 1; }
+    .chapter-move-action { display: none; }
+    .chapter-actions > .chapter-action,
+    .chapter-actions > .row-add,
+    .scene-row > .row-action { display: none; }
+    .row-menu-wrap { display: block; }
+    .row-menu-trigger { width: 40px; height: 40px; }
+    .note-folder-row { flex-wrap: wrap; padding-bottom: 2px; }
+    .note-folder-actions { flex-wrap: wrap; justify-content: flex-end; }
     .storyboard-view { grid-template-columns: 1fr; }
+    .storyboard-header { align-items: flex-start; flex-direction: column; gap: 8px; }
+    .storyboard-header-actions { width: 100%; flex-wrap: wrap; }
     .storyboard-sources { max-height: 230px; }
     .storyboard-sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0 12px; }
     .board-sources-heading { grid-column: 1 / -1; }
-    .toolbar { gap: 1px; overflow-x: auto; }
+    .board-card-title { font-size: 16px; }
+    .board-card-note, .storyboard-text-editor { font-size: 16px; }
+    .storyboard-pan-hint { font-size: 10px; }
+    .toolbar { gap: 1px; overflow-x: auto; scrollbar-width: none; }
+    .toolbar::-webkit-scrollbar { display: none; }
     .style-select { width: 100px; flex: 0 0 auto; }
     .toolbar-divider { margin: 0 3px; }
+
+    /* Dialogs become full-screen sheets so fields and buttons stay reachable. */
+    .settings-dialog {
+      width: 100vw;
+      max-width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      max-height: 100dvh;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      overflow: hidden;
+    }
+    .settings-dialog[open] { display: flex; flex-direction: column; }
+    .settings-dialog > form { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+    .settings-header { padding: calc(16px + env(safe-area-inset-top)) 18px 14px; }
+    .settings-body { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 18px 12px; }
+    .settings-footer { padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); }
+    .close-settings { width: 40px; height: 40px; }
+    .research-markdown-dialog { width: 100vw; max-width: 100vw; }
+    .research-markdown-dialog .research-markdown-content { min-height: 0; flex: 1; }
+    .research-markdown-content { padding: 18px 18px calc(28px + env(safe-area-inset-bottom)); }
+
+    /* iOS zooms the page when a focused control is smaller than 16px. */
+    .settings-dialog input:not([type="checkbox"]):not([type="radio"]),
+    .settings-dialog select,
+    .settings-dialog textarea,
+    .chapter-name-input,
+    .note-folder-name-input,
+    .goal-input,
+    .chapter-goal-input input { font-size: 16px; }
+
+    .editor-content { font-size: calc(17px * var(--editor-scale)); line-height: 1.75; }
+    .title-input { font-size: clamp(calc(30px * var(--editor-scale)), 9vw, calc(40px * var(--editor-scale))); }
+    .document-meta { flex-wrap: wrap; row-gap: 4px; font-size: 11px; }
   }
   @media (max-width: 440px) {
-    .sidebar { width: 174px; padding-right: 7px; padding-left: 7px; }
-    .main-panel { margin-left: 174px; }
-    .progress-sidebar { width: min(270px, calc(100vw - 24px)); }
-    .writing-area { padding: 12px 12px 28px; }
+    .progress-sidebar { width: min(340px, 92vw); }
+    .writing-area {
+      padding-top: calc(10px + env(safe-area-inset-top));
+      padding-right: max(12px, env(safe-area-inset-right));
+      padding-bottom: calc(28px + env(safe-area-inset-bottom));
+      padding-left: max(12px, env(safe-area-inset-left));
+    }
+    .workspace-controls { margin-top: calc(-10px - env(safe-area-inset-top)); padding-top: calc(10px + env(safe-area-inset-top)); }
     .workspace-modes { width: 100%; gap: 0; overflow-x: auto; scrollbar-width: none; }
-    .toolbar { top: 86px; }
     .workspace-modes::-webkit-scrollbar { display: none; }
-    .workspace-mode { flex: 1 0 auto; padding: 0 4px; font-size: 9px; white-space: nowrap; }
-    .panel-toggle { gap: 3px; padding: 0 4px; }
+    .workspace-mode { flex: 1 0 auto; padding: 0 8px; font-size: 12px; white-space: nowrap; }
+    .panel-toggle { gap: 4px; padding: 0 8px; }
     .storyboard-canvas { padding: 14px 12px; }
     .editor-footer { align-items: flex-start; flex-direction: column; }
     .footer-actions { width: 100%; justify-content: space-between; }
-    .title-input { margin-top: 17px; font-size: 31px; }
-    .editor-content { padding-top: 30px; font-size: calc(15px * var(--editor-scale)); }
+    .title-input { margin-top: 17px; }
+    .editor-content { padding-top: 30px; }
     .toolbar { padding-right: 4px; padding-left: 4px; }
-    .tool-button { width: 26px; }
     .toolbar-divider { margin: 0 1px; }
+  }
+  /* Comfortable touch targets without changing the desktop visual density. */
+  @media (pointer: coarse) {
+    .tree-add, .row-add, .row-action { width: 38px; height: 38px; }
+    .chapter-row, .space-heading { min-height: 44px; }
+    .chapter-toggle, .space-toggle { height: 42px; }
+    .chapter-toggle .tree-name, .space-toggle .tree-name { font-size: 13px; }
+    .nav-label { font-size: 10px; }
+    .author-name { font-size: 11px; }
+    .empty-tree, .empty-action, .research-status { font-size: 12px; }
+    .note-folder-toggle { height: 38px; font-size: 12px; }
+    .document-row { min-height: 42px; }
+    .document-select { height: 40px; font-size: 13px; }
+    .chapter-drag, .chapter-action { width: 30px; height: 38px; }
+    .chapter-action, .row-add { opacity: .8; }
+    .project-identity-actions button { width: 38px; height: 38px; }
+    .settings-button { height: 44px; font-size: 12px; }
+    .panel-toggle { min-height: 40px; padding: 0 10px; }
+    .workspace-mode { height: 40px; padding: 0 12px; font-size: 12px; }
+    .tool-button { width: 40px; height: 40px; }
+    .markdown-mode-toggle { min-height: 36px; font-size: 12px; }
+    .export-button { height: 40px; font-size: 12px; }
+    .style-select { height: 40px; font-size: 12px; }
+    .note-folder-select { min-height: 32px; }
+    .progress-close, .close-settings { width: 40px; height: 40px; }
+    .done-button, .data-button { min-height: 40px; }
+    .board-source { min-height: 40px; }
+    .source-drag-handle, .source-add { width: 36px; height: 36px; }
+    .drawing-tool, .drawing-delete { min-height: 40px; font-size: 11px; }
+    .drawing-move-handle { width: 36px; height: 32px; }
+    .drawing-resize-handle { width: 18px; height: 18px; }
+    .storyboard-card { width: 250px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .sidebar, .progress-sidebar { transition: none; }
