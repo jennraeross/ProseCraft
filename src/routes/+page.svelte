@@ -62,6 +62,7 @@
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
   import SearchDialog from "$lib/SearchDialog.svelte";
+  import type { ReplaceResult } from "$lib/replace";
   import { commentText, offsetFromPoint, offsetsFromRange, rangeFromOffsets } from "$lib/comment-dom";
   import {
     HARPER_DIALECTS,
@@ -3915,6 +3916,37 @@
   function openSearchResult(id: string) {
     projectSearchOpen = false;
     openSidebarDocument(id);
+  }
+
+  /** Writes pending editor edits into `documents` so replace counts see them. */
+  function flushEditorForReplace(): DocumentData[] {
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    return documents;
+  }
+
+  function snapshotBeforeReplace(document: DocumentData) {
+    snapshots = addSnapshot(snapshots, createSnapshot(document, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "manual",
+      note: "Before replace"
+    }));
+  }
+
+  function applyProjectReplace(nextDocuments: DocumentData[], changed: ReplaceResult["changed"]) {
+    if (saveTimer) clearTimeout(saveTimer);
+    documents = nextDocuments;
+    const current = nextDocuments.find((doc) => doc.id === activeDocumentId);
+    if (current && changed.some((entry) => entry.id === current.id)) {
+      // Refresh the open layout like a snapshot restore does, from the new HTML.
+      const content = cleanHtml(current.content);
+      setEditorContent(content);
+      setMarkdownSource(htmlToMarkdown(content));
+      refreshCounts();
+      lastEditorWordCount = wordCount;
+    }
+    persist();
   }
 
   function createScene(
@@ -8218,6 +8250,9 @@
     chapters={chapters}
     onOpen={openSearchResult}
     onClose={() => projectSearchOpen = false}
+    onFlush={flushEditorForReplace}
+    onSnapshot={snapshotBeforeReplace}
+    onReplace={applyProjectReplace}
   />
 {/if}
 
