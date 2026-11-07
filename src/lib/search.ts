@@ -74,7 +74,7 @@ function foldWithOffsets(value: string): { text: string; offsets: number[] } {
   return { text, offsets };
 }
 
-function makeHaystack(value: string, caseSensitive: boolean): Haystack {
+export function makeHaystack(value: string, caseSensitive: boolean): Haystack {
   if (caseSensitive) return { text: value, source: value, offsets: null };
   const folded = fold(value);
   // Folding normally keeps the length, so offsets line up with the source.
@@ -84,12 +84,12 @@ function makeHaystack(value: string, caseSensitive: boolean): Haystack {
   return { text: mapped.text, source: value, offsets: mapped.offsets };
 }
 
-function sourceIndex(haystack: Haystack, index: number): number {
+export function sourceIndex(haystack: Haystack, index: number): number {
   if (!haystack.offsets) return index;
   return index < haystack.offsets.length ? haystack.offsets[index] : haystack.source.length;
 }
 
-function isWholeWord(text: string, start: number, length: number): boolean {
+export function isWholeWord(text: string, start: number, length: number): boolean {
   // Two characters of context keep astral letters intact under the `/u` flag.
   const before = text.slice(Math.max(0, start - 2), start);
   const after = text.slice(start + length, start + length + 2);
