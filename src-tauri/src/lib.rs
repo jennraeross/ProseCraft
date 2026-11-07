@@ -780,7 +780,15 @@ pub fn run() {
                 let settings =
                     MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
                 let quit = PredefinedMenuItem::quit(app, Some("Quit ProseCraft"))?;
-                let app_menu = Submenu::with_items(app, "ProseCraft", true, &[&settings, &quit])?;
+                let shortcuts_item = MenuItem::with_id(
+                    app,
+                    "keyboard-shortcuts",
+                    "Keyboard Shortcuts",
+                    true,
+                    Some("CmdOrCtrl+/"),
+                )?;
+                let app_menu =
+                    Submenu::with_items(app, "ProseCraft", true, &[&settings, &shortcuts_item, &quit])?;
 
                 let new_scene =
                     MenuItem::with_id(app, "new-scene", "New Scene", true, Some("CmdOrCtrl+N"))?;
@@ -879,6 +887,7 @@ pub fn run() {
             "typewriter-mode" => Some("prosecraft:toggle-typewriter"),
             "fade-other-paragraphs" => Some("prosecraft:toggle-fade-paragraphs"),
             "zen-mode" => Some("prosecraft:toggle-zen-mode"),
+            "keyboard-shortcuts" => Some("prosecraft:toggle-shortcuts"),
             _ => None,
         };
         if let Some(event_name) = event_name {
