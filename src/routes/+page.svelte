@@ -56,6 +56,7 @@
   import "@fontsource/ibm-plex-sans/latin-400.css";
   import "@fontsource/ibm-plex-sans/latin-700.css";
   import "$lib/color-schemes.css";
+  import { APP_AUTHOR, APP_LICENSE, APP_NAME, APP_REPOSITORY_URL, APP_VERSION, buildDiagnosticsReport } from "$lib/about";
   import { autoResize } from "$lib/auto-resize";
   import { confirmDestructiveAction } from "$lib/confirm";
   import { centerCaretInViewport } from "$lib/typewriter";
@@ -356,6 +357,11 @@
   } | null>(null);
   const wikiMentionHighlightName = "prosecraft-wiki-mention";
   let settingsDialog: HTMLDialogElement;
+  let aboutDialog: HTMLDialogElement;
+  let aboutDiagnostics = $state("");
+  let aboutCopyStatus = $state("");
+  let aboutDiagnosticsTextarea = $state<HTMLTextAreaElement>();
+  let aboutCopyTimer: ReturnType<typeof setTimeout> | undefined;
   let researchMarkdownDialog: HTMLDialogElement;
   let researchMarkdownTitle = $state("");
   let researchMarkdownHtml = $state("");
@@ -1763,6 +1769,51 @@
     if (settingsDialog && !settingsDialog.open) settingsDialog.showModal();
     void ensureSystemFonts();
     void refreshStorageUsage();
+  }
+
+  function openAbout() {
+    aboutCopyStatus = "";
+    aboutDiagnostics = buildDiagnosticsReport({
+      version: APP_VERSION,
+      userAgent: navigator.userAgent,
+      storageBackend: getVaultBackend(),
+      online: navigator.onLine,
+      counts: {
+        projects: liveProjects.length,
+        chapters: liveChapters.length,
+        scenes: documents.filter((doc) => doc.chapterId && !doc.space && !doc.trashed).length,
+        wikiPages: documents.filter((doc) => doc.space === "Wiki" && !doc.trashed).length,
+        words: projectWordCount,
+        comments: comments.length,
+        snapshots: snapshots.length
+      },
+      features: {
+        "zen mode": zenMode,
+        "typewriter mode": typewriterMode,
+        "fade other paragraphs": fadeOtherParagraphs,
+        "markdown editor": markdownEditorEnabled,
+        proofreading: harperEnabled
+      }
+    });
+    if (settingsDialog?.open) settingsDialog.close();
+    if (aboutDialog && !aboutDialog.open) aboutDialog.showModal();
+  }
+
+  async function copyDiagnostics() {
+    if (aboutCopyTimer) clearTimeout(aboutCopyTimer);
+    try {
+      await navigator.clipboard.writeText(aboutDiagnostics);
+      aboutCopyStatus = "Copied";
+    } catch {
+      // Clipboard access can be denied; select the report so it can be copied by hand.
+      aboutDiagnosticsTextarea?.focus();
+      aboutDiagnosticsTextarea?.select();
+      aboutCopyStatus = "Select the text and copy it with your keyboard.";
+      return;
+    }
+    aboutCopyTimer = setTimeout(() => {
+      aboutCopyStatus = "";
+    }, 2000);
   }
 
   function openProjectSettings() {
@@ -6092,6 +6143,7 @@
 
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
+    if (aboutCopyTimer) clearTimeout(aboutCopyTimer);
     if (publishTimer) clearTimeout(publishTimer);
     if (richTextTypewriterFrame !== undefined) cancelAnimationFrame(richTextTypewriterFrame);
     if (markdownTypewriterFrame !== undefined) cancelAnimationFrame(markdownTypewriterFrame);
@@ -6771,7 +6823,7 @@
         <Settings size={15} aria-hidden="true" />
         <span>Settings</span>
       </button>
-      <div class="sync-status"><span class="sync-dot"></span> Your writing is private</div>
+      <div class="sync-status"><span class="sync-dot"></span> Your writing is private<button type="button" class="version-button" aria-label="About {APP_NAME}" onclick={openAbout}>v{APP_VERSION}</button></div>
     </div>
   </aside>
 
@@ -7972,8 +8024,50 @@
     {#if !preferencesSaved}
       <p class="preference-error" role="status">Could not save preferences. They may reset when you close the app.</p>
     {/if}
+    <div class="about-row">
+      <button type="button" class="about-row-button" onclick={openAbout}>About {APP_NAME} · version {APP_VERSION}</button>
+    </div>
   </div>
   <div class="settings-footer"><span>Preferences are saved on this device.</span><button class="done-button" onclick={() => settingsDialog.close()}>Done</button></div>
+</dialog>
+
+<dialog class="settings-dialog" bind:this={aboutDialog} onclick={(event) => {
+  if (event.target === aboutDialog) aboutDialog.close();
+}}>
+  <div class="settings-header">
+    <div><span class="settings-kicker">ABOUT</span><h2>{APP_NAME}</h2></div>
+    <button class="close-settings" aria-label="Close about" onclick={() => aboutDialog.close()}><X size={15} aria-hidden="true" /></button>
+  </div>
+  <div class="settings-body">
+    <section class="preference-section">
+      <div class="preference-heading">
+        <strong>Version {APP_VERSION}</strong>
+        <span>Licensed under the {APP_LICENSE} license</span>
+        <span>Created by {APP_AUTHOR}</span>
+      </div>
+      <p class="about-link-row">
+        <a class="about-link" href={APP_REPOSITORY_URL} target="_blank" rel="noreferrer" onclick={(event) => {
+          event.preventDefault();
+          void openExternalUrl(APP_REPOSITORY_URL);
+        }}>{APP_REPOSITORY_URL}</a>
+      </p>
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Diagnostics</strong><span>The report below contains no titles or text from your writing. It only describes the app and your setup.</span></div>
+      <textarea
+        class="about-diagnostics"
+        aria-label="Diagnostics report"
+        readonly
+        bind:this={aboutDiagnosticsTextarea}
+        bind:value={aboutDiagnostics}
+      ></textarea>
+      <div class="data-actions">
+        <button type="button" class="data-button" onclick={copyDiagnostics}>Copy diagnostics</button>
+      </div>
+      <p class="preference-help" role="status">{aboutCopyStatus}</p>
+    </section>
+  </div>
+  <div class="settings-footer"><span>{APP_NAME} {APP_VERSION}</span><button class="done-button" onclick={() => aboutDialog.close()}>Done</button></div>
 </dialog>
 
 <dialog class="settings-dialog passphrase-dialog" bind:this={passphraseDialog} onclick={(event) => {
@@ -8670,6 +8764,9 @@
   .settings-button { display: flex; width: 100%; height: 34px; align-items: center; gap: 9px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; font-size: 10px; }
   .settings-button:hover { background: var(--hover-bg); color: var(--text-primary); }
   .sync-status { display: flex; align-items: center; gap: 7px; padding: 0 8px 13px; color: var(--text-muted); font-size: 10px; }
+  .version-button { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; letter-spacing: .3px; }
+  .version-button:hover { color: var(--text-secondary); }
+  .version-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .sync-dot, .save-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
   .progress-sidebar { position: fixed; inset: 0 0 0 auto; z-index: 2; display: flex; width: 286px; flex-direction: column; overflow-y: auto; padding: 27px 19px 22px; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; transition: transform .18s ease, opacity .18s ease; }
@@ -9174,6 +9271,13 @@
   .passphrase-hint-note { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
   .done-button:disabled { opacity: 0.6; cursor: default; }
   .settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 25px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 9px; }
+  .about-row { padding: 12px 0 4px; }
+  .about-row-button { padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; text-align: left; }
+  .about-row-button:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
+  .about-row-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .about-link-row { margin: 0; }
+  .about-link { color: var(--link); font-size: 10px; overflow-wrap: anywhere; text-underline-offset: 2px; }
+  .about-diagnostics { width: 100%; height: 178px; margin-bottom: 10px; padding: 9px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-secondary); font-family: ui-monospace, monospace; font-size: 9px; line-height: 1.55; resize: vertical; }
   .done-button { height: 30px; padding: 0 14px; border: 1px solid transparent; border-radius: 5px; background: var(--accent-strong); color: var(--accent-contrast); cursor: pointer; font-size: 10px; }
   .done-button:hover { background: var(--accent-strong-hover); }
 
