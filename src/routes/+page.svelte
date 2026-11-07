@@ -175,7 +175,7 @@
     type SpaceName
   } from "$lib/publish/types";
   import { saveExport } from "$lib/publish/save";
-  import { countByLabel, LABEL_COLORS, labelById, projectLabels, setLabel } from "$lib/labels";
+  import { addLabel, countByLabel, DEFAULT_LABELS, LABEL_COLORS, labelById, projectLabels, removeLabel, setLabel } from "$lib/labels";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
     createResearchFolderName,
@@ -353,6 +353,9 @@
   let researchMarkdownTitle = $state("");
   let researchMarkdownHtml = $state("");
   let projectSettingsDialog: HTMLDialogElement;
+  let labelsDialog: HTMLDialogElement;
+  let labelsDialogTrigger = $state<HTMLButtonElement>();
+  let labelDrafts = $state<LabelDef[]>([]);
   let chapterNameInput = $state<HTMLInputElement>();
   let dataImportInput = $state<HTMLInputElement>();
   let dataStatus = $state("");
@@ -590,9 +593,19 @@
   let documents = $state<DocumentData[]>([]);
   let chapters = $state<ChapterData[]>([]);
   let liveChapters = $derived(chapters.filter((chapter) => !chapter.trashed));
-  let projectLabelList = $derived(
-    projectLabels(projects.find((project) => project.id === activeProjectId) ?? {})
-  );
+  let projectLabelList = $state<LabelDef[]>(DEFAULT_LABELS.map((label) => ({ ...label })));
+  let labelFilter = $state("");
+  let filterLabelDef = $derived(labelFilter ? labelById(projectLabelList, labelFilter) : undefined);
+  let visibleChapters = $derived.by(() => {
+    const label = filterLabelDef;
+    if (!label) return liveChapters;
+    return liveChapters.filter((chapter) =>
+      documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed && doc.labelId === label.id)
+    );
+  });
+  $effect(() => {
+    if (labelFilter && !labelById(projectLabelList, labelFilter)) labelFilter = "";
+  });
   let trashCount = $derived(
     documents.filter((doc) => doc.trashed
       && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)).length
@@ -956,6 +969,7 @@
       id: activeProjectId,
       name: projectName,
       author: authorName,
+      labels: projectLabelList,
       documents,
       chapters,
       activeDocumentId,
@@ -1072,6 +1086,8 @@
     openRowMenu = null;
     projectName = project.name;
     authorName = project.author;
+    projectLabelList = projectLabels(project);
+    labelFilter = "";
     researchFolders = normalizeBinderFolders(project.researchFolders);
     researchFolderName = normalizeResearchFolderName(project.researchFolderName);
     expandedResearchFolders = {};
@@ -6125,6 +6141,69 @@
     items[(index + step + items.length) % items.length]?.focus();
   }
 
+  function openLabelsDialog(trigger?: HTMLButtonElement) {
+    showZenInterface();
+    closeLabelMenu();
+    labelDrafts = projectLabelList.map((label) => ({ ...label }));
+    labelsDialogTrigger = trigger;
+    if (labelsDialog && !labelsDialog.open) labelsDialog.showModal();
+  }
+
+  function restoreLabelsDialogFocus() {
+    const trigger = labelsDialogTrigger;
+    labelsDialogTrigger = undefined;
+    if (!trigger) return;
+    void tick().then(() => {
+      if (trigger.isConnected) trigger.focus();
+    });
+  }
+
+  function addLabelDraft() {
+    const id = `label-${crypto.randomUUID()}`;
+    labelDrafts = addLabel(labelDrafts, id, "New label", "grey");
+    void tick().then(() => labelsDialog?.querySelector<HTMLInputElement>(`#label-name-${id}`)?.focus());
+  }
+
+  async function deleteLabelDraft(id: string) {
+    const label = labelDrafts.find((entry) => entry.id === id);
+    if (!label) return;
+    const sceneCount = documents.filter((doc) => doc.labelId === id && !doc.trashed).length;
+    const chapterCount = chapters.filter((chapter) => chapter.labelId === id && !chapter.trashed).length;
+    const scenes = `${sceneCount} ${sceneCount === 1 ? "scene" : "scenes"}`;
+    const chaptersUsed = `${chapterCount} ${chapterCount === 1 ? "chapter" : "chapters"}`;
+    const confirmed = await confirmDestructiveAction(
+      `Delete label “${label.name}”? ${scenes} and ${chaptersUsed} will lose it.`,
+      { confirmLabel: "Delete label" }
+    );
+    if (!confirmed) return;
+    labelDrafts = labelDrafts.filter((entry) => entry.id !== id);
+  }
+
+  async function resetLabelDrafts() {
+    const confirmed = await confirmDestructiveAction(
+      "Reset labels to the defaults? Custom labels are removed and the default names and colours are restored.",
+      { confirmLabel: "Reset labels" }
+    );
+    if (!confirmed) return;
+    labelDrafts = DEFAULT_LABELS.map((label) => ({ ...label }));
+  }
+
+  function saveLabels(event: SubmitEvent) {
+    event.preventDefault();
+    const nextLabels = labelDrafts.map((label) => ({ ...label, name: label.name.trim() }));
+    if (nextLabels.some((label) => !label.name)) return;
+    const keptIds = new Set(nextLabels.map((label) => label.id));
+    for (const label of projectLabelList) {
+      if (keptIds.has(label.id)) continue;
+      const cleared = removeLabel(projectLabelList, label.id, documents, chapters);
+      documents = cleared.documents as DocumentData[];
+      chapters = cleared.chapters as ChapterData[];
+    }
+    projectLabelList = nextLabels;
+    persistProjectCollection();
+    labelsDialog.close();
+  }
+
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     if (publishTimer) clearTimeout(publishTimer);
@@ -6479,8 +6558,28 @@
         <span class="nav-label">CHAPTERS</span>
         <button class="tree-add" aria-label="Add chapter" title="Add chapter" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /></button>
       </div>
+      <div class="label-filter">
+        <label class="label-filter-label" for="label-filter-select">Filter scenes by label</label>
+        <select id="label-filter-select" class="label-filter-select" bind:value={labelFilter}>
+          <option value="">All labels</option>
+          {#each projectLabelList as label (label.id)}
+            <option value={label.id}>{label.name}</option>
+          {/each}
+        </select>
+        {#if filterLabelDef}
+          <button
+            class="label-filter-chip"
+            type="button"
+            aria-label="Clear label filter: {filterLabelDef.name}"
+            onclick={() => (labelFilter = "")}
+          >
+            <span class="label-filter-dot" style={`--label-color: ${labelColorCss(filterLabelDef.color)}`} aria-hidden="true"></span>
+            <span>Filter: {filterLabelDef.name} · clear</span>
+          </button>
+        {/if}
+      </div>
       <div class="chapter-list">
-        {#each liveChapters as chapter (chapter.id)}
+        {#each visibleChapters as chapter (chapter.id)}
           {@const chapterLabelDef = labelFor(chapter.labelId)}
           <div
             class="chapter-group"
@@ -6549,6 +6648,7 @@
                         </button>
                       {/each}
                       <button type="button" role="menuitemradio" aria-checked={!chapter.labelId} class="label-menu-none" onclick={() => applyLabel("chapter", chapter.id, undefined)}>No label</button>
+                      <button type="button" role="menuitem" class="label-menu-manage" onclick={() => openLabelsDialog(labelMenuTrigger)}>Manage labels…</button>
                     </div>
                   {/if}
                 </div>
@@ -6586,7 +6686,7 @@
             </div>
             {#if chapter.expanded}
               <div class="scene-list">
-                {#each documents.filter((doc) => doc.chapterId === chapter.id && !doc.trashed) as doc (doc.id)}
+                {#each documents.filter((doc) => doc.chapterId === chapter.id && !doc.trashed && (!filterLabelDef || doc.labelId === filterLabelDef.id)) as doc (doc.id)}
                   {@const sceneLabel = labelFor(doc.labelId)}
                   <div class:current={doc.id === activeDocumentId} class="document-row scene-row">
                     <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(doc.id)}>
@@ -6622,6 +6722,7 @@
                             </button>
                           {/each}
                           <button type="button" role="menuitemradio" aria-checked={!doc.labelId} class="label-menu-none" onclick={() => applyLabel("scene", doc.id, undefined)}>No label</button>
+                          <button type="button" role="menuitem" class="label-menu-manage" onclick={() => openLabelsDialog(labelMenuTrigger)}>Manage labels…</button>
                         </div>
                       {/if}
                     </div>
@@ -6650,15 +6751,19 @@
                     </div>
                   </div>
                 {/each}
-                {#if !documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed)}
+                {#if !documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed && (!filterLabelDef || doc.labelId === filterLabelDef.id))}
                   <span class="empty-tree">No scenes yet</span>
                 {/if}
               </div>
             {/if}
           </div>
         {/each}
-        {#if liveChapters.length === 0}
-          <button class="empty-action" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /> Add your first chapter</button>
+        {#if visibleChapters.length === 0}
+          {#if filterLabelDef}
+            <span class="empty-tree">No scenes with this label</span>
+          {:else}
+            <button class="empty-action" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /> Add your first chapter</button>
+          {/if}
         {/if}
       </div>
 
@@ -8154,11 +8259,66 @@
         <label class="preference-label project-author-label" for="author-name">Author name</label>
         <input id="author-name" class="preference-select" type="text" bind:value={authorNameDraft} maxlength="100" />
       </section>
+      <section class="preference-section">
+        <div class="preference-heading"><strong>Labels</strong><span>Rename, recolour or remove the labels used on scenes and chapters</span></div>
+        <button class="data-button" type="button" onclick={(event) => openLabelsDialog(event.currentTarget)}>Manage labels…</button>
+      </section>
       {#if !projectSettingsSaved}
         <p class="preference-error" role="status">Could not save project settings. Please check available storage and try again.</p>
       {/if}
     </div>
     <div class="settings-footer"><span>Project details are saved on this device.</span><button class="done-button" type="submit">Save</button></div>
+  </form>
+</dialog>
+
+<dialog class="settings-dialog labels-dialog" bind:this={labelsDialog} onclose={restoreLabelsDialogFocus} onclick={(event) => {
+  if (event.target === labelsDialog) labelsDialog.close();
+}}>
+  <form onsubmit={saveLabels}>
+    <div class="settings-header">
+      <div><span class="settings-kicker">PROSECRAFT</span><h2>Labels</h2></div>
+      <button class="close-settings" aria-label="Close labels" type="button" onclick={() => labelsDialog.close()}><X size={15} aria-hidden="true" /></button>
+    </div>
+    <div class="settings-body">
+      <section class="preference-section">
+        <div class="preference-heading"><strong>Scene and chapter labels</strong><span>Rename a label, pick its colour or remove it. Changes apply to this project when you save.</span></div>
+        {#each labelDrafts as label, index (label.id)}
+          <div class="label-editor">
+            <span class="label-editor-dot" style={`--label-color: ${labelColorCss(label.color)}`} aria-hidden="true"></span>
+            <input
+              id={`label-name-${label.id}`}
+              class="preference-select label-editor-name"
+              type="text"
+              aria-label={`Name for label ${index + 1}`}
+              bind:value={label.name}
+              maxlength="40"
+              required
+            />
+            <div class="label-swatches" role="radiogroup" aria-label={`Colour for ${label.name || "label"}`}>
+              {#each LABEL_COLORS as entry (entry.key)}
+                <label class="label-swatch" style={`--label-color: ${entry.css}`} title={entry.key}>
+                  <input
+                    type="radio"
+                    name={`label-color-${label.id}`}
+                    value={entry.key}
+                    aria-label={entry.key}
+                    checked={label.color === entry.key}
+                    onchange={() => (label.color = entry.key)}
+                  />
+                  <span class="label-swatch-dot" aria-hidden="true"></span>
+                </label>
+              {/each}
+            </div>
+            <button class="data-button danger-button label-delete" type="button" aria-label={`Delete label ${label.name || "unnamed"}`} onclick={() => deleteLabelDraft(label.id)}>Delete</button>
+          </div>
+        {/each}
+        <div class="labels-actions">
+          <button class="data-button" type="button" disabled={labelDrafts.length >= 24} onclick={addLabelDraft}>Add label</button>
+          <button class="data-button" type="button" onclick={resetLabelDrafts}>Reset to defaults</button>
+        </div>
+      </section>
+    </div>
+    <div class="settings-footer"><span>Labels are saved with this project.</span><button class="done-button" type="submit">Save</button></div>
   </form>
 </dialog>
 
@@ -8723,6 +8883,26 @@
   .document-row:hover .label-trigger .label-dot, .chapter-row:hover .label-trigger .label-dot, .label-trigger:focus-visible .label-dot { opacity: 1; }
   .label-trigger.has-label .label-dot { border-color: var(--label-color); background: var(--label-color); opacity: 1; }
   .label-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; width: 170px; max-height: 230px; flex-direction: column; gap: 1px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+  .label-menu .label-menu-manage { margin-top: 3px; padding-top: 3px; border-top: 1px solid var(--border-soft); border-radius: 0 0 5px 5px; color: var(--text-muted); }
+  .label-filter { display: grid; gap: 5px; padding: 0 7px 9px; }
+  .label-filter-label { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }
+  .label-filter-select { width: 100%; height: 27px; padding: 0 6px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); font-size: 10px; }
+  .label-filter-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .label-filter-chip { display: inline-flex; justify-self: start; align-items: center; gap: 6px; max-width: 100%; padding: 3px 8px; border: 1px solid var(--border-control); border-radius: 999px; background: var(--surface-raised); color: var(--text-secondary); cursor: pointer; font-size: 9px; }
+  .label-filter-chip:hover { border-color: var(--accent); color: var(--text-heading); }
+  .label-filter-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .label-filter-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--label-color); }
+  .label-editor { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+  .label-editor-dot { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; background: var(--label-color); }
+  .label-editor-name { flex: 1 1 150px; width: auto; min-width: 0; height: 30px; }
+  .label-swatches { display: flex; flex-wrap: wrap; gap: 2px; }
+  .label-swatch { position: relative; display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; cursor: pointer; }
+  .label-swatch input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+  .label-swatch-dot { width: 13px; height: 13px; border: 1px solid var(--border-control); border-radius: 50%; background: var(--label-color); }
+  .label-swatch input:checked + .label-swatch-dot { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--text-heading); }
+  .label-swatch input:focus-visible + .label-swatch-dot { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .label-delete { margin-left: auto; height: 27px; padding: 0 9px; font-size: 10px; }
+  .labels-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
   .label-menu button { display: flex; min-height: 30px; align-items: center; gap: 7px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 11px; text-align: left; }
   .label-menu button:hover, .label-menu button:focus-visible { background: var(--hover-bg); color: var(--text-heading); outline: none; }
   .label-menu button[aria-checked="true"] { color: var(--text-heading); font-weight: 600; }
