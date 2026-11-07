@@ -1645,8 +1645,7 @@
     shortcutsOpen = !shortcutsOpen;
   }
 
-  async function saveShortcutsPdf(): Promise<{ ok: boolean; message: string } | null> {
-    const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+  async function saveShortcutsPdf(isMac: boolean): Promise<{ ok: boolean; message: string } | null> {
     const bytes = await buildShortcutsPdf(SHORTCUT_GROUPS, isMac);
     const result = await saveExport({
       blob: new Blob([bytes as BlobPart], { type: "application/pdf" }),
@@ -6825,6 +6824,10 @@
           <button class="panel-toggle" aria-label={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} title={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} aria-pressed={rightSidebarVisible} onclick={toggleRightSidebar}>
             <PanelRight size={15} aria-hidden="true" />
             <span>Progress</span>
+          </button>
+          <button class="panel-toggle" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (Ctrl/Cmd+/)" aria-pressed={shortcutsOpen} onclick={toggleShortcuts}>
+            <Keyboard size={15} aria-hidden="true" />
+            <span>Shortcuts</span>
           </button>
         </div>
       </div>

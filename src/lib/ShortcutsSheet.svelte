@@ -14,11 +14,13 @@
   }: {
     open: boolean;
     onClose: () => void;
-    onSavePdf: () => Promise<SaveStatus | null>;
+    onSavePdf: (isMac: boolean) => Promise<SaveStatus | null>;
   } = $props();
 
   // Mirrors the ⌘/Ctrl detection used for the rest of the interface.
-  const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+  const detectedMac = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+  // The sheet can show either platform; print and PDF follow the choice.
+  let showMac = $state(detectedMac);
   // A soft ease-out, close to the macOS sheet motion.
   const panelEase = cubicOut;
   const printClass = "printing-shortcuts";
@@ -75,7 +77,7 @@
     saving = true;
     status = null;
     try {
-      status = await onSavePdf();
+      status = await onSavePdf(showMac);
     } catch (error) {
       console.error("Could not save the shortcuts sheet.", error);
       status = { ok: false, message: "Could not save the PDF." };
@@ -109,6 +111,10 @@
           {#if status}
             <span class="shortcuts-status" class:error={!status.ok} role="status">{status.message}</span>
           {/if}
+          <div class="shortcuts-platform" role="group" aria-label="Show shortcuts for">
+            <button type="button" class:active={showMac} aria-pressed={showMac} onclick={() => (showMac = true)}>macOS</button>
+            <button type="button" class:active={!showMac} aria-pressed={!showMac} onclick={() => (showMac = false)}>Windows / Linux</button>
+          </div>
           <button type="button" class="shortcuts-action" onclick={printSheet}>Print</button>
           <button type="button" class="shortcuts-action" onclick={saveAsPdf} disabled={saving}>{saving ? "Saving…" : "Save as PDF"}</button>
           <button type="button" class="shortcuts-close" aria-label="Close keyboard shortcuts" onclick={onClose}><X size={15} aria-hidden="true" /></button>
@@ -124,7 +130,7 @@
                   <span class="shortcuts-name">{entry.action}</span>
                   <span class="shortcuts-keys">
                     {#each entry.keys as key (key)}
-                      <kbd>{formatKey(key, isMac)}</kbd>
+                      <kbd>{formatKey(key, showMac)}</kbd>
                     {/each}
                   </span>
                 </div>
@@ -147,6 +153,9 @@
   .shortcuts-action { height: 28px; padding: 0 11px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
   .shortcuts-action:hover:not(:disabled) { background: var(--hover-bg); color: var(--text-primary); }
   .shortcuts-action:disabled { cursor: default; opacity: .6; }
+  .shortcuts-platform { display: flex; padding: 2px; border: 1px solid var(--border-control); border-radius: 7px; background: var(--control-bg); }
+  .shortcuts-platform button { height: 22px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
+  .shortcuts-platform button.active { background: var(--hover-bg); color: var(--text-heading); }
   .shortcuts-status { color: var(--text-muted); font-size: 10px; }
   .shortcuts-status.error { color: var(--danger); }
   .shortcuts-close { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
@@ -165,6 +174,7 @@
     .shortcuts-layer { padding: 12px; }
     .shortcuts-panel { max-height: calc(100vh - 24px); }
     .shortcuts-header { flex-wrap: wrap; }
+    .shortcuts-actions { flex-wrap: wrap; }
     .shortcuts-columns { columns: 1; }
   }
 
