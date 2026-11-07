@@ -22,6 +22,7 @@
     Hand,
     History,
     Image as ImageIcon,
+    Keyboard,
     ImagePlus,
     Link as LinkIcon,
     List,
@@ -193,6 +194,8 @@
   import { saveExport } from "$lib/publish/save";
   import type { DragDropEvent } from "@tauri-apps/api/webview";
   import { addLabel, countByLabel, DEFAULT_LABELS, LABEL_COLORS, labelById, projectLabels, removeLabel, setLabel } from "$lib/labels";
+  import ShortcutsSheet from "$lib/ShortcutsSheet.svelte";
+  import { SHORTCUT_GROUPS, buildShortcutsPdf } from "$lib/shortcuts";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
     createResearchFolderName,
@@ -480,6 +483,8 @@
   let focusMode = $state(false);
   let focusHintVisible = $state(false);
   let focusHintTimer: ReturnType<typeof setTimeout> | undefined;
+  let shortcutsOpen = $state(false);
+  let lastShortcutsToggle = 0;
   let harperEnabled = $state(false);
   let harperDialect = $state<HarperDialect>("american");
   let harperLints = $state<HarperLint[]>([]);
@@ -1739,6 +1744,26 @@
     leftSidebarHovered = false;
     rightSidebarHovered = false;
     zenInterfaceHidden = true;
+  }
+
+  /** The menu accelerator and the key handler can both fire for one key press; the second one is ignored. */
+  function toggleShortcuts() {
+    const now = Date.now();
+    if (now - lastShortcutsToggle < 300) return;
+    lastShortcutsToggle = now;
+    shortcutsOpen = !shortcutsOpen;
+  }
+
+  async function saveShortcutsPdf(isMac: boolean): Promise<{ ok: boolean; message: string } | null> {
+    const bytes = await buildShortcutsPdf(SHORTCUT_GROUPS, isMac);
+    const result = await saveExport({
+      blob: new Blob([bytes as BlobPart], { type: "application/pdf" }),
+      filename: "prosecraft-shortcuts.pdf",
+      extension: "pdf",
+      formatName: "PDF document"
+    });
+    if (result.outcome === "cancelled") return null;
+    return { ok: true, message: "Saved" };
   }
 
   function showZenInterface() {
@@ -5880,6 +5905,26 @@
         removeStoryboardDrawing(selectedDrawingId);
       }
     }
+    if (event.key === "Escape" && shortcutsOpen) {
+      event.preventDefault();
+      shortcutsOpen = false;
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key === "/") {
+      event.preventDefault();
+      toggleShortcuts();
+      return;
+    }
+    if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const target = event.target;
+      const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+      if (!typing) {
+        event.preventDefault();
+        toggleShortcuts();
+        return;
+      }
+    }
     if (event.key === "Escape" && (openRowMenu || openLabelMenu)) {
       event.preventDefault();
       openRowMenu = null;
@@ -6853,6 +6898,7 @@
         const zenModeUnlisten = await listen("prosecraft:toggle-zen-mode", () => {
           setZenMode(!zenMode, false);
         });
+        const shortcutsUnlisten = await listen("prosecraft:toggle-shortcuts", toggleShortcuts);
         if (disposed) {
           settingsUnlisten();
           projectSettingsUnlisten();
@@ -6865,6 +6911,7 @@
           typewriterUnlisten();
           fadeParagraphsUnlisten();
           zenModeUnlisten();
+          shortcutsUnlisten();
         } else {
           unlisten.push(
             settingsUnlisten,
@@ -6877,7 +6924,8 @@
             publishUnlisten,
             typewriterUnlisten,
             fadeParagraphsUnlisten,
-            zenModeUnlisten
+            zenModeUnlisten,
+            shortcutsUnlisten
           );
         }
       } catch (error) {
@@ -7537,7 +7585,7 @@
         <Settings size={15} aria-hidden="true" />
         <span>Settings</span>
       </button>
-      <div class="sync-status"><span class="sync-dot"></span> Your writing is private<button type="button" class="version-button" aria-label="About {APP_NAME}" onclick={openAbout}>v{APP_VERSION}</button></div>
+      <div class="sync-status"><span class="sync-dot"></span> Your writing is private<button type="button" class="shortcuts-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" onclick={toggleShortcuts}><Keyboard size={13} aria-hidden="true" /></button><button type="button" class="version-button" aria-label="About {APP_NAME}" onclick={openAbout}>v{APP_VERSION}</button></div>
     </div>
   </aside>
 
@@ -7603,6 +7651,10 @@
           <button class="panel-toggle" aria-label={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} title={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} aria-pressed={rightSidebarVisible} onclick={toggleRightSidebar}>
             <PanelRight size={15} aria-hidden="true" />
             <span>Progress</span>
+          </button>
+          <button class="panel-toggle" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (Ctrl/Cmd+/)" aria-pressed={shortcutsOpen} onclick={toggleShortcuts}>
+            <Keyboard size={15} aria-hidden="true" />
+            <span>Shortcuts</span>
           </button>
         </div>
       </div>
@@ -8286,6 +8338,8 @@
   </div>
   <article class="research-markdown-content">{@html researchMarkdownHtml}</article>
 </dialog>
+
+<ShortcutsSheet open={shortcutsOpen} onClose={() => (shortcutsOpen = false)} onSavePdf={saveShortcutsPdf} />
 
 <dialog class="settings-dialog" bind:this={settingsDialog} onclick={(event) => {
   if (event.target === settingsDialog) settingsDialog.close();
@@ -9729,6 +9783,9 @@
   .sidebar-footer { flex: 0 0 auto; padding-top: 8px; }
   .settings-button { display: flex; width: 100%; height: 34px; align-items: center; gap: 9px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; font-size: 10px; }
   .settings-button:hover { background: var(--hover-bg); color: var(--text-primary); }
+  .shortcuts-button { display: grid; width: 22px; height: 22px; margin-left: auto; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .shortcuts-button:hover { background: var(--hover-bg); color: var(--text-primary); }
+  .shortcuts-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .sync-status { display: flex; align-items: center; gap: 7px; padding: 0 8px 13px; color: var(--text-muted); font-size: 10px; }
   .version-button { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; letter-spacing: .3px; }
   .version-button:hover { color: var(--text-secondary); }
