@@ -10,7 +10,10 @@ import {
 export const SPACE_NAMES = ["Wiki"] as const;
 export type SpaceName = (typeof SPACE_NAMES)[number];
 
-export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string; trashed?: boolean };
+export type LabelColor = "grey" | "amber" | "green" | "blue" | "orange" | "purple" | "red" | "pink";
+export type LabelDef = { id: string; name: string; color: LabelColor };
+
+export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string; trashed?: boolean; labelId?: string };
 export type BinderFolder = { id: string; title: string; parentId: string | null };
 export type NoteFolder = BinderFolder;
 export type ResearchFolder = BinderFolder;
@@ -97,6 +100,8 @@ export type DocumentData = {
   folderId?: string;
   trashed?: boolean;
   trashedWithChapterId?: string;
+  /** Id of a project label (see `ProjectData.labels`). */
+  labelId?: string;
   /**
    * Legacy structured profiles from the former Characters and Places spaces.
    * They are converted into page content by the Wiki migration and are never

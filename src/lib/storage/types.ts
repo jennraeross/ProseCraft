@@ -5,7 +5,8 @@ import type {
   PublishOptions,
   ResearchFolder,
   ResearchItem,
-  SpaceName
+  SpaceName,
+  LabelDef
 } from "../publish/types";
 
 export type ActivityRecord = { edits: number; wordsAdded: number };
@@ -122,6 +123,8 @@ export type ProjectData = {
   comments?: TextComment[];
   /** Saved earlier versions of document text, newest per document capped by `MAX_SNAPSHOTS_PER_DOCUMENT`. */
   snapshots?: DocumentSnapshot[];
+  /** User-definable labels for scenes and chapters. */
+  labels?: LabelDef[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */
