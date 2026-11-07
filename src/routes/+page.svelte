@@ -597,6 +597,8 @@
   let searchInitialQuery = $state("");
   let splitPanes = $state<SplitPaneState[]>([]);
   let tileGridWidth = $state(0);
+  let gridDropActive = $state(false);
+  let paneDropActive = $state<string | null>(null);
   let snapshots = $state<DocumentSnapshot[]>([]);
   let snapshotsDialog: HTMLDialogElement;
   let snapshotNote = $state("");
@@ -5495,6 +5497,72 @@
     return true;
   }
 
+  const TARGET_DRAG_TYPE = "application/x-prosecraft-target";
+
+  // Rows carry their split target, so the editor grid and the panes can accept the drop.
+  function startTargetDrag(event: DragEvent, target: string) {
+    const transfer = event.dataTransfer;
+    if (!transfer) return;
+    transfer.setData(TARGET_DRAG_TYPE, target);
+    transfer.effectAllowed = "copy";
+    if (event.currentTarget instanceof HTMLElement) transfer.setDragImage(event.currentTarget, 12, 14);
+  }
+
+  function hasTargetDrag(event: DragEvent): boolean {
+    return event.dataTransfer?.types.includes(TARGET_DRAG_TYPE) ?? false;
+  }
+
+  // Related-target check keeps the highlight steady while the pointer crosses child elements.
+  function targetDragLeaves(event: DragEvent): boolean {
+    const next = event.relatedTarget;
+    return !(event.currentTarget instanceof Node && next instanceof Node && event.currentTarget.contains(next));
+  }
+
+  function handleGridDragEnter(event: DragEvent) {
+    if (!hasTargetDrag(event)) return;
+    const overPane = event.target instanceof Element && Boolean(event.target.closest(".split-tile"));
+    gridDropActive = !overPane;
+  }
+
+  function handleGridDragLeave(event: DragEvent) {
+    if (!hasTargetDrag(event) || !targetDragLeaves(event)) return;
+    gridDropActive = false;
+  }
+
+  function handleTargetDragOver(event: DragEvent) {
+    if (!hasTargetDrag(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleTargetDrop(event: DragEvent) {
+    const target = event.dataTransfer?.getData(TARGET_DRAG_TYPE) ?? "";
+    if (!target) return;
+    event.preventDefault();
+    gridDropActive = false;
+    openBesideTarget(target);
+  }
+
+  function handlePaneDragEnter(event: DragEvent, paneId: string) {
+    if (!hasTargetDrag(event)) return;
+    gridDropActive = false;
+    paneDropActive = paneId;
+  }
+
+  function handlePaneDragLeave(event: DragEvent, paneId: string) {
+    if (!hasTargetDrag(event) || !targetDragLeaves(event)) return;
+    if (paneDropActive === paneId) paneDropActive = null;
+  }
+
+  function handlePaneDrop(event: DragEvent, paneId: string) {
+    const target = event.dataTransfer?.getData(TARGET_DRAG_TYPE) ?? "";
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    paneDropActive = null;
+    splitPanes = setSplitTarget(splitPanes, paneId, target);
+  }
+
   function chapterFirstScene(chapterId: string): DocumentData | undefined {
     return documents.find((doc) => doc.chapterId === chapterId && !doc.trashed);
   }
@@ -7271,7 +7339,7 @@
               <div class="scene-list">
                 {#each documents.filter((doc) => doc.chapterId === chapter.id && !doc.trashed && (!filterLabelDef || doc.labelId === filterLabelDef.id)) as doc (doc.id)}
                   {@const sceneLabel = labelFor(doc.labelId)}
-                  <div class:current={doc.id === activeDocumentId} class="document-row scene-row">
+                  <div class:current={doc.id === activeDocumentId} class="document-row scene-row" role="group" aria-label={doc.title || "Untitled scene"} draggable="true" ondragstart={(event) => startTargetDrag(event, docTarget(doc.id))}>
                     <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(doc.id))) return; openSidebarDocument(doc.id); }}>
                       <span class="scene-mark">¶</span>
                       <span class="tree-name">{doc.title || "Untitled scene"}</span>
@@ -7309,6 +7377,7 @@
                         </div>
                       {/if}
                     </div>
+                    <button class="row-action" aria-label="Open {doc.title || 'Untitled scene'} beside" title="Open beside" onclick={() => openBesideTarget(docTarget(doc.id))}><PanelRight size={13} aria-hidden="true" /></button>
                     <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
                     <div class="row-menu-wrap">
                       <button
@@ -7412,7 +7481,7 @@
                   </div>
                 </div>
               {:else if item.kind === "document"}
-                <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" role="group" aria-label={item.document.title || "wiki page"} style={`padding-left: ${item.depth * 14 + 2}px`} draggable="true" ondragstart={(event) => startTargetDrag(event, docTarget(item.document.id))}>
                   <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(item.document.id))) return; openSidebarDocument(item.document.id); }}>
                     <span class="scene-mark">¶</span>
                     <span class="tree-name">{item.document.title || "Untitled"}</span>
@@ -7434,7 +7503,7 @@
                   <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else if item.kind === "file"}
-                <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+                <div class="document-row note-document-row research-item-row" role="group" aria-label={researchItemTitle(item.item)} style={`padding-left: ${item.depth * 14 + 2}px`} draggable="true" ondragstart={(event) => startTargetDrag(event, fileTarget(item.item.id))}>
                   <button
                     class="document-select"
                     title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
@@ -7638,7 +7707,7 @@
         </div>
       </div>
       <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode}>
-      <div class="tile-grid" class:split-open={splitPanes.length > 0 && !zenInterfaceHidden} style={`--tile-columns: ${splitColumns}`} bind:clientWidth={tileGridWidth}>
+      <div class="tile-grid" class:split-open={splitPanes.length > 0 && !zenInterfaceHidden} class:target-drop-active={gridDropActive} style={`--tile-columns: ${splitColumns}`} bind:clientWidth={tileGridWidth} role="group" aria-label="Editor and reference tiles" ondragenter={handleGridDragEnter} ondragover={handleTargetDragOver} ondragleave={handleGridDragLeave} ondrop={handleTargetDrop}>
       <div
         class="editor-column"
         bind:this={editorColumn}
@@ -7885,7 +7954,16 @@
         </footer>
       </div>
       {#each splitPanes as pane, index (pane.id)}
-        <div class="split-tile">
+        <div
+          class="split-tile"
+          class:target-drop-active={paneDropActive === pane.id}
+          role="group"
+          aria-label={`Tile ${index + 1}`}
+          ondragenter={(event) => handlePaneDragEnter(event, pane.id)}
+          ondragover={handleTargetDragOver}
+          ondragleave={(event) => handlePaneDragLeave(event, pane.id)}
+          ondrop={(event) => handlePaneDrop(event, pane.id)}
+        >
           <SplitPane
             target={pane.target}
             groups={splitGroups}
@@ -9863,6 +9941,8 @@
   .tile-grid.split-open .editor-column { width: 100%; min-width: 0; }
   .tile-grid.split-open .toolbar { flex-wrap: wrap; }
   .split-tile { position: sticky; top: 64px; min-width: 0; }
+  .tile-grid.target-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
+  .split-tile.target-drop-active { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 9px; }
   .panel-toggle.active { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
   .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
   .document-meta { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 10px; }
