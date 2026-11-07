@@ -33,6 +33,7 @@
     Plus,
     Redo2,
     RotateCcw,
+    Calculator,
     Settings,
     Sigma,
     Square,
@@ -148,12 +149,21 @@
   import { countWords, htmlToPlainText } from "$lib/publish/content";
   import {
     createRichPlaceholder,
+    MAX_CALC_SOURCE_LENGTH,
     MAX_DIAGRAM_SOURCE_LENGTH,
     MAX_MATH_SOURCE_LENGTH,
     readRichPlaceholder,
-    richKindOf
+    RICH_SELECTOR,
+    richKindOf,
+    richSourceLimit,
+    type RichKind
   } from "$lib/rich/model";
-  import { renderRichWidgets } from "$lib/rich/dom";
+  import {
+    editableNeighbor,
+    ensureParagraphsAroundRichBlocks,
+    renderRichWidgets,
+    richClickSide
+  } from "$lib/rich/dom";
   import { renderRich } from "$lib/rich/render";
   import {
     chapterLabel as formatChapterLabel,
@@ -449,7 +459,7 @@
   let imageInsertError = $state("");
   let pendingImageRange: Range | null = null;
   let pendingMarkdownImagePosition: number | null = null;
-  type RichDialogKind = "math" | "diagram";
+  type RichDialogKind = "math" | "diagram" | "calc";
   let richDialog: HTMLDialogElement;
   let richDialogOpen = $state(false);
   let richDialogKind = $state<RichDialogKind>("math");
@@ -462,6 +472,9 @@
   let richEditTarget = $state<HTMLElement | null>(null);
   let savedRichRange: Range | null = null;
   let richPreviewRequest = 0;
+  const richDialogNoun = $derived(
+    richDialogKind === "diagram" ? "diagram" : richDialogKind === "calc" ? "calculation" : "equation"
+  );
   let preferencesSaved = $state(true);
   let projectSettingsSaved = $state(true);
   let projectName = $state("Untitled Project");
@@ -2866,11 +2879,18 @@
   function handleEditorClick(event: MouseEvent) {
     const target = event.target;
     const rich = target instanceof Element
-      ? target.closest<HTMLElement>(".math-inline, .math-block, .mermaid-diagram")
-      : null;    if (rich && editor.contains(rich)) {
+      ? target.closest<HTMLElement>(".math-inline, .math-block, .mermaid-diagram, .calc-worksheet")
+      : null;
+    if (rich && editor.contains(rich)) {
       event.preventDefault();
       selectEditorImage(null);
-      openRichDialog(rich.classList.contains("mermaid-diagram") ? "diagram" : "math", rich);
+      const side = richClickSide(rich, event.clientX, event.clientY);
+      if (side !== "content") {
+        placeCaretBesideRich(rich, side);
+        return;
+      }
+      const kind = richKindOf(rich);
+      openRichDialog(kind === "diagram" || kind === "calc" ? kind : "math", rich);
       return;
     }
     const image = target instanceof Element ? target.closest("img") : null;
@@ -2885,6 +2905,41 @@
       } else {
         hideHarperPopover();
       }
+    }
+  }
+
+  function placeCaretBesideRich(rich: HTMLElement, side: "before" | "after") {
+    const neighbor = editableNeighbor(rich, side);
+    const range = document.createRange();
+    range.selectNodeContents(neighbor);
+    range.collapse(side === "after");
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.focus();
+  }
+
+  /**
+   * Equations, diagrams, and calculations are copied as their source rather
+   * than their rendered SVG, so pasting them back re-renders them and pasting
+   * into another app gives readable text.
+   */
+  function handleEditorClipboard(event: ClipboardEvent) {
+    if (!event.clipboardData) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return;
+    const container = document.createElement("div");
+    container.append(range.cloneContents());
+    if (!container.querySelector(RICH_SELECTOR)) return;
+    const html = cleanHtml(container.innerHTML);
+    event.preventDefault();
+    event.clipboardData.setData("text/html", html);
+    event.clipboardData.setData("text/plain", htmlToPlainText(html));
+    if (event.type === "cut" && !document.execCommand("delete")) {
+      range.deleteContents();
+      handleInput();
     }
   }
 
@@ -3033,6 +3088,7 @@
   function setEditorContent(html: string) {
     if (!editor) return;
     editor.innerHTML = html;
+    ensureParagraphsAroundRichBlocks(editor);
     if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
@@ -3055,7 +3111,7 @@
       acceptNode(node) {
         const parent = node.parentElement;
         return parent?.closest(
-          "a, code, pre, .math-inline, .math-block, .mermaid-diagram, [contenteditable='false']"
+          "a, code, pre, .math-inline, .math-block, .mermaid-diagram, .calc-worksheet, [contenteditable='false']"
         )
           ? NodeFilter.FILTER_REJECT
           : NodeFilter.FILTER_ACCEPT;
@@ -3231,7 +3287,12 @@
     savedRichRange = range.cloneRange();
   }
 
-  function insertRichPlaceholder(kind: "math-inline" | "math-block" | "diagram", source: string) {
+  function richKindForDialog(kind: RichDialogKind, display: "inline" | "block"): RichKind {
+    if (kind !== "math") return kind;
+    return display === "block" ? "math-block" : "math-inline";
+  }
+
+  function insertRichPlaceholder(kind: RichKind, source: string) {
     if (!editor) return;
     const placeholder = createRichPlaceholder(kind, source, document);
     placeholder.setAttribute("contenteditable", "false");
@@ -3271,7 +3332,7 @@
       const block = start?.closest("p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre") ?? null;
       const host = block && block !== editor && editor.contains(block) ? block : null;
       if (host && !host.textContent?.trim()
-        && !host.querySelector("img, .math-inline, .math-block, .mermaid-diagram")) {
+        && !host.querySelector("img, .math-inline, .math-block, .mermaid-diagram, .calc-worksheet")) {
         host.replaceWith(placeholder);
         const after = document.createElement("p");
         after.append(document.createElement("br"));
@@ -3301,17 +3362,13 @@
     if (!source) {
       richDialogError = richDialogKind === "diagram"
         ? "Add a Mermaid definition first."
-        : "Add some LaTeX first.";
+        : richDialogKind === "calc"
+          ? "Add a calculation first."
+          : "Add some LaTeX first.";
       return;
     }
-    const kind = richDialogKind === "diagram"
-      ? "diagram"
-      : richDisplay === "block"
-        ? "math-block"
-        : "math-inline";
-    const sourceLimit = kind === "diagram"
-      ? MAX_DIAGRAM_SOURCE_LENGTH
-      : MAX_MATH_SOURCE_LENGTH;
+    const kind = richKindForDialog(richDialogKind, richDisplay);
+    const sourceLimit = richSourceLimit(kind);
     if (source.length > sourceLimit) {
       richDialogError = `Keep the source to ${sourceLimit.toLocaleString()} characters or fewer.`;
       return;
@@ -3339,7 +3396,7 @@
     target.remove();
     richEditTarget = null;
     if (editor && !editor.textContent?.trim()
-      && !editor.querySelector("img, .math-inline, .math-block, .mermaid-diagram")) {
+      && !editor.querySelector("img, .math-inline, .math-block, .mermaid-diagram, .calc-worksheet")) {
       setEditorContent("<p><br></p>");
     }
     closeRichDialog();
@@ -3359,12 +3416,7 @@
     const request = ++richPreviewRequest;
     richPreviewBusy = true;
     const timer = setTimeout(() => {
-      const richKind = kind === "diagram"
-        ? "diagram"
-        : display === "block"
-          ? "math-block"
-          : "math-inline";
-      renderRich(richKind, source, { mode: "svg", bodySizePt: 12 })
+      renderRich(richKindForDialog(kind, display), source, { mode: "svg", bodySizePt: 12 })
         .then((rendered) => {
           if (request !== richPreviewRequest) return;
           richPreviewSvg = rendered.svg ?? "";
@@ -5416,6 +5468,11 @@
   }
 
   function handleInput() {
+    if (editor) {
+      // Pasted or restored widgets arrive as source only and need rendering.
+      ensureParagraphsAroundRichBlocks(editor);
+      void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
+    }
     if (!applyingUndoHistory && undoManager.has(bodyUndoKey())) {
       recordFieldEdit(editor, cleanHtml(editor.innerHTML), encodeSelection(editor));
     }
@@ -6857,6 +6914,7 @@
           <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
         </div>
         {/if}
 
@@ -6899,6 +6957,8 @@
             showZenInterface();
           }}
           oninput={handleInput}
+          oncopy={handleEditorClipboard}
+          oncut={handleEditorClipboard}
           onclick={handleEditorClick}
           onpointermove={handleEditorPointerMove}
           onpointerleave={() => { wikiMentionPreview = null; hideCommentPreviewSoon(); }}
@@ -8201,10 +8261,10 @@
   <form onsubmit={(event) => { event.preventDefault(); saveRichDialog(); }}>
     <div class="settings-header">
       <div>
-        <span class="settings-kicker">{richDialogKind === "diagram" ? "DIAGRAM" : "EQUATION"}</span>
-        <h2>{richEditTarget ? "Edit" : "Insert"} {richDialogKind === "diagram" ? "diagram" : "equation"}</h2>
+        <span class="settings-kicker">{richDialogNoun.toUpperCase()}</span>
+        <h2>{richEditTarget ? "Edit" : "Insert"} {richDialogNoun}</h2>
       </div>
-      <button class="close-settings" aria-label="Close equation and diagram editor" type="button" onclick={closeRichDialog}><X size={15} aria-hidden="true" /></button>
+      <button class="close-settings" aria-label="Close {richDialogNoun} editor" type="button" onclick={closeRichDialog}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body rich-dialog-body">
       {#if richDialogKind === "math"}
@@ -8225,7 +8285,7 @@
           bind:value={richSource}
         ></textarea>
         <p class="rich-help">Inline equations sit in a sentence; block equations centre on their own line.</p>
-      {:else}
+      {:else if richDialogKind === "diagram"}
         <label class="preference-label" for="rich-diagram-source">Mermaid</label>
         <textarea
           id="rich-diagram-source"
@@ -8239,6 +8299,20 @@
           bind:value={richSource}
         ></textarea>
         <p class="rich-help">Use any Mermaid diagram type, such as flowchart, sequence, class, state, or gantt.</p>
+      {:else}
+        <label class="preference-label" for="rich-calc-source">Calculation</label>
+        <textarea
+          id="rich-calc-source"
+          class="preference-select rich-source"
+          rows="9"
+          maxlength={MAX_CALC_SOURCE_LENGTH}
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder={"m := 5 kg\na := 9.81 m/s^2\nF := m a =\nF = kN"}
+          bind:value={richSource}
+        ></textarea>
+        <p class="rich-help">MathCAD-style worksheet, evaluated top to bottom. <code>x := 5 m</code> defines, a trailing <code>=</code> shows the value, and <code>= kN</code> picks the unit. Define functions with <code>f(x) := x^2</code>; lines starting with <code>#</code> are text.</p>
       {/if}
       <div class="rich-preview-frame" aria-live="polite">
         {#if richPreviewBusy}
@@ -8788,8 +8862,8 @@
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
   .editor-content :global(.math-inline) { display: inline; white-space: nowrap; }
   .editor-content :global(.math-inline svg) { display: inline-block; max-width: 100%; max-height: 1.6em; width: auto; height: auto; vertical-align: middle; }
-  .editor-content :global(.math-block), .editor-content :global(.mermaid-diagram) { display: block; max-width: 100%; margin: .85em auto; text-align: center; }
-  .editor-content :global(.math-block svg), .editor-content :global(.mermaid-diagram svg) { display: block; max-width: 100%; max-height: 60vh; width: auto; height: auto; margin: 0 auto; }
+  .editor-content :global(.math-block), .editor-content :global(.mermaid-diagram), .editor-content :global(.calc-worksheet) { display: block; max-width: 100%; margin: .85em auto; text-align: center; }
+  .editor-content :global(.math-block svg), .editor-content :global(.mermaid-diagram svg), .editor-content :global(.calc-worksheet svg) { display: block; max-width: 100%; max-height: 60vh; width: auto; height: auto; margin: 0 auto; }
   .editor-content :global(.rich-render-error) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; white-space: pre-wrap; }
   .editor-content :global(pre) { overflow-x: auto; padding: 12px 14px; border-radius: 5px; background: var(--surface-raised); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; line-height: 1.55; }
   .editor-content :global(code) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
@@ -8925,6 +8999,7 @@
   .rich-kind-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .rich-source { height: auto; min-height: 96px; padding: 8px 9px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; }
   .rich-help { margin: 7px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+  .rich-help code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1em; }
   .rich-preview-frame { display: grid; min-height: 96px; margin-top: 14px; padding: 12px; place-items: center; overflow: auto; border: 1px dashed var(--border-control); border-radius: 7px; background: var(--control-bg); }
   .rich-preview { display: flex; width: 100%; align-items: center; justify-content: center; color: var(--text-heading); }
   .rich-preview :global(svg) { max-width: 100%; height: auto; max-height: 240px; }

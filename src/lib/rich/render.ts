@@ -1,6 +1,7 @@
+import { evaluateWorksheet, worksheetToLatex } from "./calc";
 import { renderMathSvg } from "./math";
 import { renderDiagramSvg } from "./mermaid";
-import type { RichKind } from "./model";
+import { MAX_CALC_SOURCE_LENGTH, type RichKind } from "./model";
 import { rasterizeSvg } from "./raster";
 
 export type RichRenderMode = "svg" | "png";
@@ -34,6 +35,14 @@ function diagramAlt(source: string): string {
   return line ? `Diagram: ${line.slice(0, 160)}` : "Diagram";
 }
 
+function calcAlt(source: string): string {
+  const line = source
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry && !entry.startsWith("#"));
+  return line ? `Calculation: ${line.slice(0, 160)}` : "Calculation";
+}
+
 function cacheKey(kind: RichKind, source: string, options: RichRenderOptions): string {
   const em = Math.round((options.bodySizePt ?? 12) * 4 / 3);
   const color = options.mode === "png" ? options.color ?? "#111111" : "current";
@@ -41,7 +50,7 @@ function cacheKey(kind: RichKind, source: string, options: RichRenderOptions): s
 }
 
 /**
- * Renders one equation or diagram. Repeated content (for example the same
+ * Renders one equation, diagram, or calculation. Repeated content (for example the same
  * equation in preview and export) is served from a small in-memory cache.
  */
 export function renderRich(
@@ -83,8 +92,15 @@ async function renderUncached(
   }
 
   const emPx = Math.min(48, Math.max(10, (options.bodySizePt ?? 12) * 4 / 3));
-  const math = await renderMathSvg(source, kind === "math-block", emPx);
-  const alt = `Equation: ${source}`;
+  const math = kind === "calc"
+    ? await renderMathSvg(
+      worksheetToLatex(evaluateWorksheet(source)),
+      true,
+      emPx,
+      MAX_CALC_SOURCE_LENGTH * 8
+    )
+    : await renderMathSvg(source, kind === "math-block", emPx);
+  const alt = kind === "calc" ? calcAlt(source) : `Equation: ${source}`;
   if (options.mode === "svg") {
     return { kind, source, alt, width: math.width, height: math.height, svg: math.svg };
   }
