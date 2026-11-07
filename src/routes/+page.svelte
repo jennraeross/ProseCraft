@@ -62,6 +62,16 @@
   import OutlineView from "$lib/OutlineView.svelte";
   import { commentText, offsetFromPoint, offsetsFromRange, rangeFromOffsets } from "$lib/comment-dom";
   import {
+    HARPER_DIALECTS,
+    ensureHarperLinter,
+    extractProofreadText,
+    lintPlainText,
+    rangeFromSpan,
+    type HarperDialect,
+    type HarperLint,
+    type ProofreadText
+  } from "$lib/proofread/harper";
+  import {
     buildAnchor,
     commentsForDocument,
     createComment,
@@ -259,6 +269,8 @@
   const typewriterStorageKey = "prosecraft-typewriter-mode";
   const fadeParagraphsStorageKey = "prosecraft-fade-other-paragraphs";
   const zenModeStorageKey = "prosecraft-zen-mode";
+  const harperEnabledStorageKey = "prosecraft-harper-enabled";
+  const harperDialectStorageKey = "prosecraft-harper-dialect";
   const researchRootStorageKey = "prosecraft-research-root";
   const goalsStorageKey = "prosecraft-writing-goals";
   const activityStorageKey = "prosecraft-writing-activity";
@@ -407,6 +419,19 @@
   let fadeOtherParagraphs = $state(false);
   let zenMode = $state(false);
   let zenInterfaceHidden = $state(false);
+  let harperEnabled = $state(false);
+  let harperDialect = $state<HarperDialect>("american");
+  let harperLints = $state<HarperLint[]>([]);
+  let harperMap = $state<ProofreadText | null>(null);
+  let harperChecking = $state(false);
+  let harperError = $state("");
+  let harperCheckedDocumentId = $state("");
+  let harperPopover = $state<{ lint: HarperLint; left: number; top: number } | null>(null);
+  let harperIgnored = new Set<string>();
+  let harperTimer: ReturnType<typeof setTimeout> | undefined;
+  let harperRequest = 0;
+  const harperHighlightName = "prosecraft-harper";
+  const HARPER_RENDER_LIMIT = 200;
   let markdownEditorMode = $state(false);
   let markdownSource = $state("");
   let markdownEditorHost = $state<HTMLDivElement>();
@@ -791,11 +816,9 @@
               handleMarkdownInput();
             }
             if (update.focusChanged && !update.view.hasFocus) showZenInterface();
-            if (
-              typewriterMode
-              && update.view.hasFocus
-              && (update.selectionSet || docChanged || update.focusChanged)
-            ) {
+            // Typewriter mode follows text changes only, not caret moves, so
+            // clicks and arrow keys never yank the scroll position.
+            if (typewriterMode && update.view.hasFocus && docChanged) {
               scheduleMarkdownTypewriter(update.view);
             }
           })
@@ -1278,6 +1301,8 @@
       localStorage.setItem(typewriterStorageKey, String(typewriterMode));
       localStorage.setItem(fadeParagraphsStorageKey, String(fadeOtherParagraphs));
       localStorage.setItem(zenModeStorageKey, String(zenMode));
+      localStorage.setItem(harperEnabledStorageKey, String(harperEnabled));
+      localStorage.setItem(harperDialectStorageKey, harperDialect);
       localStorage.setItem(researchRootStorageKey, researchRoot);
       preferencesSaved = true;
     } catch {
@@ -1510,12 +1535,8 @@
 
     updateCommentSelectionPopover();
     if (fadeOtherParagraphs) scheduleRichTextFade();
-
-    if (!typewriterMode) return;
-    const selection = window.getSelection();
-    if (!selection || !selection.rangeCount || !selection.isCollapsed || !selection.focusNode) return;
-    if (!editor.contains(selection.focusNode)) return;
-    scheduleRichTextTypewriter();
+    // Note: typewriter recentering runs on input (typing), not here, so caret
+    // moves from clicks or arrow keys never yank the scroll position.
   }
 
   /** Shows the "Comment" button above a selection, mirroring the comment toolbar button. */
@@ -2846,8 +2867,7 @@
     const target = event.target;
     const rich = target instanceof Element
       ? target.closest<HTMLElement>(".math-inline, .math-block, .mermaid-diagram")
-      : null;
-    if (rich && editor.contains(rich)) {
+      : null;    if (rich && editor.contains(rich)) {
       event.preventDefault();
       selectEditorImage(null);
       openRichDialog(rich.classList.contains("mermaid-diagram") ? "diagram" : "math", rich);
@@ -2855,6 +2875,17 @@
     }
     const image = target instanceof Element ? target.closest("img") : null;
     selectEditorImage(image instanceof HTMLImageElement ? image : null);
+    // Clicking a proofreading underline opens its suggestions; clicking
+    // anywhere else dismisses the popover. Only for collapsed carets so text
+    // selection (e.g. for comments) keeps working.
+    if (harperEnabled && !markdownEditorMode) {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) {
+        openHarperPopover(event.clientX, event.clientY);
+      } else {
+        hideHarperPopover();
+      }
+    }
   }
 
   function setSelectedImageWidth(percent: number | null) {
@@ -3005,6 +3036,8 @@
     if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
+    hideHarperPopover();
+    scheduleHarperLint();
   }
 
   function refreshWikiMentionHighlights(
@@ -3499,6 +3532,219 @@
     void zenInterfaceHidden;
     commentSelectionPopover = null;
   });
+
+  function setHarperEnabled(enabled: boolean) {
+    harperEnabled = enabled;
+    savePreferences();
+    harperPopover = null;
+    if (!enabled) {
+      clearHarperHighlights();
+    } else {
+      scheduleHarperLint();
+    }
+  }
+
+  function setHarperDialect(value: string) {
+    if (value !== "american" && value !== "british" && value !== "australian" && value !== "canadian") return;
+    harperDialect = value;
+    savePreferences();
+    scheduleHarperLint();
+  }
+
+  function harperKey(lint: HarperLint, text: string): string {
+    return `${lint.kind}:${text.slice(lint.start, lint.end)}`;
+  }
+
+  function clearHarperHighlights() {
+    if (harperTimer) clearTimeout(harperTimer);
+    harperTimer = undefined;
+    harperLints = [];
+    harperMap = null;
+    harperChecking = false;
+    harperError = "";
+    const registry = Reflect.get(window.CSS, "highlights") as {
+      delete: (name: string) => void;
+    } | undefined;
+    registry?.delete(harperHighlightName);
+  }
+
+  function hideHarperPopover() {
+    harperPopover = null;
+  }
+
+  function scheduleHarperLint() {
+    if (harperTimer) clearTimeout(harperTimer);
+    harperTimer = undefined;
+    if (!harperEnabled) {
+      clearHarperHighlights();
+      return;
+    }
+    harperTimer = setTimeout(() => {
+      harperTimer = undefined;
+      void refreshHarperLints();
+    }, 1200);
+  }
+
+  async function refreshHarperLints() {
+    const request = ++harperRequest;
+    if (!harperEnabled || !editor || markdownEditorMode || !activeDocumentId || workspaceView !== "writing") {
+      if (request === harperRequest) clearHarperHighlights();
+      return;
+    }
+    const map = extractProofreadText(editor);
+    if (request !== harperRequest) return;
+    harperMap = map;
+    if (!map.text.trim()) {
+      harperLints = [];
+      harperCheckedDocumentId = activeDocumentId;
+      const registry = Reflect.get(window.CSS, "highlights") as {
+        delete: (name: string) => void;
+      } | undefined;
+      registry?.delete(harperHighlightName);
+      return;
+    }
+    harperChecking = true;
+    harperError = "";
+    try {
+      const linter = await ensureHarperLinter(harperDialect);
+      if (request !== harperRequest) return;
+      const lints = await lintPlainText(linter, map.text);
+      if (request !== harperRequest) return;
+      harperLints = lints.filter((lint) => !harperIgnored.has(harperKey(lint, map.text)));
+      harperCheckedDocumentId = activeDocumentId;
+      renderHarperHighlights();
+    } catch (error) {
+      if (request !== harperRequest) return;
+      console.error("Could not check spelling and grammar.", error);
+      harperError = "Proofreading is unavailable on this device right now.";
+    } finally {
+      if (request === harperRequest) harperChecking = false;
+    }
+  }
+
+  function renderHarperHighlights() {
+    const registry = Reflect.get(window.CSS, "highlights") as {
+      set: (name: string, highlight: unknown) => void;
+      delete: (name: string) => void;
+    } | undefined;
+    const HighlightConstructor = Reflect.get(window, "Highlight") as
+      | (new (...highlightRanges: Range[]) => unknown)
+      | undefined;
+    registry?.delete(harperHighlightName);
+    const map = harperMap;
+    if (!map || !editor || markdownEditorMode) return;
+    const ranges: Range[] = [];
+    for (const lint of harperLints.slice(0, HARPER_RENDER_LIMIT)) {
+      const range = rangeFromSpan(map, lint.start, lint.end);
+      if (range && editor.contains(range.commonAncestorContainer)) ranges.push(range);
+    }
+    if (ranges.length > 0 && registry && HighlightConstructor) {
+      registry.set(harperHighlightName, new HighlightConstructor(...ranges));
+    }
+  }
+
+  function harperLintAtPoint(clientX: number, clientY: number): { lint: HarperLint; rect: DOMRect } | null {
+    const map = harperMap;
+    if (!map || harperLints.length === 0 || !editor) return null;
+    const caret = typeof document.caretRangeFromPoint === "function"
+      ? document.caretRangeFromPoint(clientX, clientY)
+      : null;
+    if (!caret || !editor.contains(caret.startContainer)) return null;
+    const entry = map.nodes.find((candidate) => candidate.node === caret.startContainer);
+    if (!entry) return null;
+    const offset = entry.start + Math.min(caret.startOffset, entry.node.data.length);
+    const lint = harperLints.find((candidate) => offset >= candidate.start && offset <= candidate.end);
+    if (!lint) return null;
+    const range = rangeFromSpan(map, lint.start, lint.end);
+    const rect = range?.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) return null;
+    return { lint, rect };
+  }
+
+  function positionPopoverForRect(rect: DOMRect): { left: number; top: number } {
+    const width = 280;
+    const above = rect.top > 190;
+    return {
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      top: Math.max(8, above ? rect.top - 12 : rect.bottom + 10)
+    };
+  }
+
+  function openHarperPopover(clientX: number, clientY: number) {
+    const found = harperLintAtPoint(clientX, clientY);
+    if (!found) {
+      harperPopover = null;
+      return;
+    }
+    harperPopover = { lint: found.lint, ...positionPopoverForRect(found.rect) };
+  }
+
+  /** Follows the anchor when the editor scrolls (e.g. typewriter recentering)
+   * instead of dismissing, so the popover survives caret-driven scrolling. */
+  function repositionHarperPopover() {
+    const popover = harperPopover;
+    if (!popover || !editor) return;
+    const map = extractProofreadText(editor);
+    const range = rangeFromSpan(map, popover.lint.start, popover.lint.end);
+    const rect = range?.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)
+      || rect.bottom < 0 || rect.top > window.innerHeight) {
+      harperPopover = null;
+      return;
+    }
+    const position = positionPopoverForRect(rect);
+    popover.left = position.left;
+    popover.top = position.top;
+  }
+
+  function applyHarperSuggestion(lint: HarperLint, suggestion: string) {
+    // Single-shot: the popover closes on apply and the lint is dropped, so a
+    // second click (or a reopen before the re-lint refreshes spans) cannot
+    // delete text at stale offsets.
+    const popover = harperPopover;
+    // Close first so the popover never lingers, even when the range below
+    // cannot be built or the replacement throws halfway through.
+    harperPopover = null;
+    if (!editor || !popover || popover.lint !== lint) return;
+    const map = extractProofreadText(editor);
+    const range = rangeFromSpan(map, lint.start, lint.end);
+    if (!range || !editor.contains(range.commonAncestorContainer)) return;
+    // Programmatic DOM edits fire no beforeinput, so seed the undo baseline
+    // exactly like the beforeinput handler does; handleInput() records it.
+    commitPageState();
+    const key = bodyUndoKey();
+    if (!undoManager.has(key)) undoManager.sync(key, cleanHtml(editor.innerHTML));
+    const caret = encodeSelection(editor);
+    pendingEdit = {
+      kind: "other",
+      caretMoved: lastEditCaret?.key !== key || lastEditCaret.caret !== JSON.stringify(caret),
+      before: caret
+    };
+    const selection = window.getSelection();
+    range.deleteContents();
+    const replacement = document.createTextNode(suggestion);
+    range.insertNode(replacement);
+    editor.normalize();
+    if (selection) {
+      selection.removeAllRanges();
+      const after = document.createRange();
+      after.setStartAfter(replacement);
+      after.collapse(true);
+      selection.addRange(after);
+    }
+    harperLints = harperLints.filter((candidate) => candidate !== lint);
+    renderHarperHighlights();
+    hideHarperPopover();
+    handleInput();
+  }
+
+  function ignoreHarperLint(lint: HarperLint) {
+    const text = harperMap?.text ?? "";
+    harperIgnored.add(harperKey(lint, text));
+    harperLints = harperLints.filter((candidate) => candidate !== lint);
+    renderHarperHighlights();
+    hideHarperPopover();
+  }
 
   function readCommentAuthor(): string {
     try {
@@ -5183,6 +5429,8 @@
     trackActivity(wordCount - previousWordCount);
     lastEditorWordCount = wordCount;
     persist();
+    hideHarperPopover();
+    scheduleHarperLint();
     scheduleRichTextTypewriter();
     if (fadeOtherParagraphs) scheduleRichTextFade();
   }
@@ -5535,6 +5783,12 @@
       typewriterMode = localStorage.getItem(typewriterStorageKey) === "true";
       fadeOtherParagraphs = localStorage.getItem(fadeParagraphsStorageKey) === "true";
       zenMode = localStorage.getItem(zenModeStorageKey) === "true";
+      harperEnabled = localStorage.getItem(harperEnabledStorageKey) === "true";
+      const savedDialect = localStorage.getItem(harperDialectStorageKey);
+      if (savedDialect === "american" || savedDialect === "british"
+        || savedDialect === "australian" || savedDialect === "canadian") {
+        harperDialect = savedDialect;
+      }
       researchRoot = localStorage.getItem(researchRootStorageKey) ?? "";
       const savedProjectSettings = localStorage.getItem(projectSettingsStorageKey);
       if (savedProjectSettings) {
@@ -5850,10 +6104,14 @@
     document.addEventListener("selectionchange", handleRichTextSelectionChange);
     // Capture phase so scrolling inside any pane hides the floating comment button.
     window.addEventListener("scroll", hideCommentSelectionPopover, true);
+    // The proofreading popover re-anchors instead: typewriter mode scrolls on
+    // every caret move, which would otherwise dismiss it instantly.
+    window.addEventListener("scroll", repositionHarperPopover, true);
     return () => {
       window.removeEventListener("resize", handleViewportResize);
       document.removeEventListener("selectionchange", handleRichTextSelectionChange);
       window.removeEventListener("scroll", hideCommentSelectionPopover, true);
+      window.removeEventListener("scroll", repositionHarperPopover, true);
       keepCommentPreview();
     };
   });
@@ -6649,6 +6907,7 @@
             selectEditorImage(null);
             hideCommentPreview();
             hideCommentSelectionPopover();
+            hideHarperPopover();
           }}
         >{@html starterContent}</div>
 
@@ -6713,6 +6972,42 @@
               <MessageSquareText size={14} aria-hidden="true" />
               <span>Comment</span>
             </button>
+          </div>
+        {/if}
+
+        {#if harperPopover}
+          <div
+            class="harper-popover"
+            role="dialog"
+            tabindex="-1"
+            aria-label="Proofreading suggestion"
+            style={`left: ${harperPopover.left}px; top: ${harperPopover.top}px`}
+            onpointerdown={(event) => event.stopPropagation()}
+            onkeydown={(event) => { if (event.key === "Escape") hideHarperPopover(); }}
+          >
+            <p class="harper-message"><strong>{harperPopover.lint.kindPretty}</strong> · {harperPopover.lint.message}</p>
+            {#if harperPopover.lint.suggestions.length > 0}
+              <div class="harper-suggestions">
+                {#each harperPopover.lint.suggestions as suggestion}
+                  <button
+                    type="button"
+                    onclick={() => applyHarperSuggestion(harperPopover!.lint, suggestion)}
+                  >{suggestion || "(remove)"}</button>
+                {/each}
+              </div>
+            {:else}
+              <p class="harper-no-suggestion">No automatic fix — edit the passage directly.</p>
+            {/if}
+            <div class="harper-actions">
+              <button
+                type="button"
+                onclick={() => harperPopover && ignoreHarperLint(harperPopover.lint)}
+              >Ignore</button>
+              <button
+                type="button"
+                onclick={hideHarperPopover}
+              >Close</button>
+            </div>
           </div>
         {/if}
 
@@ -7302,6 +7597,37 @@
         <span>Enable Markdown editor</span>
       </label>
       <p class="preference-help">When enabled, use the Markdown editor button above a document to switch between Markdown source and rich text.</p>
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Proofreading</strong><span>Offline spelling and grammar checking</span></div>
+      <label class="preference-toggle">
+        <input
+          type="checkbox"
+          checked={harperEnabled}
+          onchange={(event) => setHarperEnabled((event.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>Check spelling and grammar</span>
+      </label>
+      <p class="preference-help">Runs entirely on this device — your writing never leaves the app. The checker downloads once (about 8&nbsp;MB) and then works offline. Click an underlined passage to see suggestions.</p>
+      {#if harperEnabled}
+        <label class="preference-label" for="harper-dialect">English dialect</label>
+        <select id="harper-dialect" class="preference-select" value={harperDialect} onchange={(event) => setHarperDialect((event.currentTarget as HTMLSelectElement).value)}>
+          {#each HARPER_DIALECTS as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+        {#if harperChecking}
+          <p class="preference-help" role="status">Checking the current scene…</p>
+        {:else if harperError}
+          <p class="preference-error" role="status">{harperError}</p>
+        {:else if harperCheckedDocumentId === activeDocumentId && activeDocumentId}
+          <p class="preference-help" role="status">
+            {harperLints.length === 0
+              ? "No issues found in the current scene."
+              : `${harperLints.length} suggestion${harperLints.length === 1 ? "" : "s"} in the current scene.`}
+          </p>
+        {/if}
+      {/if}
     </section>
     <section class="preference-section">
       <div class="preference-heading"><strong>Data</strong><span>Back up or move your projects between devices</span></div>
@@ -8627,6 +8953,48 @@
     text-decoration: underline dotted color-mix(in srgb, #e0b000 70%, transparent);
     text-underline-offset: .15em;
   }
+  :global(::highlight(prosecraft-harper)) {
+    text-decoration: underline wavy color-mix(in srgb, #b42318 75%, transparent);
+    text-underline-offset: .18em;
+  }
+  .harper-popover {
+    position: fixed;
+    z-index: 22;
+    width: min(300px, calc(100vw - 16px));
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-panel);
+  }
+  .harper-message { margin: 0 0 8px; color: var(--text-primary); font-size: 11px; line-height: 1.5; }
+  .harper-message strong { color: var(--text-heading); }
+  .harper-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .harper-suggestions button {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border-control);
+    border-radius: 5px;
+    background: var(--control-bg);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .harper-suggestions button:hover { border-color: var(--accent); color: var(--text-heading); }
+  .harper-suggestions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .harper-no-suggestion { margin: 0 0 8px; color: var(--text-muted); font-size: 11px; }
+  .harper-actions { display: flex; justify-content: flex-end; gap: 6px; }
+  .harper-actions button {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .harper-actions button:hover { background: var(--hover-bg); color: var(--text-heading); }
   .comment-preview {
     position: fixed;
     z-index: 21;

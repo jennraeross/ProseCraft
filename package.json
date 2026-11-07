@@ -36,6 +36,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "docx": "^9.14.0",
     "fflate": "^0.8.3",
+    "harper.js": "^3.0.0",
     "jspdf": "^4.2.1",
     "marked": "^18.1.1",
     "mermaid": "^12.2.0",
