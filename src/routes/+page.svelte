@@ -6387,6 +6387,24 @@
     };
   });
 
+  // A file dropped anywhere that does not handle it would make the webview open the
+  // file itself (an image then fills the window). The editor's own handlers still run.
+  onMount(() => {
+    const isFileDrag = (event: DragEvent) => {
+      const types = event.dataTransfer?.types;
+      return Boolean(types?.includes("Files")) || (event.type === "drop" && droppedFileUris(event.dataTransfer).length > 0);
+    };
+    const guard = (event: DragEvent) => {
+      if (isFileDrag(event)) event.preventDefault();
+    };
+    window.addEventListener("dragover", guard);
+    window.addEventListener("drop", guard);
+    return () => {
+      window.removeEventListener("dragover", guard);
+      window.removeEventListener("drop", guard);
+    };
+  });
+
   onMount(() => {
     const onPointerDown = (event: PointerEvent) => {
       if (!openRowMenu) return;
