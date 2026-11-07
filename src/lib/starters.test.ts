@@ -8,7 +8,8 @@ const STARTER_IDS: StarterId[] = [
   "crime",
   "historical",
   "romance",
-  "nonfiction"
+  "nonfiction",
+  "thriller"
 ];
 
 function countingIds(): () => string {

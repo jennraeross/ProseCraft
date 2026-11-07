@@ -1,5 +1,6 @@
 import { CHARACTER_SECTIONS, PLACE_SECTIONS, sheetToHtml, type SheetSection } from "./publish/sheets";
 import type { BinderFolder, DocumentData } from "./publish/types";
+import { sanitizeHtml } from "./sanitize";
 
 export type StarterId =
   | "blank"
@@ -8,7 +9,8 @@ export type StarterId =
   | "crime"
   | "historical"
   | "romance"
-  | "nonfiction";
+  | "nonfiction"
+  | "thriller";
 
 export type Starter = {
   id: StarterId;
@@ -23,7 +25,8 @@ export const STARTERS: Starter[] = [
   { id: "crime", label: "Crime", description: "Characters, suspects, crime scenes, clues, and a case timeline." },
   { id: "historical", label: "Historical novel", description: "Characters, places, period research, events, and sources." },
   { id: "romance", label: "Romance", description: "Characters, relationships, places, and story beats." },
-  { id: "nonfiction", label: "Non-fiction", description: "A chapter outline, sources, key terms, and quotes." }
+  { id: "nonfiction", label: "Non-fiction", description: "A chapter outline, sources, key terms, and quotes." },
+  { id: "thriller", label: "Thriller", description: "Characters, antagonist, places, organisations, timeline, clues, and research." }
 ];
 
 type TemplatePage = {
@@ -352,32 +355,247 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
         ])
       ]
     }
+  ]  ,
+  thriller: [
+    { title: "Characters", pages: [CHARACTER_TEMPLATE] },
+    {
+      title: "Antagonist",
+      pages: [
+        templatePage("Antagonist template", [
+          ["Goal", "What do they want, and what will they do to get it?"],
+          ["Method", "How do they work, and what is their signature?"],
+          ["Resources", "Money, people, access, and skills they can call on."],
+          ["Weak point", "What could expose or stop them?"],
+          ["Cover", "How they appear to everyone else."]
+        ])
+      ]
+    },
+    { title: "Places", pages: [PLACE_TEMPLATE] },
+    {
+      title: "Organisations",
+      pages: [
+        templatePage("Organisation template", [
+          ["Purpose", "What it officially does, and what it really does."],
+          ["Structure", "Who gives orders, who follows them, who knows what."],
+          ["Reach", "Where it operates and who it can pressure."],
+          ["Secrets", "What it must keep hidden."]
+        ])
+      ]
+    },
+    {
+      title: "Timeline of events",
+      pages: [
+        templatePage("Timeline", [
+          ["Before the story", "What already happened that the characters do not know yet."],
+          ["Act one", "The inciting event and the first stakes."],
+          ["Act two", "Escalations, reversals, and the point of no return."],
+          ["Act three", "The confrontation and its aftermath."]
+        ])
+      ]
+    },
+    {
+      title: "Clues and red herrings",
+      pages: [
+        templatePage("Clue tracker", [
+          ["Clue", "What is found, and where."],
+          ["What it seems to mean", "The conclusion the reader is nudged towards."],
+          ["What it really means", "The truth behind it."],
+          ["Revealed in", "Chapter or scene where it pays off."]
+        ])
+      ]
+    },
+    {
+      title: "Research",
+      pages: [
+        templatePage("Research notes", [
+          ["Procedures", "How investigations, operations, or institutions really work."],
+          ["Terminology", "Words and jargon to get right."],
+          ["Sources", "Books, articles, and people to check facts with."]
+        ])
+      ]
+    }
   ]
 };
 
+export type BlueprintPage = { key: string; title: string; html: string };
+export type BlueprintFolder = { key: string; name: string; pages: BlueprintPage[] };
+/** Editable description of the wiki a project starts with; keys are unique within one blueprint. */
+export type StarterBlueprint = { folders: BlueprintFolder[] };
+
+/** The preset as an editable blueprint with stable keys ("folder:0", "page:0.1"). */
+export function starterBlueprint(id: StarterId): StarterBlueprint {
+  return {
+    folders: STARTER_CONTENT[id].map((folder, folderIndex) => ({
+      key: `folder:${folderIndex}`,
+      name: folder.title,
+      pages: folder.pages.map((page, pageIndex) => ({
+        key: `page:${folderIndex}.${pageIndex}`,
+        title: page.title,
+        html: page.content
+      }))
+    }))
+  };
+}
+
+export function allBlueprintKeys(blueprint: StarterBlueprint): Set<string> {
+  const keys = new Set<string>();
+  for (const folder of blueprint.folders) {
+    keys.add(folder.key);
+    for (const page of folder.pages) keys.add(page.key);
+  }
+  return keys;
+}
+
+/** Keeps the selected pages; a folder stays when it or any of its pages is selected. */
+export function filterBlueprint(blueprint: StarterBlueprint, selected: ReadonlySet<string>): StarterBlueprint {
+  const folders: BlueprintFolder[] = [];
+  for (const folder of blueprint.folders) {
+    const pages = folder.pages.filter((page) => selected.has(page.key));
+    if (pages.length > 0 || selected.has(folder.key)) folders.push({ ...folder, pages });
+  }
+  return { folders };
+}
+
 /**
- * Builds the wiki folders and template pages for a starter. `createId` is
+ * Builds wiki folders and template pages from a blueprint. `createId` is
  * called once per folder and page, in a stable order, so callers can supply
  * UUIDs in the app and counters in tests.
  */
-export function buildStarter(
-  id: StarterId,
+export function buildFromBlueprint(
+  blueprint: StarterBlueprint,
   createId: () => string
 ): { folders: BinderFolder[]; documents: DocumentData[] } {
   const folders: BinderFolder[] = [];
   const documents: DocumentData[] = [];
-  for (const spec of STARTER_CONTENT[id]) {
-    const folder: BinderFolder = { id: createId(), title: spec.title, parentId: null };
+  for (const spec of blueprint.folders) {
+    const folder: BinderFolder = { id: createId(), title: spec.name, parentId: null };
     folders.push(folder);
     for (const page of spec.pages) {
       documents.push({
         id: createId(),
         title: page.title,
-        content: page.content,
+        content: page.html,
         space: "Wiki",
         folderId: folder.id
       });
     }
   }
   return { folders, documents };
+}
+
+export function buildStarter(
+  id: StarterId,
+  createId: () => string
+): { folders: BinderFolder[]; documents: DocumentData[] } {
+  return buildFromBlueprint(starterBlueprint(id), createId);
+}
+
+function freshKey(blueprint: StarterBlueprint, prefix: "folder" | "page"): string {
+  const used = allBlueprintKeys(blueprint);
+  let n = 0;
+  while (used.has(`${prefix}:c${n}`)) n += 1;
+  return `${prefix}:c${n}`;
+}
+
+export function addCustomFolder(blueprint: StarterBlueprint, name: string): StarterBlueprint {
+  const folder: BlueprintFolder = { key: freshKey(blueprint, "folder"), name: name.trim() || "New folder", pages: [] };
+  return { folders: [...blueprint.folders, folder] };
+}
+
+export function addCustomPage(blueprint: StarterBlueprint, folderKey: string, title: string, html = ""): StarterBlueprint {
+  const page: BlueprintPage = { key: freshKey(blueprint, "page"), title: title.trim() || "New page", html };
+  return {
+    folders: blueprint.folders.map((folder) =>
+      folder.key === folderKey ? { ...folder, pages: [...folder.pages, page] } : folder
+    )
+  };
+}
+
+export function removeCustomFolder(blueprint: StarterBlueprint, folderKey: string): StarterBlueprint {
+  return { folders: blueprint.folders.filter((folder) => folder.key !== folderKey) };
+}
+
+export function removeCustomPage(blueprint: StarterBlueprint, pageKey: string): StarterBlueprint {
+  return {
+    folders: blueprint.folders.map((folder) => ({ ...folder, pages: folder.pages.filter((page) => page.key !== pageKey) }))
+  };
+}
+
+export function renameCustomFolder(blueprint: StarterBlueprint, folderKey: string, name: string): StarterBlueprint {
+  return {
+    folders: blueprint.folders.map((folder) => folder.key === folderKey ? { ...folder, name: name.trim() || folder.name } : folder)
+  };
+}
+
+export function renameCustomPage(blueprint: StarterBlueprint, pageKey: string, title: string): StarterBlueprint {
+  return {
+    folders: blueprint.folders.map((folder) => ({
+      ...folder,
+      pages: folder.pages.map((page) => page.key === pageKey ? { ...page, title: title.trim() || page.title } : page)
+    }))
+  };
+}
+
+/** A wiki template the user composed and saved. */
+export type CustomStarter = { id: string; name: string; blueprint: StarterBlueprint };
+
+export const CUSTOM_STARTERS_KEY = "prosecraft-custom-starters";
+const MAX_CUSTOM_STARTERS = 20;
+const MAX_CUSTOM_FOLDERS = 40;
+const MAX_CUSTOM_PAGES = 200;
+const MAX_NAME_LENGTH = 120;
+const MAX_HTML_LENGTH = 50_000;
+
+function text(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, MAX_NAME_LENGTH) : fallback;
+}
+
+/** Validates stored data of unknown shape; keeps good entries, drops bad ones, regenerates keys. */
+export function normalizeCustomStarters(value: unknown): CustomStarter[] {
+  if (!Array.isArray(value)) return [];
+  const result: CustomStarter[] = [];
+  const ids = new Set<string>();
+  for (const entry of value) {
+    if (result.length >= MAX_CUSTOM_STARTERS) break;
+    if (!entry || typeof entry !== "object") continue;
+    const { id, name, blueprint } = entry as Record<string, unknown>;
+    if (typeof id !== "string" || !id || ids.has(id)) continue;
+    const rawFolders = (blueprint as { folders?: unknown } | undefined)?.folders;
+    if (!Array.isArray(rawFolders)) continue;
+    let pageCount = 0;
+    const folders: BlueprintFolder[] = [];
+    for (const rawFolder of rawFolders.slice(0, MAX_CUSTOM_FOLDERS)) {
+      if (!rawFolder || typeof rawFolder !== "object") continue;
+      const folderIndex = folders.length;
+      const rawPages = Array.isArray((rawFolder as { pages?: unknown }).pages)
+        ? (rawFolder as { pages: unknown[] }).pages
+        : [];
+      const pages: BlueprintPage[] = [];
+      for (const rawPage of rawPages) {
+        if (pageCount >= MAX_CUSTOM_PAGES) break;
+        if (!rawPage || typeof rawPage !== "object") continue;
+        const page = rawPage as Record<string, unknown>;
+        const html = typeof page.html === "string" ? sanitizeHtml(page.html.slice(0, MAX_HTML_LENGTH)) : "";
+        pages.push({ key: `page:${folderIndex}.${pages.length}`, title: text(page.title, "Untitled"), html });
+        pageCount += 1;
+      }
+      folders.push({ key: `folder:${folderIndex}`, name: text((rawFolder as { name?: unknown }).name, "Untitled"), pages });
+    }
+    ids.add(id);
+    result.push({ id, name: text(name, "My template"), blueprint: { folders } });
+  }
+  return result;
+}
+
+export function loadCustomStarters(storage: Pick<Storage, "getItem">): CustomStarter[] {
+  try {
+    const raw = storage.getItem(CUSTOM_STARTERS_KEY);
+    return raw ? normalizeCustomStarters(JSON.parse(raw)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomStarters(storage: Pick<Storage, "setItem">, starters: CustomStarter[]): void {
+  storage.setItem(CUSTOM_STARTERS_KEY, JSON.stringify(normalizeCustomStarters(starters)));
 }
