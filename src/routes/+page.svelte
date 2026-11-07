@@ -62,7 +62,7 @@
   import { APP_AUTHOR, APP_LICENSE, APP_NAME, APP_REPOSITORY_URL, APP_VERSION, buildDiagnosticsReport } from "$lib/about";
   import { autoResize } from "$lib/auto-resize";
   import { confirmDestructiveAction } from "$lib/confirm";
-  import { centerCaretInViewport } from "$lib/typewriter";
+  import { centerCaretInViewport, scrollContainerOf } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
   import SearchDialog from "$lib/SearchDialog.svelte";
@@ -598,6 +598,9 @@
   let searchInitialQuery = $state("");
   let splitPanes = $state<SplitPaneState[]>([]);
   let tileGridWidth = $state(0);
+  let tileGridElement = $state<HTMLDivElement>();
+  let tileGridTop = $state(0);
+  let tileGridBottom = $state(0);
   let gridDropActive = $state(false);
   let paneDropActive = $state<string | null>(null);
   let snapshots = $state<DocumentSnapshot[]>([]);
@@ -1627,7 +1630,7 @@
       if (!selection || !selection.rangeCount || !selection.isCollapsed || !selection.focusNode) return;
       if (!editor.contains(selection.focusNode)) return;
       const rect = richTextCaretRect();
-      if (rect) centerCaretInViewport(rect);
+      if (rect) centerCaretInViewport(rect, scrollContainerOf(editor));
     });
   }
 
@@ -1639,7 +1642,7 @@
       const selection = view.state.selection.main;
       if (!selection.empty) return;
       const coords = view.coordsAtPos(selection.head);
-      if (coords) centerCaretInViewport(coords);
+      if (coords) centerCaretInViewport(coords, scrollContainerOf(view.dom));
     });
   }
 
@@ -5447,6 +5450,45 @@
   const splitFiles = $derived(researchItems.flatMap((item) => item.kind === "file" ? [item] : []));
   // Zen mode hides the tiles, so the grid then stays a single column for the editor.
   const splitColumns = $derived(zenInterfaceHidden ? 1 : tileColumns(splitPanes.length + 1, tileGridWidth, 300));
+  const tilesOpen = $derived(splitPanes.length > 0 && !zenInterfaceHidden);
+  // The editor takes the whole first column; the reference tiles share the other columns and wrap into rows of the same height.
+  const tileRows = $derived(splitColumns > 1
+    ? Math.max(1, Math.ceil(splitPanes.length / (splitColumns - 1)))
+    : splitPanes.length + 1);
+
+  // Open tiles fill the viewport, so the grid needs the measured offset of the chrome above it and the page padding below it.
+  function measureTileGrid() {
+    if (!tileGridElement) return;
+    const writingArea = tileGridElement.closest(".writing-area");
+    const bottomPadding = writingArea ? parseFloat(getComputedStyle(writingArea).paddingBottom) : Number.NaN;
+    tileGridTop = Math.max(0, Math.ceil(tileGridElement.getBoundingClientRect().top + window.scrollY));
+    tileGridBottom = Number.isFinite(bottomPadding) ? Math.ceil(bottomPadding) : 0;
+  }
+
+  // Panes, columns, view, banners and sidebars all move the grid's top edge, so re-measure when one changes.
+  $effect(() => {
+    void splitColumns;
+    void splitPanes.length;
+    void tileGridWidth;
+    void workspaceView;
+    void leftSidebarVisible;
+    void rightSidebarVisible;
+    void zenInterfaceHidden;
+    void showUpdateBanner;
+    void showInstallBanner;
+    void storageError;
+    if (!tilesOpen) return;
+    measureTileGrid();
+    const frame = requestAnimationFrame(measureTileGrid);
+    return () => cancelAnimationFrame(frame);
+  });
+
+  onMount(() => {
+    const handleResize = () => measureTileGrid();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  });
+
   const splitGroups = $derived.by((): SplitGroup[] => {
     const groups: SplitGroup[] = [];
     for (const chapter of liveChapters) {
@@ -7725,8 +7767,8 @@
           </button>
         </div>
       </div>
-      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode}>
-      <div class="tile-grid" class:split-open={splitPanes.length > 0 && !zenInterfaceHidden} class:target-drop-active={gridDropActive} style={`--tile-columns: ${splitColumns}`} bind:clientWidth={tileGridWidth} role="group" aria-label="Editor and reference tiles" ondragenter={handleGridDragEnter} ondragover={handleTargetDragOver} ondragleave={handleGridDragLeave} ondrop={handleTargetDrop}>
+      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode} class:split-open={tilesOpen}>
+      <div class="tile-grid" class:split-open={tilesOpen} class:stacked-tiles={tilesOpen && splitColumns === 1} class:target-drop-active={gridDropActive} style={`--tile-columns: ${splitColumns}; --tile-rows: ${tileRows}; --tile-grid-top: ${tileGridTop}px; --tile-grid-bottom: ${tileGridBottom}px`} bind:this={tileGridElement} bind:clientWidth={tileGridWidth} role="group" aria-label="Editor and reference tiles" ondragenter={handleGridDragEnter} ondragover={handleTargetDragOver} ondragleave={handleGridDragLeave} ondrop={handleTargetDrop}>
       <div
         class="editor-column"
         bind:this={editorColumn}
@@ -7738,6 +7780,7 @@
         ondrop={handleImageDrop}
         onpaste={handleImagePaste}
       >
+        <div class="editor-scroll">
         <input
           bind:this={imageFileInput}
           class="data-file-input"
@@ -7971,6 +8014,7 @@
             </button>
           </span>
         </footer>
+        </div>
       </div>
       {#each splitPanes as pane, index (pane.id)}
         <div
@@ -9954,6 +9998,9 @@
   .panel-toggle:hover { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
   .editor-panel { display: flex; width: 100%; justify-content: center; }
   .editor-panel.typewriter-mode { padding-bottom: 50vh; }
+  /* The tile's scroll area carries the typewriter padding once the editor scrolls on its own. */
+  .editor-panel.split-open.typewriter-mode { padding-bottom: 0; }
+  .editor-panel.split-open.typewriter-mode .editor-scroll { padding-bottom: 50vh; }
   .editor-panel-hidden { display: none; }
   .editor-column { position: relative; width: min(100%, 690px); }
   /* Tiles share their row equally; the column count follows the measured width, so tiles wrap on narrow screens. */
@@ -9961,7 +10008,25 @@
   .tile-grid:not(.split-open) { justify-items: center; }
   .tile-grid.split-open .editor-column { width: 100%; min-width: 0; }
   .tile-grid.split-open .toolbar { flex-wrap: wrap; }
-  .split-tile { position: sticky; top: 64px; min-width: 0; }
+  .split-tile { display: flex; min-width: 0; }
+  /* Open tiles split the viewport like a tiling window manager: the grid takes the space below the controls and every tile scrolls on its own. */
+  .tile-grid.split-open {
+    height: calc(100vh - var(--tile-grid-top, 0px) - var(--tile-grid-bottom, 0px));
+    height: calc(100dvh - var(--tile-grid-top, 0px) - var(--tile-grid-bottom, 0px));
+    align-items: stretch;
+    grid-template-rows: repeat(var(--tile-rows, 1), minmax(0, 1fr));
+  }
+  .tile-grid.split-open > .editor-column,
+  .tile-grid.split-open > .split-tile { height: 100%; min-height: 0; overflow: hidden; }
+  .tile-grid.split-open:not(.stacked-tiles) > .editor-column { grid-column: 1; grid-row: 1 / -1; }
+  .tile-grid.split-open .editor-scroll { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  /* The toolbar sticks to the tile instead of the page; its own surface stays opaque above the text. */
+  .tile-grid.split-open:not(.stacked-tiles) .toolbar { top: 0; }
+  /* One column stacks the tiles instead of squeezing them, and the page scrolls again. */
+  .tile-grid.split-open.stacked-tiles { height: auto; grid-template-rows: none; }
+  .tile-grid.split-open.stacked-tiles > .editor-column,
+  .tile-grid.split-open.stacked-tiles > .split-tile { height: auto; min-height: 320px; }
+  .tile-grid.split-open.stacked-tiles .editor-scroll { height: auto; overflow: visible; }
   .tile-grid.target-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
   .split-tile.target-drop-active { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 9px; }
   .panel-toggle.active { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
