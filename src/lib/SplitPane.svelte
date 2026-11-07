@@ -5,6 +5,7 @@
   import PdfView from "$lib/PdfView.svelte";
   import { sanitizeHtml } from "$lib/sanitize";
   import { parseSplitTarget, type SplitGroup } from "$lib/split";
+  import TileEditor from "$lib/TileEditor.svelte";
 
   const MAX_TEXT_BYTES = 2 * 1024 * 1024;
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -17,6 +18,7 @@
     groups,
     documents,
     files,
+    isActiveDocument,
     canAdd,
     canMoveLeft,
     canMoveRight,
@@ -28,12 +30,16 @@
     onMove,
     onSwap,
     onAdd,
+    onEditTitle,
+    onEditContent,
     onClose
   }: {
     target: string;
     groups: SplitGroup[];
     documents: DocumentData[];
     files: ResearchFile[];
+    /** True when this pane shows the document the main editor has open. */
+    isActiveDocument: boolean;
     canAdd: boolean;
     canMoveLeft: boolean;
     canMoveRight: boolean;
@@ -46,6 +52,8 @@
     onMove: (delta: -1 | 1) => void;
     onSwap: () => void;
     onAdd: () => void;
+    onEditTitle: (id: string, value: string) => void;
+    onEditContent: (id: string, html: string) => void;
     onClose: () => void;
   } = $props();
 
@@ -137,8 +145,22 @@
   </div>
   <div class="split-pane-body">
     {#if document}
-      <h2 class="split-title">{document.title || "Untitled"}</h2>
-      <div class="split-content" role="presentation" onclick={handleContentClick}>{@html documentHtml}</div>
+      {#if isActiveDocument}
+        <h2 class="split-title">{document.title || "Untitled"}</h2>
+        <p class="split-note split-hint">Open in the editor</p>
+        <div class="split-content" role="presentation" onclick={handleContentClick}>{@html documentHtml}</div>
+      {:else}
+        <!-- Keyed by document and bound to its id, so a pending save can never land in another document. -->
+        {#key document.id}
+          {@const documentId = document.id}
+          <TileEditor
+            title={document.title}
+            html={document.content}
+            onTitle={(value) => onEditTitle(documentId, value)}
+            onChange={(html) => onEditContent(documentId, html)}
+          />
+        {/key}
+      {/if}
     {:else if file}
       <h2 class="split-title">{file.title || file.fileName}</h2>
       {#if showPdf}{#key file.id}<PdfView load={() => readBytes(file)} />{/key}{/if}
@@ -166,6 +188,7 @@
   .split-content :global(pre) { white-space: pre-wrap; word-break: break-word; }
   .split-content :global(img), .split-image { max-width: 100%; }
   .split-note { color: var(--text-muted); font-size: 11px; }
+  .split-hint { margin: -4px 0 12px; }
   .split-open-button { height: 32px; padding: 0 13px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 11px; }
   .split-open-button:hover { border-color: var(--accent); color: var(--text-heading); }
 </style>

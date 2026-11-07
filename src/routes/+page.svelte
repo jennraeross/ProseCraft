@@ -114,6 +114,7 @@
     removeSnapshot,
     snapshotsForDocument
   } from "$lib/snapshots";
+  import { patchTileDocument, type TileDocumentPatch } from "$lib/tile-editing";
   import {
     MAX_MARKDOWN_FILES,
     MAX_MARKDOWN_FILE_BYTES,
@@ -5536,6 +5537,12 @@
     openSidebarDocument(parsed.id);
   }
 
+  /** Applies an edit made in a reference tile to its document and saves it. */
+  function updateTileDocument(id: string, patch: TileDocumentPatch) {
+    documents = patchTileDocument(documents, id, patch);
+    persist();
+  }
+
   function openBesideTarget(target: string) {
     splitPanes = openBeside(splitPanes, target, crypto.randomUUID());
     closeSidebarDrawers(false);
@@ -8032,6 +8039,7 @@
             groups={splitGroups}
             {documents}
             files={splitFiles}
+            isActiveDocument={pane.target === docTarget(activeDocumentId)}
             canAdd={canAddSplitPane(splitPanes)}
             readBytes={readResearchBytes}
             openExternally={(file) => void openResearchFile(file, { external: true })}
@@ -8043,6 +8051,8 @@
             onMove={(delta) => { splitPanes = moveSplitPane(splitPanes, pane.id, delta); }}
             onTarget={(value) => { splitPanes = setSplitTarget(splitPanes, pane.id, value); }}
             onAdd={() => { splitPanes = addSplitPane(splitPanes, crypto.randomUUID()); }}
+            onEditTitle={(id, value) => updateTileDocument(id, { title: value })}
+            onEditContent={(id, html) => updateTileDocument(id, { content: html })}
             onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
           />
         </div>
