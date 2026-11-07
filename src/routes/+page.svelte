@@ -11,6 +11,7 @@
     Columns2,
     ChevronLeft,
     ChevronRight,
+    Check,
     Download,
     Ellipsis,
     ExternalLink,
@@ -209,6 +210,22 @@
     saveBrowserResearchFile
   } from "$lib/research-files";
   import { createTimelineNode, normalizeTimelineNodes } from "$lib/timeline";
+  import {
+    STARTERS,
+    STARTER_MODULES,
+    addModule,
+    allBlueprintKeys,
+    buildFromBlueprint,
+    filterBlueprint,
+    loadCustomStarters,
+    moduleFolderKey,
+    saveCustomStarters,
+    starterBlueprint,
+    type BlueprintFolder,
+    type CustomStarter,
+    type StarterBlueprint,
+    type StarterId
+  } from "$lib/starters";
   import { migrateLegacyDocument, migrateProjectToWiki } from "$lib/wiki-migration";
   import { createWikiMentionMatcher } from "$lib/wiki-mentions";
   import {
@@ -374,6 +391,19 @@
   let labelsDialog: HTMLDialogElement;
   let labelsDialogTrigger = $state<HTMLButtonElement>();
   let labelDrafts = $state<LabelDef[]>([]);
+  let starterDialog: HTMLDialogElement;
+  let starterDraft = $state<string>("blank");
+  let starterWorking = $state<StarterBlueprint>({ folders: [] });
+  let starterSelectedKeys = $state<string[]>([]);
+  let starterCustomStarters = $state<CustomStarter[]>([]);
+  let starterTemplateName = $state("");
+  let starterNotice = $state("");
+  let starterSelected = $derived(new Set(starterSelectedKeys));
+  let starterIncludedModules = $derived(
+    starterWorking.folders.filter((folder) => isStarterModuleFolder(folder) && isStarterFolderIncluded(folder))
+  );
+  let starterExtraFolders = $derived(starterWorking.folders.filter((folder) => !isStarterModuleFolder(folder)));
+  let starterIncludedExtras = $derived(starterExtraFolders.filter((folder) => isStarterFolderIncluded(folder)));
   let chapterNameInput = $state<HTMLInputElement>();
   let dataImportInput = $state<HTMLInputElement>();
   let dataStatus = $state("");
@@ -1924,6 +1954,138 @@
 
   function createProject() {
     showZenInterface();
+    reloadStarterTemplates();
+    selectStarter("blank");
+    if (starterDialog && !starterDialog.open) starterDialog.showModal();
+  }
+
+  function reloadStarterTemplates() {
+    try {
+      starterCustomStarters = loadCustomStarters(localStorage);
+    } catch {
+      starterCustomStarters = [];
+    }
+  }
+
+  /** Working copy of a preset or of one of the user's own templates, everything included. */
+  function selectStarter(selection: string) {
+    starterDraft = selection;
+    starterNotice = "";
+    let blueprint: StarterBlueprint = { folders: [] };
+    if (selection.startsWith("custom:")) {
+      const template = starterCustomStarters.find((entry) => `custom:${entry.id}` === selection);
+      if (template) blueprint = cloneBlueprint(template.blueprint);
+    } else if (selection !== "blank") {
+      blueprint = starterBlueprint(selection as StarterId);
+    }
+    starterWorking = blueprint;
+    starterSelectedKeys = [...allBlueprintKeys(blueprint)];
+  }
+
+  function cloneBlueprint(blueprint: StarterBlueprint): StarterBlueprint {
+    return {
+      folders: blueprint.folders.map((folder) => ({
+        key: folder.key,
+        name: folder.name,
+        pages: folder.pages.map((page) => ({ key: page.key, title: page.title, html: page.html }))
+      }))
+    };
+  }
+
+  function setStarterKeys(keys: string[], selected: boolean) {
+    const next = new Set(starterSelectedKeys);
+    for (const key of keys) {
+      if (selected) next.add(key);
+      else next.delete(key);
+    }
+    starterSelectedKeys = [...next];
+  }
+
+  function starterFolderKeys(folder: BlueprintFolder): string[] {
+    return [folder.key, ...folder.pages.map((page) => page.key)];
+  }
+
+  function isStarterModuleFolder(folder: BlueprintFolder): boolean {
+    return STARTER_MODULES.some((module) => moduleFolderKey(module.id) === folder.key);
+  }
+
+  /** A folder counts as included when the folder and all of its pages are selected. */
+  function isStarterFolderIncluded(folder: BlueprintFolder): boolean {
+    return starterFolderKeys(folder).every((key) => starterSelected.has(key));
+  }
+
+  function setStarterFolderIncluded(folder: BlueprintFolder, included: boolean) {
+    setStarterKeys(starterFolderKeys(folder), included);
+  }
+
+  /** Module toggles include or exclude the folder; excluding keeps it so toggling back restores it. */
+  function toggleStarterModule(id: string) {
+    const folder = starterWorking.folders.find((entry) => entry.key === moduleFolderKey(id));
+    if (!folder) {
+      const next = addModule(starterWorking, id);
+      const added = next.folders.find((entry) => entry.key === moduleFolderKey(id));
+      starterWorking = next;
+      if (added) setStarterKeys(starterFolderKeys(added), true);
+      return;
+    }
+    setStarterFolderIncluded(folder, !isStarterFolderIncluded(folder));
+  }
+
+  function clearStarterModules() {
+    const keys = starterWorking.folders
+      .filter((folder) => isStarterModuleFolder(folder))
+      .flatMap((folder) => starterFolderKeys(folder));
+    setStarterKeys(keys, false);
+  }
+
+  function starterSummary(blueprint: StarterBlueprint): string {
+    const folders = blueprint.folders.length;
+    const pages = blueprint.folders.reduce((count, folder) => count + folder.pages.length, 0);
+    return `${folders} ${folders === 1 ? "folder" : "folders"} · ${pages} ${pages === 1 ? "page" : "pages"}`;
+  }
+
+  function saveStarterTemplate() {
+    const name = starterTemplateName.trim();
+    if (!name) return;
+    const id = crypto.randomUUID();
+    const next: CustomStarter[] = [
+      ...starterCustomStarters,
+      { id, name, blueprint: filterBlueprint(starterWorking, starterSelected) }
+    ];
+    try {
+      saveCustomStarters(localStorage, next);
+      reloadStarterTemplates();
+      starterTemplateName = "";
+      starterNotice = starterCustomStarters.some((entry) => entry.id === id)
+        ? `Saved as "${name}".`
+        : "Could not save the template in this browser.";
+    } catch {
+      starterNotice = "Could not save the template in this browser.";
+    }
+  }
+
+  async function deleteStarterTemplate(id: string) {
+    const template = starterCustomStarters.find((entry) => entry.id === id);
+    if (!template) return;
+    if (!(await confirmDestructiveAction(`Delete the template “${template.name}”? Projects created from it keep their pages.`))) return;
+    try {
+      saveCustomStarters(localStorage, starterCustomStarters.filter((entry) => entry.id !== id));
+      reloadStarterTemplates();
+    } catch {
+      starterNotice = "Could not delete the template in this browser.";
+      return;
+    }
+    if (starterDraft === `custom:${id}`) selectStarter("blank");
+  }
+
+  function createProjectFromStarter(event: SubmitEvent) {
+    event.preventDefault();
+    starterDialog.close();
+    createProjectWithStarter(filterBlueprint(starterWorking, starterSelected));
+  }
+
+  function createProjectWithStarter(blueprint: StarterBlueprint) {
+    showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const number = liveProjects.length + 1;
@@ -1953,6 +2115,9 @@
       chapterId: chapter.id
     };
     next.documents = [scene];
+    const starterContent = buildFromBlueprint(blueprint, () => crypto.randomUUID());
+    next.researchFolders = starterContent.folders;
+    next.documents = [...next.documents, ...starterContent.documents];
     next.activeDocumentId = scene.id;
     projects = [...projects, next];
     loadProject(next);
@@ -8586,6 +8751,147 @@
   </form>
 </dialog>
 
+<dialog class="settings-dialog starter-dialog" bind:this={starterDialog} onclick={(event) => {
+  if (event.target === starterDialog) starterDialog.close();
+}}>
+  <form onsubmit={createProjectFromStarter}>
+    <div class="settings-header">
+      <div><span class="settings-kicker">PROSECRAFT</span><h2>Start from</h2></div>
+      <button class="close-settings" aria-label="Close starter selection" type="button" onclick={() => starterDialog.close()}><X size={15} aria-hidden="true" /></button>
+    </div>
+    <div class="settings-body starter-body">
+      <section class="starter-presets" aria-label="Wiki template">
+        <div class="preference-heading"><strong>Wiki template</strong><span>Adds starter folders and template pages to the new project.</span></div>
+        <div class="starter-options" role="radiogroup" aria-label="Starter">
+          {#each STARTERS as starter (starter.id)}
+            <label class="starter-option" class:selected={starterDraft === starter.id}>
+              <input
+                type="radio"
+                name="starter"
+                value={starter.id}
+                checked={starterDraft === starter.id}
+                onchange={() => selectStarter(starter.id)}
+              />
+              <span class="starter-copy">
+                <strong>{starter.label}</strong>
+                <span>{starter.description}</span>
+              </span>
+            </label>
+          {/each}
+        </div>
+        {#if starterCustomStarters.length > 0}
+          <div class="preference-heading starter-subheading"><strong>My templates</strong><span>Saved in this browser.</span></div>
+          <div class="starter-options" role="radiogroup" aria-label="My templates">
+            {#each starterCustomStarters as template (template.id)}
+              <div class="starter-template">
+                <label class="starter-option" class:selected={starterDraft === `custom:${template.id}`}>
+                  <input
+                    type="radio"
+                    name="starter"
+                    value={`custom:${template.id}`}
+                    checked={starterDraft === `custom:${template.id}`}
+                    onchange={() => selectStarter(`custom:${template.id}`)}
+                  />
+                  <span class="starter-copy">
+                    <strong>{template.name}</strong>
+                    <span>{starterSummary(template.blueprint)}</span>
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  class="starter-icon"
+                  aria-label={`Delete ${template.name}`}
+                  onclick={() => deleteStarterTemplate(template.id)}
+                ><Trash2 size={13} aria-hidden="true" /></button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+      <section class="starter-customise" aria-label="Customise">
+        <div class="preference-heading">
+          <strong>Customise</strong>
+          <span>{starterSummary(filterBlueprint(starterWorking, starterSelected))}</span>
+        </div>
+        <div class="starter-modules">
+          <div class="starter-modules-head">
+            <strong>Modules</strong>
+            <span class="starter-modules-count">{starterIncludedModules.length} of {STARTER_MODULES.length} included</span>
+            {#if starterIncludedModules.length > 0}
+              <button type="button" class="starter-clear" onclick={clearStarterModules}>Clear</button>
+            {/if}
+          </div>
+          <p class="starter-modules-hint">Choose the world-building modules to include in the new project.</p>
+          <div class="starter-module-grid">
+            {#each STARTER_MODULES as module (module.id)}
+              {@const folder = starterWorking.folders.find((entry) => entry.key === moduleFolderKey(module.id))}
+              {@const included = folder ? isStarterFolderIncluded(folder) : false}
+              <button
+                type="button"
+                class="starter-module"
+                class:active={included}
+                aria-pressed={included}
+                onclick={() => toggleStarterModule(module.id)}
+              >
+                <span class="starter-module-label">
+                  <strong>{module.label}</strong>
+                  {#if included}<Check size={12} aria-hidden="true" />{/if}
+                </span>
+                <span class="starter-module-copy">{module.description}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+        {#if starterExtraFolders.length > 0}
+          <div class="starter-modules">
+            <div class="starter-modules-head">
+              <strong>Template content</strong>
+              <span class="starter-modules-count">{starterIncludedExtras.length} of {starterExtraFolders.length} included</span>
+            </div>
+            <p class="starter-modules-hint">Folders from the selected template that aren't modules.</p>
+            <div class="starter-module-grid">
+              {#each starterExtraFolders as folder (folder.key)}
+                {@const included = isStarterFolderIncluded(folder)}
+                <button
+                  type="button"
+                  class="starter-module"
+                  class:active={included}
+                  aria-pressed={included}
+                  onclick={() => setStarterFolderIncluded(folder, !included)}
+                >
+                  <span class="starter-module-label">
+                    <strong>{folder.name}</strong>
+                    {#if included}<Check size={12} aria-hidden="true" />{/if}
+                  </span>
+                  <span class="starter-module-copy">{folder.pages.length === 0 ? "Empty folder" : folder.pages.map((page) => page.title).join(" · ")}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+        <div class="starter-save">
+          <input
+            type="text"
+            bind:value={starterTemplateName}
+            placeholder="Template name"
+            aria-label="Template name"
+            onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveStarterTemplate(); } }}
+          />
+          <button type="button" class="starter-add-button" onclick={saveStarterTemplate} disabled={!starterTemplateName.trim()}>Save as my template</button>
+        </div>
+        {#if starterNotice}<p class="starter-notice" role="status">{starterNotice}</p>{/if}
+      </section>
+    </div>
+    <div class="settings-footer">
+      <span>You can add pages later.</span>
+      <div class="starter-dialog-actions">
+        <button type="button" class="starter-cancel" onclick={() => starterDialog.close()}>Cancel</button>
+        <button class="done-button" type="submit">Create</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
 <dialog class="settings-dialog project-settings-dialog" bind:this={projectSettingsDialog} onclick={(event) => {
   if (event.target === projectSettingsDialog) projectSettingsDialog.close();
 }}>
@@ -9610,6 +9916,51 @@
   .research-markdown-content :global(img) { max-width: 100%; height: auto; }
   .project-settings-dialog form { margin: 0; }
   .research-link-dialog form { margin: 0; }
+  .starter-dialog form { margin: 0; }
+  .starter-options { display: grid; gap: 6px; }
+  .starter-option { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-control); border-radius: 6px; cursor: pointer; }
+  .starter-option.selected { border-color: var(--accent); background: var(--control-bg); }
+  .starter-option input { margin: 2px 0 0; accent-color: var(--accent); }
+  .starter-copy { display: grid; gap: 2px; }
+  .starter-copy strong { color: var(--text-heading); font-size: 11px; font-weight: 600; }
+  .starter-copy span { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+  .starter-dialog-actions { display: flex; align-items: center; gap: 8px; }
+  .starter-cancel { height: 30px; padding: 0 12px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
+  .starter-cancel:hover { border-color: var(--accent); color: var(--text-heading); }
+  /* The tree scrolls inside the body so the footer buttons stay visible. */
+  .starter-dialog { width: min(760px, calc(100vw - 32px)); overflow: hidden; }
+  .starter-dialog[open] { display: flex; flex-direction: column; }
+  .starter-dialog form { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; max-height: inherit; }
+  .starter-dialog .settings-body { min-height: 0; flex: 1 1 auto; overflow: hidden; }
+  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 20px; }
+  .starter-presets, .starter-customise { min-height: 0; overflow-y: auto; padding: 17px 0; }
+  .starter-subheading { margin-top: 16px; }
+  .starter-template { display: flex; align-items: center; gap: 6px; }
+  .starter-template .starter-option { flex: 1; min-width: 0; }
+  .starter-icon { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .starter-icon:hover { background: var(--hover-bg); color: var(--text-heading); }
+  .starter-modules { display: grid; gap: 7px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
+  .starter-modules-head { display: flex; align-items: baseline; gap: 7px; }
+  .starter-modules-head strong { color: var(--text-heading); font-size: 11px; font-weight: 600; }
+  .starter-modules-count { color: var(--text-muted); font-size: 10px; }
+  .starter-clear { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; text-decoration: underline; text-underline-offset: 2px; }
+  .starter-clear:hover { color: var(--text-heading); }
+  .starter-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .starter-modules-hint { margin: 0; color: var(--text-muted); font-size: 10px; }
+  .starter-module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
+  .starter-module { display: grid; gap: 3px; padding: 8px 9px; border: 1px solid var(--border-control); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+  .starter-module:hover { border-color: var(--accent); background: var(--hover-bg); }
+  .starter-module.active { border-color: var(--accent); background: var(--selected-bg); }
+  .starter-module:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .starter-module-label { display: flex; align-items: center; gap: 4px; color: var(--text-heading); font-size: 11px; font-weight: 600; }
+  .starter-module-label :global(svg) { flex: 0 0 auto; margin-left: auto; color: var(--accent); }
+  .starter-module-copy { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+  .starter-save { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+  .starter-save input[type="text"] { height: 26px; min-width: 0; flex: 1; padding: 0 7px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-primary); font-size: 10px; }
+  .starter-add-button { height: 26px; flex: 0 0 auto; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
+  .starter-add-button:hover:not(:disabled) { border-color: var(--accent); color: var(--text-heading); }
+  .starter-add-button:disabled { opacity: 0.5; cursor: default; }
+  .starter-notice { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
   .settings-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
   .settings-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 23px 25px 18px; border-bottom: 1px solid var(--border-soft); }
   .settings-kicker { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 1.2px; }
@@ -9948,6 +10299,11 @@
     .settings-header { padding: calc(16px + env(safe-area-inset-top)) 18px 14px; }
     .settings-body { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 18px 12px; }
     .settings-footer { padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); }
+    .starter-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; gap: 0; }
+    .starter-dialog .settings-body { overflow-y: auto; }
+    .starter-presets, .starter-customise { overflow: visible; }
+    .starter-presets { padding-bottom: 0; }
+    .starter-customise { padding-top: 12px; }
     .close-settings { width: 40px; height: 40px; }
     .research-markdown-dialog { width: 100vw; max-width: 100vw; }
     .research-markdown-dialog .research-markdown-content { min-height: 0; flex: 1; }
