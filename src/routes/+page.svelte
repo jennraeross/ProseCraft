@@ -9302,8 +9302,8 @@
   /* The tree scrolls inside the body so the footer buttons stay visible. */
   .starter-dialog { width: min(760px, calc(100vw - 32px)); overflow: hidden; }
   .starter-dialog[open] { display: flex; flex-direction: column; }
-  .starter-dialog form { display: flex; min-height: 0; flex: 1; flex-direction: column; }
-  .starter-dialog .settings-body { min-height: 0; flex: 1; overflow-y: auto; }
+  .starter-dialog form { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; max-height: inherit; }
+  .starter-dialog .settings-body { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
   .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: start; gap: 20px; }
   .starter-presets, .starter-customise { padding: 17px 0; }
   .starter-subheading { margin-top: 16px; }
