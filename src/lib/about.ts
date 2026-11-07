@@ -50,6 +50,8 @@ export function summarizeUserAgent(userAgent: string): string {
     }
   } else if (/Trident|MSIE/i.test(ua)) {
     engine = "Trident";
+  } else if (/Chrome\/(\d+)/.test(ua)) {
+    engine = `Chromium ${ua.match(/Chrome\/(\d+)/)![1]}`;
   } else if (/WEBKIT/i.test(ua)) {
     // Linux with WebKitGTK: has WebKit but not Chrome/Safari in typical pattern
     // If it's Linux + WebKit and no Edg/Chrome, assume WebKitGTK

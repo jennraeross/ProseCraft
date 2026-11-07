@@ -51,7 +51,7 @@ describe("about module", () => {
   describe("summarizeUserAgent", () => {
     it("parses Linux user agent", () => {
       const ua =
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/535.11 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/535.11";
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
       const result = summarizeUserAgent(ua);
       expect(result).toContain("Linux");
       expect(result).toContain("WebKitGTK");
@@ -307,5 +307,17 @@ describe("about module", () => {
       expect(report).not.toContain("Jennifer Roylance");
       expect(report).not.toContain("/path/to/file");
     });
+  });
+});
+
+describe("summarizeUserAgent engines", () => {
+  it("does not call a Chromium user agent WebKitGTK", () => {
+    const chrome = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+    expect(summarizeUserAgent(chrome)).toBe("Linux, Chromium 126");
+  });
+
+  it("still recognises WebKitGTK without a Chrome token", () => {
+    const gtk = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+    expect(summarizeUserAgent(gtk)).toBe("Linux, WebKitGTK");
   });
 });
