@@ -6102,8 +6102,48 @@
     labelMenuTrigger = trigger;
     openLabelMenu = { kind, id };
     void tick().then(() => {
+      positionLabelMenu();
       labelMenuElement?.querySelector<HTMLButtonElement>("button")?.focus();
     });
+  }
+
+  function positionLabelMenu() {
+    const menu = labelMenuElement;
+    const trigger = labelMenuTrigger;
+    if (!menu || !trigger) return;
+    menu.style.left = "";
+    menu.style.right = "";
+    menu.style.top = "";
+    menu.style.bottom = "";
+    const tree = trigger.closest(".sidebar-tree") as HTMLElement | null;
+    const fallback = document.querySelector(".sidebar");
+    const container = tree?.getBoundingClientRect() ?? fallback?.getBoundingClientRect();
+    if (!container) return;
+    const scrollbarWidth = tree ? tree.offsetWidth - tree.clientWidth : 0;
+    const margin = 4;
+    const menuRect = menu.getBoundingClientRect();
+    const wrapRect = menu.parentElement?.getBoundingClientRect();
+    if (!wrapRect) return;
+    const minLeft = container.left + margin;
+    const maxLeft = container.right - scrollbarWidth - margin - menuRect.width;
+    let left = menuRect.left;
+    if (maxLeft >= minLeft) {
+      left = Math.min(Math.max(left, minLeft), maxLeft);
+    } else {
+      left = minLeft;
+    }
+    menu.style.left = `${left - wrapRect.left}px`;
+    menu.style.right = "auto";
+    const placed = menu.getBoundingClientRect();
+    const maxBottom = Math.min(window.innerHeight - margin, container.bottom - margin);
+    if (placed.bottom > maxBottom) {
+      menu.style.top = "auto";
+      menu.style.bottom = "calc(100% + 4px)";
+      if (menu.getBoundingClientRect().top < margin) {
+        menu.style.top = "";
+        menu.style.bottom = "";
+      }
+    }
   }
 
   function closeLabelMenu(restoreFocus = false) {
@@ -6633,7 +6673,7 @@
                   </button>
                   {#if openLabelMenu?.kind === "chapter" && openLabelMenu.id === chapter.id}
                     <div
-                      class="label-menu"
+                      class="label-menu label-menu-chapter"
                       role="menu"
                       tabindex="-1"
                       aria-label="Labels for {chapterLabel(chapter)}"
@@ -8883,6 +8923,7 @@
   .document-row:hover .label-trigger .label-dot, .chapter-row:hover .label-trigger .label-dot, .label-trigger:hover .label-dot, .label-trigger:focus-visible .label-dot { border-color: var(--text-muted); opacity: 1; }
   .label-trigger.has-label .label-dot { border-color: var(--label-color); background: var(--label-color); opacity: 1; }
   .label-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; width: 170px; max-height: 230px; flex-direction: column; gap: 1px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+  .label-menu-chapter { right: auto; left: 0; }
   .label-menu .label-menu-manage { margin-top: 3px; padding-top: 3px; border-top: 1px solid var(--border-soft); border-radius: 0 0 5px 5px; color: var(--text-muted); }
   .label-filter { display: grid; gap: 5px; padding: 0 7px 9px; }
   .label-filter-label { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }
