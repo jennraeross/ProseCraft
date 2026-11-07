@@ -168,6 +168,7 @@ function documentPayload(fields: Record<string, unknown>): Record<string, unknow
     folderId: fields.folderId,
     trashed: fields.trashed,
     trashedWithChapterId: fields.trashedWithChapterId,
+    labelId: fields.labelId,
     updatedAt: fields.updatedAt,
     revision: fields.revision,
     updatedBy: fields.updatedBy,
@@ -186,6 +187,7 @@ function documentFields(document: DocumentData, meta: EntityMeta): Record<string
     folderId: document.folderId,
     trashed: document.trashed,
     trashedWithChapterId: document.trashedWithChapterId,
+    labelId: document.labelId,
     updatedAt: meta.updatedAt,
     revision: meta.revision,
     updatedBy: meta.updatedBy,
@@ -260,6 +262,7 @@ function decodeDocument(
   if (typeof fields.trashedWithChapterId === "string") {
     record.trashedWithChapterId = fields.trashedWithChapterId;
   }
+  if (typeof fields.labelId === "string") record.labelId = fields.labelId;
   if (isObject(fields.character)) record.character = fields.character as DocumentData["character"];
   if (isObject(fields.place)) record.place = fields.place as DocumentData["place"];
 
@@ -301,7 +304,8 @@ function decodeChapter(
       title: record.title,
       expanded: record.expanded === true,
       ...(typeof record.summary === "string" ? { summary: record.summary } : {}),
-      ...(record.trashed === true ? { trashed: true } : {})
+      ...(record.trashed === true ? { trashed: true } : {}),
+      ...(typeof record.labelId === "string" ? { labelId: record.labelId } : {})
     },
     meta: finalMeta,
     external,
@@ -780,7 +784,8 @@ export async function writeOpenProject(
       title: chapter.title,
       expanded: chapter.expanded,
       ...(typeof chapter.summary === "string" ? { summary: chapter.summary } : {}),
-      ...(chapter.trashed ? { trashed: true } : {})
+      ...(chapter.trashed ? { trashed: true } : {}),
+      ...(chapter.labelId ? { labelId: chapter.labelId } : {})
     };
     const content = `${JSON.stringify({ record, meta, hash: hashJson({ record, meta }) }, null, 2)}\n`;
     await writeIfChanged(fs, path, content);
