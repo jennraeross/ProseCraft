@@ -12,6 +12,7 @@
     ChevronLeft,
     ChevronRight,
     Check,
+    Database,
     Download,
     Ellipsis,
     ExternalLink,
@@ -22,6 +23,7 @@
     Hand,
     History,
     Image as ImageIcon,
+    Info,
     Keyboard,
     ImagePlus,
     Link as LinkIcon,
@@ -32,6 +34,7 @@
     PanelLeft,
     PanelRight,
     Pencil,
+    PenLine,
     Plus,
     Redo2,
     RotateCcw,
@@ -39,6 +42,8 @@
     Search,
     Settings,
     Sigma,
+    SlidersHorizontal,
+    SpellCheck,
     Square,
     Trash2,
     Type,
@@ -386,6 +391,17 @@
   } | null>(null);
   const wikiMentionHighlightName = "prosecraft-wiki-mention";
   let settingsDialog: HTMLDialogElement;
+  type SettingsCategory = "general" | "writing" | "proofreading" | "data" | "install" | "about";
+  const settingsCategoryStorageKey = "prosecraft-settings-category";
+  const settingsCategories: { id: SettingsCategory; label: string; icon: typeof Settings }[] = [
+    { id: "general", label: "General", icon: SlidersHorizontal },
+    { id: "writing", label: "Writing", icon: PenLine },
+    { id: "proofreading", label: "Proofreading", icon: SpellCheck },
+    { id: "data", label: "Data and sync", icon: Database },
+    { id: "install", label: "Updates and install", icon: Download },
+    { id: "about", label: "About", icon: Info }
+  ];
+  let activeSettingsCategory = $state<SettingsCategory>("general");
   let aboutDialog: HTMLDialogElement;
   let aboutDiagnostics = $state("");
   let aboutCopyStatus = $state("");
@@ -1898,11 +1914,61 @@
     savePreferences();
   }
 
+  function isSettingsCategory(value: string): value is SettingsCategory {
+    return settingsCategories.some((category) => category.id === value);
+  }
+
+  function restoreSettingsCategory() {
+    try {
+      const saved = localStorage.getItem(settingsCategoryStorageKey);
+      if (!saved || !isSettingsCategory(saved)) return;
+      if (saved === "install" && desktopRuntime) {
+        activeSettingsCategory = "general";
+        return;
+      }
+      activeSettingsCategory = saved;
+    } catch {
+      // Private browsing may block persistence; keep the current category.
+    }
+  }
+
+  function selectSettingsCategory(category: SettingsCategory) {
+    activeSettingsCategory = category;
+    try {
+      localStorage.setItem(settingsCategoryStorageKey, category);
+    } catch {
+      // Private browsing may block persistence; the category still changes for this session.
+    }
+  }
+
+  function handleSettingsCategoryKey(event: KeyboardEvent) {
+    const visibleCategories = settingsCategories.filter((category) => category.id !== "install" || !desktopRuntime);
+    const currentIndex = visibleCategories.findIndex((category) => category.id === activeSettingsCategory);
+    if (currentIndex === -1) return;
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1) % visibleCategories.length;
+    else if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + visibleCategories.length) % visibleCategories.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = visibleCategories.length - 1;
+    else return;
+    event.preventDefault();
+    const next = visibleCategories[nextIndex];
+    selectSettingsCategory(next.id);
+    document.getElementById(`settings-tab-${next.id}`)?.focus();
+  }
+
   function openSettings() {
     showZenInterface();
+    restoreSettingsCategory();
     if (settingsDialog && !settingsDialog.open) settingsDialog.showModal();
     void ensureSystemFonts();
     void refreshStorageUsage();
+  }
+
+  /** Dialogs sit in the top layer above the sheet, so the settings close first. */
+  function showShortcutsFromSettings() {
+    if (settingsDialog?.open) settingsDialog.close();
+    shortcutsOpen = true;
   }
 
   function openAbout() {
@@ -8341,14 +8407,37 @@
 
 <ShortcutsSheet open={shortcutsOpen} onClose={() => (shortcutsOpen = false)} onSavePdf={saveShortcutsPdf} />
 
-<dialog class="settings-dialog" bind:this={settingsDialog} onclick={(event) => {
+<dialog class="settings-dialog main-settings-dialog" bind:this={settingsDialog} onclick={(event) => {
   if (event.target === settingsDialog) settingsDialog.close();
 }}>
   <div class="settings-header">
     <div><span class="settings-kicker">PROSECRAFT</span><h2>Settings</h2></div>
     <button class="close-settings" aria-label="Close settings" onclick={() => settingsDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
-  <div class="settings-body">
+  <div class="settings-layout">
+    <div class="settings-nav" role="tablist" aria-label="Settings categories" aria-orientation="vertical" tabindex="-1" onkeydown={handleSettingsCategoryKey}>
+      {#each settingsCategories as { id, label, icon: Icon } (id)}
+        {#if id !== "install" || !desktopRuntime}
+          <button
+            type="button"
+            class="settings-nav-item"
+            class:active={activeSettingsCategory === id}
+            id={`settings-tab-${id}`}
+            role="tab"
+            aria-selected={activeSettingsCategory === id}
+            aria-controls={`settings-panel-${id}`}
+            tabindex={activeSettingsCategory === id ? 0 : -1}
+            onclick={() => selectSettingsCategory(id)}
+          >
+            <Icon size={15} aria-hidden="true" />
+            <span>{label}</span>
+          </button>
+        {/if}
+      {/each}
+    </div>
+    <div class="settings-panes">
+    <div class="settings-pane" id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general" hidden={activeSettingsCategory !== "general"}>
+      <h3 class="settings-pane-title">General</h3>
     <section class="preference-section">
       <div class="preference-heading"><strong>Appearance</strong><span>Choose how ProseCraft looks</span></div>
       <label class="preference-label" for="theme-preference">Theme</label>
@@ -8372,31 +8461,9 @@
         {/each}
       </select>
     </section>
-    {#if !desktopRuntime}
-      <section class="preference-section">
-        <div class="preference-heading"><strong>Install app</strong><span>Keep ProseCraft on this device</span></div>
-        {#if installedStandalone}
-          <p class="preference-help">ProseCraft is installed and running as an app on this device. The app shell opens offline; your projects stay in this device’s local database.</p>
-        {:else if canInstallApp}
-          <div class="data-actions">
-            <button type="button" class="data-button" onclick={installApp}>Install ProseCraft</button>
-          </div>
-          <p class="preference-help">Install adds ProseCraft to your Home Screen or applications menu and keeps the writing app available offline.</p>
-        {:else if isIosDevice}
-          <p class="preference-help">On iPhone or iPad, open ProseCraft in Safari, tap the Share button, then choose <strong>Add to Home Screen</strong>. It will open full-screen and keep working offline.</p>
-        {:else}
-          <p class="preference-help">Use your browser’s install option to add ProseCraft to your device. In Chrome or Edge, choose <strong>Install app</strong> from the menu; in Firefox, choose <strong>Add to Home Screen</strong>. The app shell then opens offline.</p>
-        {/if}
-        {#if updateReady}
-          <div class="data-actions">
-            <button type="button" class="data-button" onclick={applyServiceWorkerUpdate} disabled={updateApplying}>
-              {updateApplying ? "Updating…" : "Reload to update"}
-            </button>
-          </div>
-          <p class="preference-help">An update is ready. Reloading keeps your writing saved and switches to the newest version.</p>
-        {/if}
-      </section>
-    {/if}
+    </div>
+    <div class="settings-pane" id="settings-panel-writing" role="tabpanel" aria-labelledby="settings-tab-writing" hidden={activeSettingsCategory !== "writing"}>
+      <h3 class="settings-pane-title">Writing</h3>
     <section class="preference-section">
       <div class="preference-heading"><strong>Writing fonts</strong><span>Choose typefaces for the writing area and Markdown source</span></div>
       <label class="preference-label" for="rich-text-font-preference">Writing font</label>
@@ -8486,6 +8553,9 @@
       </label>
       <p class="preference-help">When enabled, use the Markdown editor button above a document to switch between Markdown source and rich text.</p>
     </section>
+    </div>
+    <div class="settings-pane" id="settings-panel-proofreading" role="tabpanel" aria-labelledby="settings-tab-proofreading" hidden={activeSettingsCategory !== "proofreading"}>
+      <h3 class="settings-pane-title">Proofreading</h3>
     <section class="preference-section">
       <div class="preference-heading"><strong>Proofreading</strong><span>Offline spelling and grammar checking</span></div>
       <label class="preference-toggle">
@@ -8517,6 +8587,9 @@
         {/if}
       {/if}
     </section>
+    </div>
+    <div class="settings-pane" id="settings-panel-data" role="tabpanel" aria-labelledby="settings-tab-data" hidden={activeSettingsCategory !== "data"}>
+      <h3 class="settings-pane-title">Data and sync</h3>
     <section class="preference-section">
       <div class="preference-heading"><strong>Data</strong><span>Back up or move your projects between devices</span></div>
       <div class="data-group">
@@ -8800,8 +8873,42 @@
     {#if !preferencesSaved}
       <p class="preference-error" role="status">Could not save preferences. They may reset when you close the app.</p>
     {/if}
+    </div>
+    {#if !desktopRuntime}
+    <div class="settings-pane" id="settings-panel-install" role="tabpanel" aria-labelledby="settings-tab-install" hidden={activeSettingsCategory !== "install"}>
+      <h3 class="settings-pane-title">Updates and install</h3>
+      <section class="preference-section">
+        <div class="preference-heading"><strong>Install app</strong><span>Keep ProseCraft on this device</span></div>
+        {#if installedStandalone}
+          <p class="preference-help">ProseCraft is installed and running as an app on this device. The app shell opens offline; your projects stay in this device’s local database.</p>
+        {:else if canInstallApp}
+          <div class="data-actions">
+            <button type="button" class="data-button" onclick={installApp}>Install ProseCraft</button>
+          </div>
+          <p class="preference-help">Install adds ProseCraft to your Home Screen or applications menu and keeps the writing app available offline.</p>
+        {:else if isIosDevice}
+          <p class="preference-help">On iPhone or iPad, open ProseCraft in Safari, tap the Share button, then choose <strong>Add to Home Screen</strong>. It will open full-screen and keep working offline.</p>
+        {:else}
+          <p class="preference-help">Use your browser’s install option to add ProseCraft to your device. In Chrome or Edge, choose <strong>Install app</strong> from the menu; in Firefox, choose <strong>Add to Home Screen</strong>. The app shell then opens offline.</p>
+        {/if}
+        {#if updateReady}
+          <div class="data-actions">
+            <button type="button" class="data-button" onclick={applyServiceWorkerUpdate} disabled={updateApplying}>
+              {updateApplying ? "Updating…" : "Reload to update"}
+            </button>
+          </div>
+          <p class="preference-help">An update is ready. Reloading keeps your writing saved and switches to the newest version.</p>
+        {/if}
+      </section>
+    </div>
+    {/if}
+    <div class="settings-pane" id="settings-panel-about" role="tabpanel" aria-labelledby="settings-tab-about" hidden={activeSettingsCategory !== "about"}>
+      <h3 class="settings-pane-title">About</h3>
     <div class="about-row">
       <button type="button" class="about-row-button" onclick={openAbout}>About {APP_NAME} · version {APP_VERSION}</button>
+      <button type="button" class="about-row-button" onclick={showShortcutsFromSettings}>Keyboard shortcuts</button>
+    </div>
+    </div>
     </div>
   </div>
   <div class="settings-footer"><span>Preferences are saved on this device.</span><button class="done-button" onclick={() => settingsDialog.close()}>Done</button></div>
@@ -10140,6 +10247,20 @@
   .close-settings { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 20px; }
   .close-settings:hover { background: var(--hover-bg); color: var(--text-primary); }
   .settings-body { padding: 7px 25px 10px; }
+  .main-settings-dialog { width: min(860px, calc(100vw - 32px)); height: min(620px, calc(100vh - 32px)); max-height: calc(100vh - 32px); overflow: hidden; }
+  .main-settings-dialog[open] { display: flex; flex-direction: column; }
+  .main-settings-dialog .settings-header, .main-settings-dialog .settings-footer { flex: 0 0 auto; }
+  .settings-layout { display: flex; min-height: 0; flex: 1 1 auto; }
+  .settings-nav { display: flex; width: 200px; flex: 0 0 200px; flex-direction: column; gap: 2px; overflow-y: auto; padding: 12px; border-right: 1px solid var(--border-soft); }
+  .settings-nav-item { position: relative; display: flex; width: 100%; height: 32px; flex: 0 0 auto; align-items: center; gap: 9px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; font-family: inherit; font-size: 11px; text-align: left; }
+  .settings-nav-item:hover { background: var(--hover-bg); color: var(--text-primary); }
+  .settings-nav-item.active { background: var(--hover-bg); color: var(--text-heading); }
+  .settings-nav-item.active::before { position: absolute; top: 7px; bottom: 7px; left: 0; width: 2px; border-radius: 1px; background: var(--accent); content: ""; }
+  .settings-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .settings-panes { min-width: 0; min-height: 0; flex: 1 1 auto; overflow-y: auto; padding: 20px 24px 24px; }
+  .settings-pane[hidden] { display: none; }
+  .settings-pane-title { margin: 0 0 4px; color: var(--text-heading); font-family: Georgia, serif; font-size: 18px; font-weight: 500; }
+  .settings-pane > .preference-section:last-child { border-bottom: 0; }
   .preference-section { padding: 17px 0; border-bottom: 1px solid var(--border-soft); }
   .preference-heading { display: flex; flex-direction: column; gap: 4px; margin-bottom: 13px; }
   .preference-heading strong { color: var(--text-heading); font-size: 12px; font-weight: 600; }
@@ -10339,7 +10460,7 @@
   .passphrase-hint-note { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
   .done-button:disabled { opacity: 0.6; cursor: default; }
   .settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 25px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 9px; }
-  .about-row { padding: 12px 0 4px; }
+  .about-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 0 4px; }
   .about-row-button { padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; text-align: left; }
   .about-row-button:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
   .about-row-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -10493,6 +10614,15 @@
     .editor-content { font-size: calc(17px * var(--editor-scale)); line-height: 1.75; }
     .title-input { font-size: clamp(calc(30px * var(--editor-scale)), 9vw, calc(40px * var(--editor-scale))); }
     .document-meta { flex-wrap: wrap; row-gap: 4px; font-size: 11px; }
+  }
+  @media (max-width: 640px) {
+    .main-settings-dialog { height: 100vh; height: 100dvh; max-height: 100dvh; }
+    .settings-layout { flex-direction: column; }
+    .settings-nav { width: auto; flex: 0 0 auto; flex-direction: row; gap: 4px; overflow-x: auto; overflow-y: hidden; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--border-soft); scrollbar-width: none; }
+    .settings-nav::-webkit-scrollbar { display: none; }
+    .settings-nav-item { width: auto; padding: 0 10px; white-space: nowrap; }
+    .settings-nav-item.active::before { top: auto; right: 8px; bottom: 0; left: 8px; width: auto; height: 2px; }
+    .settings-panes { padding: 16px 18px 20px; }
   }
   @media (max-width: 440px) {
     .progress-sidebar { width: min(340px, 92vw); }
