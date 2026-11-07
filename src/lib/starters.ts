@@ -37,6 +37,8 @@ type TemplatePage = {
 type StarterFolder = {
   title: string;
   pages: TemplatePage[];
+  /** Module this folder stands in for, so the module toggles reflect the preset. */
+  module?: string;
 };
 
 function escapeHtml(value: string): string {
@@ -77,10 +79,11 @@ const PLACE_TEMPLATE = sheetTemplatePage("Place template", PLACE_SECTIONS);
 const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
   blank: [],
   fantasy: [
-    { title: "Characters", pages: [CHARACTER_TEMPLATE] },
-    { title: "Places", pages: [PLACE_TEMPLATE] },
+    { title: "Characters", module: "characters", pages: [CHARACTER_TEMPLATE] },
+    { title: "Places", module: "places", pages: [PLACE_TEMPLATE] },
     {
       title: "Magic",
+      module: "magic-and-technology",
       pages: [
         templatePage("Magic system", [
           ["Source", "Where does magic come from, and who can reach it?"],
@@ -93,6 +96,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Cultures",
+      module: "cultures",
       pages: [
         templatePage("Culture template", [
           ["Values", "What this culture prizes, and what it punishes."],
@@ -105,6 +109,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Creatures",
+      module: "species",
       pages: [
         templatePage("Creature template", [
           ["Appearance", "Size, shape, and the details people notice first."],
@@ -117,6 +122,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "History & Timeline",
+      module: "timeline",
       pages: [
         templatePage("Timeline", [
           ["Before the story", "The old events everyone still refers to."],
@@ -128,6 +134,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Items",
+      module: "items",
       pages: [
         templatePage("Item template", [
           ["Description", "What it is, what it looks like, and what it is made of."],
@@ -140,10 +147,11 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     }
   ],
   scifi: [
-    { title: "Characters", pages: [CHARACTER_TEMPLATE] },
-    { title: "Places & Worlds", pages: [PLACE_TEMPLATE] },
+    { title: "Characters", module: "characters", pages: [CHARACTER_TEMPLATE] },
+    { title: "Places & Worlds", module: "places", pages: [PLACE_TEMPLATE] },
     {
       title: "Technology",
+      module: "magic-and-technology",
       pages: [
         templatePage("Technology template", [
           ["What it does", "The job it performs in daily life."],
@@ -156,6 +164,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Factions",
+      module: "organisations",
       pages: [
         templatePage("Faction template", [
           ["Goal", "What the faction wants, stated plainly."],
@@ -168,6 +177,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Species",
+      module: "species",
       pages: [
         templatePage("Species template", [
           ["Biology", "Body, senses, lifespan, and what they need to live."],
@@ -180,6 +190,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Timeline",
+      module: "timeline",
       pages: [
         templatePage("Timeline", [
           ["Before the story", "The events that set the current situation up."],
@@ -191,7 +202,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     }
   ],
   crime: [
-    { title: "Characters", pages: [CHARACTER_TEMPLATE] },
+    { title: "Characters", module: "characters", pages: [CHARACTER_TEMPLATE] },
     {
       title: "Suspects",
       pages: [
@@ -230,6 +241,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Timeline of the Case",
+      module: "timeline",
       pages: [
         templatePage("Case timeline", [
           ["Before the crime", "The relationships and plans that led here."],
@@ -242,10 +254,11 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     }
   ],
   historical: [
-    { title: "Characters", pages: [CHARACTER_TEMPLATE] },
-    { title: "Places", pages: [PLACE_TEMPLATE] },
+    { title: "Characters", module: "characters", pages: [CHARACTER_TEMPLATE] },
+    { title: "Places", module: "places", pages: [PLACE_TEMPLATE] },
     {
       title: "Period Research",
+      module: "research",
       pages: [
         templatePage("Period research", [
           ["Daily life", "Housing, food, hygiene, and the shape of an ordinary day."],
@@ -258,6 +271,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Events & Timeline",
+      module: "timeline",
       pages: [
         templatePage("Timeline", [
           ["Before the story", "The longer history a reader needs."],
@@ -281,9 +295,10 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     }
   ],
   romance: [
-    { title: "Characters", pages: [CHARACTER_TEMPLATE] },
+    { title: "Characters", module: "characters", pages: [CHARACTER_TEMPLATE] },
     {
       title: "Relationships",
+      module: "relationships",
       pages: [
         templatePage("Relationship template", [
           ["Who they are", "The two people, and what each wants at the start."],
@@ -294,7 +309,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
         ])
       ]
     },
-    { title: "Places", pages: [PLACE_TEMPLATE] },
+    { title: "Places", module: "places", pages: [PLACE_TEMPLATE] },
     {
       title: "Beats",
       pages: [
@@ -323,6 +338,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Sources",
+      module: "research",
       pages: [
         templatePage("Sources", [
           ["Books and articles", "Full references, with the edition you used."],
@@ -335,6 +351,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Key Terms",
+      module: "encyclopedia",
       pages: [
         templatePage("Key terms", [
           ["Term", "The word or phrase as you use it."],
@@ -357,7 +374,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     }
   ]  ,
   thriller: [
-    { title: "Characters", pages: [CHARACTER_TEMPLATE] },
+    { title: "Characters", module: "characters", pages: [CHARACTER_TEMPLATE] },
     {
       title: "Antagonist",
       pages: [
@@ -370,9 +387,10 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
         ])
       ]
     },
-    { title: "Places", pages: [PLACE_TEMPLATE] },
+    { title: "Places", module: "places", pages: [PLACE_TEMPLATE] },
     {
       title: "Organisations",
+      module: "organisations",
       pages: [
         templatePage("Organisation template", [
           ["Purpose", "What it officially does, and what it really does."],
@@ -384,6 +402,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Timeline of events",
+      module: "timeline",
       pages: [
         templatePage("Timeline", [
           ["Before the story", "What already happened that the characters do not know yet."],
@@ -406,6 +425,7 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
     },
     {
       title: "Research",
+      module: "research",
       pages: [
         templatePage("Research notes", [
           ["Procedures", "How investigations, operations, or institutions really work."],
@@ -776,18 +796,29 @@ export type BlueprintFolder = { key: string; name: string; pages: BlueprintPage[
 /** Editable description of the wiki a project starts with; keys are unique within one blueprint. */
 export type StarterBlueprint = { folders: BlueprintFolder[] };
 
-/** The preset as an editable blueprint with stable keys ("folder:0", "page:0.1"). */
+/** The preset as an editable blueprint.
+ *
+ * Folders that stand in for a world-building module keep the preset's own
+ * name and pages but use the module's key, so the module toggles reflect the
+ * template: toggling one off removes that folder, and toggling it on cannot
+ * append a duplicate. Unknown module names fall back to preset keys. */
 export function starterBlueprint(id: StarterId): StarterBlueprint {
   return {
-    folders: STARTER_CONTENT[id].map((folder, folderIndex) => ({
-      key: `folder:${folderIndex}`,
-      name: folder.title,
-      pages: folder.pages.map((page, pageIndex) => ({
-        key: `page:${folderIndex}.${pageIndex}`,
-        title: page.title,
-        html: page.content
-      }))
-    }))
+    folders: STARTER_CONTENT[id].map((folder, folderIndex) => {
+      const moduleId = folder.module && STARTER_MODULES.some((module) => module.id === folder.module)
+        ? folder.module
+        : null;
+      const folderKey = moduleId ? moduleFolderKey(moduleId) : `folder:${folderIndex}`;
+      return {
+        key: folderKey,
+        name: folder.title,
+        pages: folder.pages.map((page, pageIndex) => ({
+          key: moduleId ? `${folderKey}/${pageIndex}` : `page:${folderIndex}.${pageIndex}`,
+          title: page.title,
+          html: page.content
+        }))
+      };
+    })
   };
 }
 

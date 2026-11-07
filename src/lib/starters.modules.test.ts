@@ -127,4 +127,61 @@ describe("starter modules", () => {
     ]);
     expect(duplicate.blueprint.folders.map((folder) => folder.key)).toEqual(["module:maps", "folder:1"]);
   });
+
+  it("reflects each preset in the module toggles", () => {
+    expect(modulesOf(starterBlueprint("blank"))).toEqual([]);
+    expect(modulesOf(starterBlueprint("fantasy"))).toEqual(
+      ["characters", "places", "magic-and-technology", "cultures", "species", "timeline", "items"]
+    );
+    expect(modulesOf(starterBlueprint("scifi"))).toEqual(
+      ["characters", "places", "magic-and-technology", "organisations", "species", "timeline"]
+    );
+    expect(modulesOf(starterBlueprint("crime"))).toEqual(["characters", "timeline"]);
+    expect(modulesOf(starterBlueprint("historical"))).toEqual(["characters", "places", "research", "timeline"]);
+    expect(modulesOf(starterBlueprint("romance"))).toEqual(["characters", "relationships", "places"]);
+    expect(modulesOf(starterBlueprint("nonfiction"))).toEqual(["research", "encyclopedia"]);
+    expect(modulesOf(starterBlueprint("thriller"))).toEqual(
+      ["characters", "places", "organisations", "timeline", "research"]
+    );
+  });
+
+  it("keeps the preset's own folder names and unique keys", () => {
+    for (const id of ["fantasy", "scifi", "crime", "historical", "romance", "nonfiction", "thriller"] as const) {
+      const blueprint = starterBlueprint(id);
+      const keys = [...allBlueprintKeys(blueprint)];
+      expect(new Set(keys).size).toBe(keys.length);
+    }
+    const fantasy = starterBlueprint("fantasy");
+    expect(fantasy.folders.map((folder) => folder.name)).toEqual(
+      ["Characters", "Places", "Magic", "Cultures", "Creatures", "History & Timeline", "Items"]
+    );
+    expect(blueprintHasModule(fantasy, "characters")).toBe(true);
+    expect(blueprintHasModule(fantasy, "religions")).toBe(false);
+  });
+
+  it("toggles a preset module off and on without duplicating it", () => {
+    const fantasy = starterBlueprint("fantasy");
+    // Toggling on while present is a no-op, so the dialog cannot duplicate the folder.
+    expect(addModule(fantasy, "characters")).toEqual(fantasy);
+    const removed = removeModule(fantasy, "characters");
+    expect(removed.folders).toHaveLength(fantasy.folders.length - 1);
+    expect(removed.folders.some((folder) => folder.name === "Characters")).toBe(false);
+    expect(blueprintHasModule(removed, "characters")).toBe(false);
+    const restored = addModule(removed, "characters");
+    expect(restored.folders).toHaveLength(fantasy.folders.length);
+    const keys = [...allBlueprintKeys(restored)];
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(blueprintHasModule(restored, "characters")).toBe(true);
+  });
+
+  it("leaves preset folders without a module alone when adding nearby modules", () => {
+    const crime = starterBlueprint("crime");
+    expect(blueprintHasModule(crime, "plot")).toBe(false);
+    const withPlot = addModule(crime, "plot");
+    expect(withPlot.folders).toHaveLength(crime.folders.length + 1);
+    expect(withPlot.folders.map((folder) => folder.name)).toContain("Suspects");
+    expect(withPlot.folders.map((folder) => folder.name)).toContain("Plot");
+    const keys = [...allBlueprintKeys(withPlot)];
+    expect(new Set(keys).size).toBe(keys.length);
+  });
 });
