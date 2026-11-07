@@ -417,6 +417,360 @@ const STARTER_CONTENT: Record<StarterId, StarterFolder[]> = {
   ]
 };
 
+/** One wiki folder of ready-made template pages a user can add to any start. */
+export type StarterModule = {
+  id: string;
+  label: string;
+  description: string;
+  folder: string;
+  pages: { title: string; html: string }[];
+};
+
+function modulePage(page: TemplatePage): { title: string; html: string } {
+  return { title: page.title, html: page.content };
+}
+
+export const STARTER_MODULES: StarterModule[] = [
+  {
+    id: "characters",
+    label: "Characters",
+    description: "People of the story, with one guided sheet per character.",
+    folder: "Characters",
+    pages: [modulePage(CHARACTER_TEMPLATE)]
+  },
+  {
+    id: "places",
+    label: "Places",
+    description: "Locations, from a single room to a whole world.",
+    folder: "Places",
+    pages: [modulePage(PLACE_TEMPLATE)]
+  },
+  {
+    id: "items",
+    label: "Items",
+    description: "Objects, artefacts, and weapons that matter to the plot.",
+    folder: "Items",
+    pages: [
+      modulePage(templatePage("Item template", [
+        ["Description", "What it is, what it looks like, and what it is made of."],
+        ["Origin", "Who made it, when, and for what purpose."],
+        ["Powers", "What it does, and what it refuses to do."],
+        ["Cost", "What using it takes from the bearer."],
+        ["Where it is now", "Who holds it at the start of the story."]
+      ])),
+      modulePage(templatePage("Weapon notes", [
+        ["Make", "Materials, balance, and how it is held."],
+        ["Carrier", "Who carries it, and what carrying it says about them."],
+        ["In a fight", "Reach, speed, and what it can and cannot cut through."],
+        ["Upkeep", "How it is cleaned, repaired, and replaced."],
+        ["Reputation", "What owning it means to other people."]
+      ]))
+    ]
+  },
+  {
+    id: "species",
+    label: "Species",
+    description: "Creatures and peoples, from biology to their place in the story.",
+    folder: "Species",
+    pages: [
+      modulePage(templatePage("Species template", [
+        ["Biology", "Body, senses, lifespan, and what they need to survive."],
+        ["Origins", "Where they come from and how far they have spread."],
+        ["Society", "How they organise families, work, and decisions."],
+        ["Relations", "How they treat other species, and what they expect back."],
+        ["Story role", "Which individuals matter, and what they want."]
+      ])),
+      modulePage(templatePage("Creature template", [
+        ["Appearance", "Size, shape, and the first detail a traveller would notice."],
+        ["Habitat", "Where it lives, and what it eats there."],
+        ["Behaviour", "What it does when undisturbed, hungry, or cornered."],
+        ["Dangers", "How it hurts people, and what keeps people safe."],
+        ["Story role", "What it means to the plot beyond being dangerous."]
+      ]))
+    ]
+  },
+  {
+    id: "cultures",
+    label: "Cultures",
+    description: "Values, customs, and the friction between neighbouring peoples.",
+    folder: "Cultures",
+    pages: [
+      modulePage(templatePage("Culture template", [
+        ["Values", "What this culture prizes, and what it punishes."],
+        ["Customs", "Greetings, meals, hospitality, and everyday manners."],
+        ["Dress and status", "What people wear, and how rank shows."],
+        ["Power", "Who leads, who follows, and how disputes are settled."],
+        ["Friction", "What this culture disagrees with its neighbours about."]
+      ])),
+      modulePage(templatePage("Customs checklist", [
+        ["Rites of passage", "Birth, adulthood, marriage, and death."],
+        ["Food and drink", "What is eaten daily, and what is saved for guests."],
+        ["Music and stories", "What people sing, tell, and teach their children."],
+        ["Gifts and debts", "What is owed, and how a favour is repaid."],
+        ["Taboos", "What is never said or done, and what happens if it is."]
+      ]))
+    ]
+  },
+  {
+    id: "religions",
+    label: "Religions",
+    description: "Beliefs, rituals, and the powers people pray to.",
+    folder: "Religions",
+    pages: [
+      modulePage(templatePage("Religion template", [
+        ["Beliefs", "What is true about the world, according to this faith."],
+        ["Pantheon", "Which gods, spirits, or forces are worshipped, and what each governs."],
+        ["Rituals", "What believers do daily, weekly, and at the turning points of life."],
+        ["Institutions", "Who leads the faith, and how they keep it."],
+        ["Doubt", "What believers argue about, and who loses faith."]
+      ])),
+      modulePage(templatePage("Holidays and rites", [
+        ["High holy days", "Which days stop work, and what happens on them."],
+        ["Rites of passage", "Who leads each rite, and what the community owes."],
+        ["Offerings", "What is given, to whom, and what the giver expects."],
+        ["Forbidden acts", "What is taboo, and how it is punished."],
+        ["Signs and omens", "How believers read luck, disaster, and the will of the divine."]
+      ]))
+    ]
+  },
+  {
+    id: "languages",
+    label: "Languages",
+    description: "Naming conventions, phrases, and the way people speak.",
+    folder: "Languages",
+    pages: [
+      modulePage(templatePage("Language notes", [
+        ["Sounds", "Which sounds it uses, and which it avoids."],
+        ["Grammar", "Word order, endings, and the one rule that shapes sentences."],
+        ["Loanwords", "What it borrowed from neighbours, and what it gave them."],
+        ["Registers", "How people speak to elders, strangers, and children."],
+        ["Script", "Whether it is written, and what the writing looks like."]
+      ])),
+      modulePage(templatePage("Naming conventions", [
+        ["Given names", "What parents choose, and what the name is meant to bring."],
+        ["Family names", "How lineage shows in a name, and who may change it."],
+        ["Titles", "What titles exist, and when a stranger must use one."],
+        ["Naming taboos", "Names that are avoided, and why."],
+        ["Place names", "What endings and roots mark a place as belonging here."]
+      ])),
+      modulePage(templatePage("Phrases", [
+        ["Greetings", "Hello, farewell, and the polite way to interrupt."],
+        ["Common phrases", "The words a traveller learns first."],
+        ["Oaths and insults", "What people swear by, and what starts a fight."],
+        ["Untranslatable", "A word with no honest equivalent, and what it means."],
+        ["Gestures", "What the hands and eyes say that words do not."]
+      ]))
+    ]
+  },
+  {
+    id: "magic-and-technology",
+    label: "Magic & technology",
+    description: "How power works: rules, costs, and hard limits.",
+    folder: "Magic & Technology",
+    pages: [
+      modulePage(templatePage("Magic system", [
+        ["Source", "Where magic comes from, and who can reach it."],
+        ["Rules", "What it can do, and what it can never do."],
+        ["Cost", "What every use takes from the caster, and what a late payment looks like."],
+        ["Limits", "The hard edges: range, duration, materials, or numbers."],
+        ["Practitioners", "Who uses magic, how they learn it, and how it shows up in ordinary work."],
+        ["Failure", "What happens when magic fails, spreads, or is misused."]
+      ])),
+      modulePage(templatePage("Technology template", [
+        ["What it does", "The job it performs in daily life."],
+        ["How it works", "The principle in one or two sentences."],
+        ["Limits", "Range, cost, failure modes, and who can repair it."],
+        ["Control", "Who owns it, licenses it, or restricts it."],
+        ["Consequences", "What it changed, and what it broke."]
+      ]))
+    ]
+  },
+  {
+    id: "organisations",
+    label: "Organisations",
+    description: "Factions, governments, and guilds with goals and secrets.",
+    folder: "Organisations",
+    pages: [
+      modulePage(templatePage("Organisation template", [
+        ["Purpose", "What it officially does, and what it really does."],
+        ["Structure", "Who gives orders, who follows them, and who knows what."],
+        ["Reach", "Where it operates, and who it can pressure."],
+        ["Resources", "Money, people, access, and favours it can call on."],
+        ["Secrets", "What it must keep hidden."],
+        ["Weakness", "What could split it or bring it down."]
+      ])),
+      modulePage(templatePage("Power and politics", [
+        ["Who holds power", "The offices, families, or councils that decide things."],
+        ["How power is taken", "Election, inheritance, purchase, or force."],
+        ["Alliances", "Who it needs, and what it trades away to keep them."],
+        ["Rivals", "Who wants what it has, and how far they will go."],
+        ["Public face", "How it presents itself to people outside."]
+      ]))
+    ]
+  },
+  {
+    id: "maps",
+    label: "Maps & travel",
+    description: "Map notes: regions, routes, distances, and travel times.",
+    folder: "Maps",
+    pages: [
+      modulePage(templatePage("Map notes", [
+        ["Regions", "The large areas, and what separates them."],
+        ["Borders", "Rivers, ridges, walls, and the places people cross."],
+        ["Landmarks", "What a traveller uses to find the way."],
+        ["Unmapped", "What nobody has surveyed, and why."],
+        ["Map sources", "Who drew the map, and what they got wrong."]
+      ])),
+      modulePage(templatePage("Routes and travel times", [
+        ["Routes", "The roads, passes, and sea lanes people actually use."],
+        ["Distances", "How far each leg is, in the units people here use."],
+        ["Travel times", "How long it takes on foot, on horseback, or by ship."],
+        ["Season and weather", "Which routes close, and when."],
+        ["Dangers", "Bandits, tolls, wild country, and forced detours."]
+      ]))
+    ]
+  },
+  {
+    id: "calendar",
+    label: "Calendar & holidays",
+    description: "Months, seasons, eras, and the dates that shape the year.",
+    folder: "Calendar",
+    pages: [
+      modulePage(templatePage("Calendar", [
+        ["Months", "Names, lengths, and what each month is known for."],
+        ["Seasons", "When they turn, and how people mark the change."],
+        ["Eras", "How years are counted, and from which event."],
+        ["Week and rest days", "How the working week is divided."],
+        ["Keeping time", "Clocks, bells, and how ordinary people know the hour."]
+      ])),
+      modulePage(templatePage("Holidays and dates", [
+        ["Holidays", "What is celebrated, when, and by whom."],
+        ["Founding dates", "Events a whole nation remembers."],
+        ["Mourning days", "What is marked in silence or grief."],
+        ["Local festivals", "Small celebrations that differ from town to town."],
+        ["Dates the plot needs", "Deadlines, anniversaries, and the day something must happen."]
+      ]))
+    ]
+  },
+  {
+    id: "timeline",
+    label: "Timeline",
+    description: "Events by era, from deep history to the opening scene.",
+    folder: "Timeline",
+    pages: [
+      modulePage(templatePage("Timeline by era", [
+        ["Deep past", "The old events everyone still refers to."],
+        ["Founding era", "How the current order began, and who paid for it."],
+        ["Recent decades", "What changed in the last few years, and why."],
+        ["Present day", "Where things stand when the story opens."],
+        ["Planned future", "What the story is moving toward."]
+      ])),
+      modulePage(templatePage("Dated events", [
+        ["Event", "What happened, in one line."],
+        ["Date", "When, in the calendar people use."],
+        ["Cause", "What made it happen."],
+        ["Consequence", "What changed afterwards, and who paid for it."],
+        ["Who remembers", "Which characters know it, and how they tell it."]
+      ]))
+    ]
+  },
+  {
+    id: "relationships",
+    label: "Relationships",
+    description: "Who knows whom, how they feel, and what goes unsaid.",
+    folder: "Relationships",
+    pages: [
+      modulePage(templatePage("Relationship web", [
+        ["Who and to whom", "Two people, and how they are connected."],
+        ["Type", "Family, ally, rival, lover, employer, or something harder to name."],
+        ["History", "What happened between them that still counts."],
+        ["Tension", "What they want from each other that they cannot say."],
+        ["Change", "How the relationship shifts over the story."]
+      ])),
+      modulePage(templatePage("Relationship template", [
+        ["First meeting", "Where they met, and what each made of the other."],
+        ["What each wants", "The need behind the way they treat each other."],
+        ["Trust", "What it would take to earn it, and what would break it."],
+        ["Conflict", "What they fight about, and what the fight is really about."],
+        ["Turning point", "The scene where the relationship changes direction."]
+      ]))
+    ]
+  },
+  {
+    id: "encyclopedia",
+    label: "Encyclopedia",
+    description: "Lore entries and a glossary of invented terms.",
+    folder: "Encyclopedia",
+    pages: [
+      modulePage(templatePage("Lore entry", [
+        ["Term", "The name readers will meet."],
+        ["Definition", "What it means in one sentence."],
+        ["Origin", "Where the word or idea came from."],
+        ["First mention", "Where the story explains it, and how much is assumed."],
+        ["Related entries", "What else to read alongside this."]
+      ])),
+      modulePage(templatePage("Glossary", [
+        ["Terms", "Every invented word that needs a definition."],
+        ["Spelling", "How each term is spelled, and the variants to avoid."],
+        ["Capitalisation", "Which words are names, and which are common nouns."],
+        ["In-world source", "Who in the world would define it this way."],
+        ["Reader confusion", "Terms too close to each other, and how to tell them apart."]
+      ]))
+    ]
+  },
+  {
+    id: "plot",
+    label: "Plot & structure",
+    description: "Premise, act structure, subplots, and open threads.",
+    folder: "Plot",
+    pages: [
+      modulePage(templatePage("Premise", [
+        ["One line", "The story in a sentence, without names."],
+        ["Situation", "What is wrong with the world when the story opens."],
+        ["Protagonist wants", "What they pursue, and why now."],
+        ["Obstacle", "What stands in the way, and why it cannot be avoided."],
+        ["Stakes", "What is lost if they fail."]
+      ])),
+      modulePage(templatePage("Act structure", [
+        ["Act one", "The setup, the inciting event, and the door closing behind them."],
+        ["Act two", "Escalations, reversals, and the point of no return."],
+        ["Midpoint", "The discovery that changes what the story is about."],
+        ["Act three", "The confrontation, and what it costs."],
+        ["Ending", "What the last page leaves the reader with."]
+      ])),
+      modulePage(templatePage("Subplots and threads", [
+        ["Subplots", "Each secondary story, and how it touches the main one."],
+        ["Open threads", "Questions raised and still waiting for an answer."],
+        ["Callbacks", "Details planted early that pay off late."],
+        ["Foreshadowing", "What the reader should suspect before the character does."],
+        ["Cut", "Ideas you dropped, and where they went."]
+      ]))
+    ]
+  },
+  {
+    id: "research",
+    label: "Research",
+    description: "Sources, facts, and the things you still have to check.",
+    folder: "Research",
+    pages: [
+      modulePage(templatePage("Sources", [
+        ["Books", "Secondary works, with author and year."],
+        ["Articles and archives", "Documents, registers, letters, and where to find them."],
+        ["People to ask", "Experts, locals, and the questions worth putting to them."],
+        ["Sites and objects", "Places to visit, and museum pieces worth seeing."],
+        ["Reliability", "Where sources disagree, and which you trust."]
+      ])),
+      modulePage(templatePage("Facts to verify", [
+        ["Claim", "The fact the story depends on."],
+        ["Where found", "Where you found it, with page or link."],
+        ["Confidence", "How sure you are, and what would raise it."],
+        ["Where it appears", "The scene or chapter that uses it."],
+        ["Check by", "When to settle it, and who can help."]
+      ]))
+    ]
+  }
+];
+
 export type BlueprintPage = { key: string; title: string; html: string };
 export type BlueprintFolder = { key: string; name: string; pages: BlueprintPage[] };
 /** Editable description of the wiki a project starts with; keys are unique within one blueprint. */
@@ -536,6 +890,44 @@ export function renameCustomPage(blueprint: StarterBlueprint, pageKey: string, t
   };
 }
 
+const MODULE_KEY_PREFIX = "module:";
+
+/** Key of the blueprint folder a module contributes. */
+export function moduleFolderKey(id: string): string {
+  return `${MODULE_KEY_PREFIX}${id}`;
+}
+
+export function blueprintHasModule(blueprint: StarterBlueprint, id: string): boolean {
+  return blueprint.folders.some((folder) => folder.key === moduleFolderKey(id));
+}
+
+/** Appends the module's folder with its template pages; no-op when present or unknown. */
+export function addModule(blueprint: StarterBlueprint, id: string): StarterBlueprint {
+  const module = STARTER_MODULES.find((entry) => entry.id === id);
+  if (!module || blueprintHasModule(blueprint, id)) return blueprint;
+  const key = moduleFolderKey(module.id);
+  const folder: BlueprintFolder = {
+    key,
+    name: module.folder,
+    pages: module.pages.map((page, index) => ({ key: `${key}/${index}`, title: page.title, html: page.html }))
+  };
+  return { folders: [...blueprint.folders, folder] };
+}
+
+export function removeModule(blueprint: StarterBlueprint, id: string): StarterBlueprint {
+  const key = moduleFolderKey(id);
+  return { folders: blueprint.folders.filter((folder) => folder.key !== key) };
+}
+
+/** Ids of the known modules present in the blueprint, in folder order. */
+export function modulesOf(blueprint: StarterBlueprint): string[] {
+  return blueprint.folders
+    .map((folder) => folder.key)
+    .filter((key) => key.startsWith(MODULE_KEY_PREFIX))
+    .map((key) => key.slice(MODULE_KEY_PREFIX.length))
+    .filter((id) => STARTER_MODULES.some((module) => module.id === id));
+}
+
 /** A wiki template the user composed and saved. */
 export type CustomStarter = { id: string; name: string; blueprint: StarterBlueprint };
 
@@ -548,6 +940,13 @@ const MAX_HTML_LENGTH = 50_000;
 
 function text(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, MAX_NAME_LENGTH) : fallback;
+}
+
+/** The module id in a stored folder key, when it still names a known module. */
+function storedModuleId(key: unknown): string | null {
+  if (typeof key !== "string" || !key.startsWith(MODULE_KEY_PREFIX)) return null;
+  const id = key.slice(MODULE_KEY_PREFIX.length);
+  return STARTER_MODULES.some((module) => module.id === id) ? id : null;
 }
 
 /** Validates stored data of unknown shape; keeps good entries, drops bad ones, regenerates keys. */
@@ -567,6 +966,11 @@ export function normalizeCustomStarters(value: unknown): CustomStarter[] {
     for (const rawFolder of rawFolders.slice(0, MAX_CUSTOM_FOLDERS)) {
       if (!rawFolder || typeof rawFolder !== "object") continue;
       const folderIndex = folders.length;
+      /* Module folders keep their key, so a saved template still reads as the same module. */
+      const moduleId = storedModuleId((rawFolder as { key?: unknown }).key);
+      const moduleKey = moduleId && !folders.some((folder) => folder.key === moduleFolderKey(moduleId))
+        ? moduleFolderKey(moduleId)
+        : null;
       const rawPages = Array.isArray((rawFolder as { pages?: unknown }).pages)
         ? (rawFolder as { pages: unknown[] }).pages
         : [];
@@ -576,10 +980,11 @@ export function normalizeCustomStarters(value: unknown): CustomStarter[] {
         if (!rawPage || typeof rawPage !== "object") continue;
         const page = rawPage as Record<string, unknown>;
         const html = typeof page.html === "string" ? sanitizeHtml(page.html.slice(0, MAX_HTML_LENGTH)) : "";
-        pages.push({ key: `page:${folderIndex}.${pages.length}`, title: text(page.title, "Untitled"), html });
+        const key = moduleKey ? `${moduleKey}/${pages.length}` : `page:${folderIndex}.${pages.length}`;
+        pages.push({ key, title: text(page.title, "Untitled"), html });
         pageCount += 1;
       }
-      folders.push({ key: `folder:${folderIndex}`, name: text((rawFolder as { name?: unknown }).name, "Untitled"), pages });
+      folders.push({ key: moduleKey ?? `folder:${folderIndex}`, name: text((rawFolder as { name?: unknown }).name, "Untitled"), pages });
     }
     ids.add(id);
     result.push({ id, name: text(name, "My template"), blueprint: { folders } });
