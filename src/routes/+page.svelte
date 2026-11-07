@@ -8879,8 +8879,8 @@
   .label-menu-wrap { position: relative; display: flex; flex: 0 0 auto; align-items: center; }
   .label-trigger { display: grid; width: 16px; height: 22px; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
   .label-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .label-trigger .label-dot { width: 9px; height: 9px; border: 1px solid var(--border-control); border-radius: 50%; opacity: 0; transition: opacity .12s ease; }
-  .document-row:hover .label-trigger .label-dot, .chapter-row:hover .label-trigger .label-dot, .label-trigger:focus-visible .label-dot { opacity: 1; }
+  .label-trigger .label-dot { width: 10px; height: 10px; border: 1.5px solid var(--text-faint); border-radius: 50%; opacity: .75; transition: opacity .12s ease, border-color .12s ease; }
+  .document-row:hover .label-trigger .label-dot, .chapter-row:hover .label-trigger .label-dot, .label-trigger:hover .label-dot, .label-trigger:focus-visible .label-dot { border-color: var(--text-muted); opacity: 1; }
   .label-trigger.has-label .label-dot { border-color: var(--label-color); background: var(--label-color); opacity: 1; }
   .label-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; width: 170px; max-height: 230px; flex-direction: column; gap: 1px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
   .label-menu .label-menu-manage { margin-top: 3px; padding-top: 3px; border-top: 1px solid var(--border-soft); border-radius: 0 0 5px 5px; color: var(--text-muted); }
