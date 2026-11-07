@@ -195,7 +195,24 @@
     saveBrowserResearchFile
   } from "$lib/research-files";
   import { createTimelineNode, normalizeTimelineNodes } from "$lib/timeline";
-  import { STARTERS, buildStarter, type StarterId } from "$lib/starters";
+  import {
+    STARTERS,
+    addCustomFolder,
+    addCustomPage,
+    allBlueprintKeys,
+    buildFromBlueprint,
+    filterBlueprint,
+    loadCustomStarters,
+    removeCustomFolder,
+    removeCustomPage,
+    renameCustomFolder,
+    renameCustomPage,
+    saveCustomStarters,
+    starterBlueprint,
+    type CustomStarter,
+    type StarterBlueprint,
+    type StarterId
+  } from "$lib/starters";
   import { migrateLegacyDocument, migrateProjectToWiki } from "$lib/wiki-migration";
   import { createWikiMentionMatcher } from "$lib/wiki-mentions";
   import {
@@ -352,7 +369,24 @@
   let researchMarkdownHtml = $state("");
   let projectSettingsDialog: HTMLDialogElement;
   let starterDialog: HTMLDialogElement;
-  let starterDraft = $state<StarterId>("blank");
+  let starterDraft = $state<string>("blank");
+  let starterWorking = $state<StarterBlueprint>({ folders: [] });
+  let starterSelectedKeys = $state<string[]>([]);
+  // Keys the user added or that come from their own template, so only those offer a remove button.
+  let starterOwnKeys = $state<string[]>([]);
+  let starterCustomStarters = $state<CustomStarter[]>([]);
+  let starterEditingKey = $state<string | null>(null);
+  let starterNewFolderName = $state("");
+  let starterNewPageFolder = $state("");
+  let starterNewPageTitle = $state("");
+  let starterTemplateName = $state("");
+  let starterNotice = $state("");
+  let starterSelected = $derived(new Set(starterSelectedKeys));
+  let starterPageFolderKey = $derived(
+    starterWorking.folders.some((folder) => folder.key === starterNewPageFolder)
+      ? starterNewPageFolder
+      : starterWorking.folders[0]?.key ?? ""
+  );
   let chapterNameInput = $state<HTMLInputElement>();
   let dataImportInput = $state<HTMLInputElement>();
   let dataStatus = $state("");
@@ -1790,17 +1824,183 @@
 
   function createProject() {
     showZenInterface();
-    starterDraft = "blank";
+    reloadStarterTemplates();
+    selectStarter("blank");
     if (starterDialog && !starterDialog.open) starterDialog.showModal();
+  }
+
+  function reloadStarterTemplates() {
+    try {
+      starterCustomStarters = loadCustomStarters(localStorage);
+    } catch {
+      starterCustomStarters = [];
+    }
+  }
+
+  /** Working copy of a preset or of one of the user's own templates, all keys selected. */
+  function selectStarter(selection: string) {
+    starterDraft = selection;
+    starterEditingKey = null;
+    starterNotice = "";
+    starterNewPageFolder = "";
+    let blueprint: StarterBlueprint = { folders: [] };
+    if (selection.startsWith("custom:")) {
+      const template = starterCustomStarters.find((entry) => `custom:${entry.id}` === selection);
+      if (template) blueprint = cloneBlueprint(template.blueprint);
+    } else if (selection !== "blank") {
+      blueprint = starterBlueprint(selection as StarterId);
+    }
+    starterWorking = blueprint;
+    starterSelectedKeys = [...allBlueprintKeys(blueprint)];
+    starterOwnKeys = selection.startsWith("custom:") ? [...allBlueprintKeys(blueprint)] : [];
+  }
+
+  function cloneBlueprint(blueprint: StarterBlueprint): StarterBlueprint {
+    return {
+      folders: blueprint.folders.map((folder) => ({
+        key: folder.key,
+        name: folder.name,
+        pages: folder.pages.map((page) => ({ key: page.key, title: page.title, html: page.html }))
+      }))
+    };
+  }
+
+  function starterKeysSelected(keys: string[]): boolean {
+    return keys.every((key) => starterSelected.has(key));
+  }
+
+  function setStarterKeys(keys: string[], selected: boolean) {
+    const next = new Set(starterSelectedKeys);
+    for (const key of keys) {
+      if (selected) next.add(key);
+      else next.delete(key);
+    }
+    starterSelectedKeys = [...next];
+  }
+
+  function toggleStarterFolder(folderKey: string, pageKeys: string[]) {
+    const keys = [folderKey, ...pageKeys];
+    setStarterKeys(keys, !keys.every((key) => starterSelectedKeys.includes(key)));
+  }
+
+  function toggleStarterPage(pageKey: string) {
+    setStarterKeys([pageKey], !starterSelectedKeys.includes(pageKey));
+  }
+
+  /** Replaces the working copy; `added` keys become selected and removable. */
+  function applyStarterBlueprint(next: StarterBlueprint, added: string[] = []) {
+    const keys = allBlueprintKeys(next);
+    starterWorking = next;
+    starterSelectedKeys = [...starterSelectedKeys.filter((key) => keys.has(key)), ...added.filter((key) => keys.has(key))];
+    starterOwnKeys = [...new Set([...starterOwnKeys.filter((key) => keys.has(key)), ...added])];
+  }
+
+  function addStarterFolder() {
+    const name = starterNewFolderName.trim();
+    if (!name) return;
+    const next = addCustomFolder(starterWorking, name);
+    applyStarterBlueprint(next, [next.folders[next.folders.length - 1].key]);
+    starterNewFolderName = "";
+  }
+
+  function addStarterPage() {
+    const title = starterNewPageTitle.trim();
+    const folderKey = starterPageFolderKey;
+    if (!title || !folderKey) return;
+    const next = addCustomPage(starterWorking, folderKey, title);
+    const folder = next.folders.find((entry) => entry.key === folderKey);
+    const page = folder?.pages[folder.pages.length - 1];
+    applyStarterBlueprint(next, page ? [page.key] : []);
+    starterNewPageTitle = "";
+  }
+
+  function removeStarterFolder(folderKey: string) {
+    applyStarterBlueprint(removeCustomFolder(starterWorking, folderKey));
+  }
+
+  function removeStarterPage(pageKey: string) {
+    applyStarterBlueprint(removeCustomPage(starterWorking, pageKey));
+  }
+
+  function commitStarterRename(key: string, value: string) {
+    // Removing the focused input can fire blur, so only the still-open editor may commit.
+    if (starterEditingKey !== key) return;
+    starterEditingKey = null;
+    if (!value.trim()) return;
+    starterWorking = key.startsWith("folder:")
+      ? renameCustomFolder(starterWorking, key, value)
+      : renameCustomPage(starterWorking, key, value);
+  }
+
+  /** Text inputs sit in the form, so Enter must add or rename instead of submitting the dialog. */
+  function starterEnterKey(event: KeyboardEvent, action: () => void) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    action();
+  }
+
+  function starterRenameKey(event: KeyboardEvent, key: string, value: string) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitStarterRename(key, value);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      starterEditingKey = null;
+    }
+  }
+
+  function focusStarterRename(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
+  function starterSummary(blueprint: StarterBlueprint): string {
+    const folders = blueprint.folders.length;
+    const pages = blueprint.folders.reduce((count, folder) => count + folder.pages.length, 0);
+    return `${folders} ${folders === 1 ? "folder" : "folders"} · ${pages} ${pages === 1 ? "page" : "pages"}`;
+  }
+
+  function saveStarterTemplate() {
+    const name = starterTemplateName.trim();
+    if (!name) return;
+    const id = crypto.randomUUID();
+    const next: CustomStarter[] = [
+      ...starterCustomStarters,
+      { id, name, blueprint: filterBlueprint(starterWorking, starterSelected) }
+    ];
+    try {
+      saveCustomStarters(localStorage, next);
+      reloadStarterTemplates();
+      starterTemplateName = "";
+      starterNotice = starterCustomStarters.some((entry) => entry.id === id)
+        ? `Saved as "${name}".`
+        : "Could not save the template in this browser.";
+    } catch {
+      starterNotice = "Could not save the template in this browser.";
+    }
+  }
+
+  async function deleteStarterTemplate(id: string) {
+    const template = starterCustomStarters.find((entry) => entry.id === id);
+    if (!template) return;
+    if (!(await confirmDestructiveAction(`Delete the template “${template.name}”? Projects created from it keep their pages.`))) return;
+    try {
+      saveCustomStarters(localStorage, starterCustomStarters.filter((entry) => entry.id !== id));
+      reloadStarterTemplates();
+    } catch {
+      starterNotice = "Could not delete the template in this browser.";
+      return;
+    }
+    if (starterDraft === `custom:${id}`) selectStarter("blank");
   }
 
   function createProjectFromStarter(event: SubmitEvent) {
     event.preventDefault();
     starterDialog.close();
-    createProjectWithStarter(starterDraft);
+    createProjectWithStarter(filterBlueprint(starterWorking, starterSelected));
   }
 
-  function createProjectWithStarter(starter: StarterId) {
+  function createProjectWithStarter(blueprint: StarterBlueprint) {
     showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
@@ -1831,11 +2031,9 @@
       chapterId: chapter.id
     };
     next.documents = [scene];
-    if (starter !== "blank") {
-      const starterContent = buildStarter(starter, () => crypto.randomUUID());
-      next.researchFolders = starterContent.folders;
-      next.documents = [...next.documents, ...starterContent.documents];
-    }
+    const starterContent = buildFromBlueprint(blueprint, () => crypto.randomUUID());
+    next.researchFolders = starterContent.folders;
+    next.documents = [...next.documents, ...starterContent.documents];
     next.activeDocumentId = scene.id;
     projects = [...projects, next];
     loadProject(next);
@@ -8005,8 +8203,8 @@
       <div><span class="settings-kicker">PROSECRAFT</span><h2>Start from</h2></div>
       <button class="close-settings" aria-label="Close starter selection" type="button" onclick={() => starterDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
-    <div class="settings-body">
-      <section class="preference-section">
+    <div class="settings-body starter-body">
+      <section class="starter-presets" aria-label="Wiki template">
         <div class="preference-heading"><strong>Wiki template</strong><span>Adds starter folders and template pages to the new project.</span></div>
         <div class="starter-options" role="radiogroup" aria-label="Starter">
           {#each STARTERS as starter (starter.id)}
@@ -8016,7 +8214,7 @@
                 name="starter"
                 value={starter.id}
                 checked={starterDraft === starter.id}
-                onchange={() => (starterDraft = starter.id)}
+                onchange={() => selectStarter(starter.id)}
               />
               <span class="starter-copy">
                 <strong>{starter.label}</strong>
@@ -8025,6 +8223,142 @@
             </label>
           {/each}
         </div>
+        {#if starterCustomStarters.length > 0}
+          <div class="preference-heading starter-subheading"><strong>My templates</strong><span>Saved in this browser.</span></div>
+          <div class="starter-options" role="radiogroup" aria-label="My templates">
+            {#each starterCustomStarters as template (template.id)}
+              <div class="starter-template">
+                <label class="starter-option" class:selected={starterDraft === `custom:${template.id}`}>
+                  <input
+                    type="radio"
+                    name="starter"
+                    value={`custom:${template.id}`}
+                    checked={starterDraft === `custom:${template.id}`}
+                    onchange={() => selectStarter(`custom:${template.id}`)}
+                  />
+                  <span class="starter-copy">
+                    <strong>{template.name}</strong>
+                    <span>{starterSummary(template.blueprint)}</span>
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  class="starter-icon"
+                  aria-label={`Delete ${template.name}`}
+                  onclick={() => deleteStarterTemplate(template.id)}
+                ><Trash2 size={13} aria-hidden="true" /></button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+      <section class="starter-customise" aria-label="Customise">
+        <div class="preference-heading">
+          <strong>Customise</strong>
+          <span>{starterWorking.folders.length > 0 ? starterSummary(starterWorking) : "Blank starts with an empty wiki."}</span>
+        </div>
+        <div class="starter-tree" role="group" aria-label="Folders and pages">
+          {#each starterWorking.folders as folder (folder.key)}
+            <div class="starter-tree-folder">
+              <div class="starter-tree-row">
+                <input
+                  type="checkbox"
+                  id={`starter-folder-${folder.key}`}
+                  aria-label={`Include ${folder.name}`}
+                  checked={starterKeysSelected([folder.key, ...folder.pages.map((page) => page.key)])}
+                  onchange={() => toggleStarterFolder(folder.key, folder.pages.map((page) => page.key))}
+                />
+                {#if starterEditingKey === folder.key}
+                  <input
+                    class="starter-rename"
+                    type="text"
+                    value={folder.name}
+                    aria-label="Folder name"
+                    use:focusStarterRename
+                    onblur={(event) => commitStarterRename(folder.key, event.currentTarget.value)}
+                    onkeydown={(event) => starterRenameKey(event, folder.key, event.currentTarget.value)}
+                  />
+                {:else}
+                  <label class="starter-tree-label" for={`starter-folder-${folder.key}`}>{folder.name}</label>
+                  <button type="button" class="starter-icon" aria-label={`Rename ${folder.name}`} onclick={() => (starterEditingKey = folder.key)}><Pencil size={12} aria-hidden="true" /></button>
+                  {#if starterOwnKeys.includes(folder.key)}
+                    <button type="button" class="starter-icon" aria-label={`Remove ${folder.name}`} onclick={() => removeStarterFolder(folder.key)}><Trash2 size={12} aria-hidden="true" /></button>
+                  {/if}
+                {/if}
+              </div>
+              {#each folder.pages as page (page.key)}
+                <div class="starter-tree-row starter-tree-page">
+                  <input
+                    type="checkbox"
+                    id={`starter-page-${page.key}`}
+                    aria-label={`Include ${page.title}`}
+                    checked={starterKeysSelected([page.key])}
+                    onchange={() => toggleStarterPage(page.key)}
+                  />
+                  {#if starterEditingKey === page.key}
+                    <input
+                      class="starter-rename"
+                      type="text"
+                      value={page.title}
+                      aria-label="Page title"
+                      use:focusStarterRename
+                      onblur={(event) => commitStarterRename(page.key, event.currentTarget.value)}
+                      onkeydown={(event) => starterRenameKey(event, page.key, event.currentTarget.value)}
+                    />
+                  {:else}
+                    <label class="starter-tree-label" for={`starter-page-${page.key}`}>{page.title}</label>
+                    <button type="button" class="starter-icon" aria-label={`Rename ${page.title}`} onclick={() => (starterEditingKey = page.key)}><Pencil size={12} aria-hidden="true" /></button>
+                    {#if starterOwnKeys.includes(page.key)}
+                      <button type="button" class="starter-icon" aria-label={`Remove ${page.title}`} onclick={() => removeStarterPage(page.key)}><Trash2 size={12} aria-hidden="true" /></button>
+                    {/if}
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/each}
+        </div>
+        <div class="starter-add">
+          <input
+            type="text"
+            bind:value={starterNewFolderName}
+            placeholder="Folder name"
+            aria-label="New folder name"
+            onkeydown={(event) => starterEnterKey(event, addStarterFolder)}
+          />
+          <button type="button" class="starter-add-button" onclick={addStarterFolder} disabled={!starterNewFolderName.trim()}>Add folder</button>
+        </div>
+        {#if starterWorking.folders.length > 0}
+          <div class="starter-add">
+            <select
+              value={starterPageFolderKey}
+              aria-label="Folder for the new page"
+              onchange={(event) => (starterNewPageFolder = event.currentTarget.value)}
+            >
+              {#each starterWorking.folders as folder (folder.key)}
+                <option value={folder.key}>{folder.name}</option>
+              {/each}
+            </select>
+            <input
+              type="text"
+              bind:value={starterNewPageTitle}
+              placeholder="Page title"
+              aria-label="New page title"
+              onkeydown={(event) => starterEnterKey(event, addStarterPage)}
+            />
+            <button type="button" class="starter-add-button" onclick={addStarterPage} disabled={!starterNewPageTitle.trim()}>Add page</button>
+          </div>
+        {/if}
+        <div class="starter-save">
+          <input
+            type="text"
+            bind:value={starterTemplateName}
+            placeholder="Template name"
+            aria-label="Template name"
+            onkeydown={(event) => starterEnterKey(event, saveStarterTemplate)}
+          />
+          <button type="button" class="starter-add-button" onclick={saveStarterTemplate} disabled={!starterTemplateName.trim()}>Save as my template</button>
+        </div>
+        {#if starterNotice}<p class="starter-notice" role="status">{starterNotice}</p>{/if}
       </section>
     </div>
     <div class="settings-footer">
@@ -8965,6 +9299,33 @@
   .starter-dialog-actions { display: flex; align-items: center; gap: 8px; }
   .starter-cancel { height: 30px; padding: 0 12px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
   .starter-cancel:hover { border-color: var(--accent); color: var(--text-heading); }
+  /* The tree scrolls inside the body so the footer buttons stay visible. */
+  .starter-dialog { width: min(760px, calc(100vw - 32px)); overflow: hidden; }
+  .starter-dialog[open] { display: flex; flex-direction: column; }
+  .starter-dialog form { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+  .starter-dialog .settings-body { min-height: 0; flex: 1; overflow-y: auto; }
+  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: start; gap: 20px; }
+  .starter-presets, .starter-customise { padding: 17px 0; }
+  .starter-subheading { margin-top: 16px; }
+  .starter-template { display: flex; align-items: center; gap: 6px; }
+  .starter-template .starter-option { flex: 1; min-width: 0; }
+  .starter-icon { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
+  .starter-icon:hover { background: var(--hover-bg); color: var(--text-heading); }
+  .starter-tree { display: grid; gap: 2px; }
+  .starter-tree-folder { display: grid; gap: 2px; }
+  .starter-tree-row { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+  .starter-tree-row input[type="checkbox"] { margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
+  .starter-tree-label { flex: 1; min-width: 0; color: var(--text-heading); font-size: 11px; cursor: pointer; }
+  .starter-tree-page { padding-left: 22px; }
+  .starter-tree-page .starter-tree-label { color: var(--text-secondary); }
+  .starter-rename { height: 24px; flex: 1; min-width: 0; padding: 0 6px; border: 1px solid var(--accent); border-radius: 5px; background: var(--control-bg); color: var(--text-heading); font-size: 11px; }
+  .starter-add, .starter-save { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+  .starter-add input[type="text"], .starter-add select, .starter-save input[type="text"] { height: 26px; min-width: 0; flex: 1; padding: 0 7px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-primary); font-size: 10px; }
+  .starter-add select { flex: 0 0 96px; }
+  .starter-add-button { height: 26px; flex: 0 0 auto; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
+  .starter-add-button:hover:not(:disabled) { border-color: var(--accent); color: var(--text-heading); }
+  .starter-add-button:disabled { opacity: 0.5; cursor: default; }
+  .starter-notice { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
   .settings-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
   .settings-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 23px 25px 18px; border-bottom: 1px solid var(--border-soft); }
   .settings-kicker { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 1.2px; }
@@ -9293,6 +9654,9 @@
     .settings-header { padding: calc(16px + env(safe-area-inset-top)) 18px 14px; }
     .settings-body { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 18px 12px; }
     .settings-footer { padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); }
+    .starter-body { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .starter-presets { padding-bottom: 0; }
+    .starter-customise { padding-top: 12px; }
     .close-settings { width: 40px; height: 40px; }
     .research-markdown-dialog { width: 100vw; max-width: 100vw; }
     .research-markdown-dialog .research-markdown-content { min-height: 0; flex: 1; }
