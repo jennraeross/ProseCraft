@@ -1965,6 +1965,12 @@
     void refreshStorageUsage();
   }
 
+  /** Dialogs sit in the top layer above the sheet, so the settings close first. */
+  function showShortcutsFromSettings() {
+    if (settingsDialog?.open) settingsDialog.close();
+    shortcutsOpen = true;
+  }
+
   function openAbout() {
     aboutCopyStatus = "";
     aboutDiagnostics = buildDiagnosticsReport({
@@ -8900,6 +8906,7 @@
       <h3 class="settings-pane-title">About</h3>
     <div class="about-row">
       <button type="button" class="about-row-button" onclick={openAbout}>About {APP_NAME} · version {APP_VERSION}</button>
+      <button type="button" class="about-row-button" onclick={showShortcutsFromSettings}>Keyboard shortcuts</button>
     </div>
     </div>
     </div>
@@ -10453,7 +10460,7 @@
   .passphrase-hint-note { margin: 8px 0 0; color: var(--text-muted); font-size: 10px; }
   .done-button:disabled { opacity: 0.6; cursor: default; }
   .settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 25px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 9px; }
-  .about-row { padding: 12px 0 4px; }
+  .about-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 0 4px; }
   .about-row-button { padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; text-align: left; }
   .about-row-button:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
   .about-row-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
