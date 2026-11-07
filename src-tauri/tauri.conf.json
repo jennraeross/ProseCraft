@@ -14,7 +14,8 @@
       {
         "title": "prosecraft",
         "width": 1280,
-        "height": 850
+        "height": 850,
+        "dragDropEnabled": false
       }
     ],
     "security": {

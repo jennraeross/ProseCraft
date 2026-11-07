@@ -269,6 +269,7 @@
   const typewriterStorageKey = "prosecraft-typewriter-mode";
   const fadeParagraphsStorageKey = "prosecraft-fade-other-paragraphs";
   const zenModeStorageKey = "prosecraft-zen-mode";
+  const modifierName = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "Cmd" : "Ctrl";
   const harperEnabledStorageKey = "prosecraft-harper-enabled";
   const harperDialectStorageKey = "prosecraft-harper-dialect";
   const researchRootStorageKey = "prosecraft-research-root";
@@ -419,6 +420,9 @@
   let fadeOtherParagraphs = $state(false);
   let zenMode = $state(false);
   let zenInterfaceHidden = $state(false);
+  let focusMode = $state(false);
+  let focusHintVisible = $state(false);
+  let focusHintTimer: ReturnType<typeof setTimeout> | undefined;
   let harperEnabled = $state(false);
   let harperDialect = $state<HarperDialect>("american");
   let harperLints = $state<HarperLint[]>([]);
@@ -1633,8 +1637,27 @@
   }
 
   function showZenInterface() {
-    if (!zenInterfaceHidden) return;
+    // Focus mode keeps the interface hidden until it is left explicitly.
+    if (focusMode || !zenInterfaceHidden) return;
     zenInterfaceHidden = false;
+  }
+
+  /** Hides everything but the text right away; the same shortcut brings it back. */
+  function toggleFocusMode() {
+    clearTimeout(focusHintTimer);
+    if (focusMode) {
+      focusMode = false;
+      focusHintVisible = false;
+      zenInterfaceHidden = false;
+      return;
+    }
+    if (workspaceView !== "writing") return;
+    focusMode = true;
+    leftSidebarHovered = false;
+    rightSidebarHovered = false;
+    zenInterfaceHidden = true;
+    focusHintVisible = true;
+    focusHintTimer = setTimeout(() => { focusHintVisible = false; }, 3000);
   }
 
   function setZenMode(enabled: boolean, syncMenu = true) {
@@ -2596,6 +2619,7 @@
   function setWorkspaceView(next: WorkspaceView) {
     if (next === workspaceView) return;
     commitPageState();
+    if (focusMode) toggleFocusMode();
     showZenInterface();
     if (workspaceView === "writing" && next !== "writing") {
       writingSidebarState = { left: leftSidebarVisible, right: rightSidebarVisible };
@@ -5408,6 +5432,16 @@
       closeSidebarDrawers();
       return;
     }
+    if (event.key === "Escape" && focusMode) {
+      event.preventDefault();
+      toggleFocusMode();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === "Enter") {
+      event.preventDefault();
+      toggleFocusMode();
+      return;
+    }
     if (event.key === "Escape") showZenInterface();
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
       event.preventDefault();
@@ -6331,6 +6365,9 @@
 </svelte:head>
 
 <div class="app-shell" class:zen-hidden={zenInterfaceHidden}>
+  {#if focusHintVisible}
+    <p class="focus-hint" role="status">Focus mode · {modifierName}+Shift+Enter or Escape to leave</p>
+  {/if}
   {#if mobileDrawerOpen}
     <button
       type="button"
@@ -7582,9 +7619,11 @@
           checked={zenMode}
           onchange={(event) => setZenMode((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Zen mode</span>
+        <span>Hide the interface while typing (Zen mode)</span>
       </label>
-      <p class="preference-help">Hides the interface while you type. Move the mouse outside the editor or press Escape to bring it back.</p>
+      <p class="preference-help">Only hides the interface once you start typing in the editor. Move the mouse outside the editor or press Escape to bring it back.</p>
+      <div class="preference-heading"><strong>Focus mode</strong><span>Hides everything except your text right now. Press {modifierName}+Shift+Enter (or Escape) to bring it back.</span></div>
+      <button class="data-button" type="button" onclick={() => { settingsDialog.close(); toggleFocusMode(); }}>Enter focus mode</button>
     </section>
     <section class="preference-section">
       <div class="preference-heading"><strong>Markdown editor</strong><span>Enable an optional plain-text Markdown editor alongside rich text</span></div>
@@ -8579,6 +8618,7 @@
   .research-file-mark { min-width: 20px; font-size: 9px; letter-spacing: -.02em; text-align: center; }
   .research-link-mark { color: var(--text-muted); font-family: inherit; font-size: 12px; }
   .research-item-row .document-select { gap: 5px; }
+  .focus-hint { position: fixed; z-index: 50; bottom: 22px; left: 50%; margin: 0; padding: 7px 14px; transform: translateX(-50%); border: 1px solid var(--border-control); border-radius: 999px; background: var(--surface); color: var(--text-muted); font-size: 10px; pointer-events: none; }
   .research-status { margin: 4px 6px 3px; color: var(--text-muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
   .trashed-document { color: var(--text-muted); }
   .empty-tree, .empty-action { display: block; padding: 5px 7px; color: var(--text-faint); font-size: 10px; }
