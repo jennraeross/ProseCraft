@@ -174,6 +174,7 @@
     type SpaceName
   } from "$lib/publish/types";
   import { saveExport } from "$lib/publish/save";
+  import type { DragDropEvent } from "@tauri-apps/api/webview";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
     createResearchFolderName,
@@ -2786,18 +2787,18 @@
         && extension in IMAGE_MIME_BY_EXTENSION;
   }
 
-  function markdownImagePosition(event?: DragEvent | ClipboardEvent): number | null {
+  function markdownImagePosition(event?: DragEvent | ClipboardEvent | { clientX: number; clientY: number }): number | null {
     const view = markdownCodeEditor;
     if (!view) return null;
-    if (event instanceof DragEvent) {
+    if (event && "clientX" in event) {
       return view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head;
     }
     return view.state.selection.main.head;
   }
 
-  function editorRangeAtPoint(event?: DragEvent | ClipboardEvent): Range | null {
+  function editorRangeAtPoint(event?: DragEvent | ClipboardEvent | { clientX: number; clientY: number }): Range | null {
     const selection = window.getSelection();
-    if (event instanceof DragEvent) {
+    if (event && "clientX" in event) {
       const range = document.caretRangeFromPoint(event.clientX, event.clientY);
       if (range && editor.contains(range.startContainer)) return range;
     }
@@ -3004,13 +3005,16 @@
   }
 
   async function readDroppedImagePaths(uris: string[]): Promise<File[]> {
+    return readImagePaths(uris.map(pathFromFileUri).filter((path): path is string => Boolean(path)));
+  }
+
+  async function readImagePaths(paths: string[]): Promise<File[]> {
     const { invoke, isTauri } = await import("@tauri-apps/api/core");
     if (!isTauri()) return [];
     const files: File[] = [];
-    for (const uri of uris) {
-      const path = pathFromFileUri(uri);
-      const extension = path?.split(".").pop()?.toLowerCase() ?? "";
-      if (!path || !(extension in IMAGE_MIME_BY_EXTENSION)) continue;
+    for (const path of paths) {
+      const extension = path.split(".").pop()?.toLowerCase() ?? "";
+      if (!(extension in IMAGE_MIME_BY_EXTENSION)) continue;
       const bytes = await invoke<ArrayBuffer>("read_import_file", { path });
       const name = path.split(/[\\/]/).pop() || `image.${extension}`;
       files.push(new File([bytes], name, { type: IMAGE_MIME_BY_EXTENSION[extension] }));
@@ -6387,21 +6391,60 @@
     };
   });
 
-  // A file dropped anywhere that does not handle it would make the webview open the
-  // file itself (an image then fills the window). The editor's own handlers still run.
+  // On Linux and macOS Tauri takes file drops over natively, so the webview can never
+  // navigate to a dropped file. The paths arrive with a window position; images dropped
+  // on the editor are read from disk and inserted there. (Windows keeps HTML5 drops,
+  // see tauri.windows.conf.json.)
+  function overEditorArea(x: number, y: number): boolean {
+    const element = document.elementFromPoint(x, y);
+    return Boolean(element && element.closest(".editor-column"));
+  }
+
+  async function handleNativeFileDrop(payload: DragDropEvent) {
+    if (payload.type === "leave") {
+      imageDropActive = false;
+      return;
+    }
+    const scale = window.devicePixelRatio || 1;
+    const clientX = payload.position.x / scale;
+    const clientY = payload.position.y / scale;
+    const over = workspaceView === "writing" && overEditorArea(clientX, clientY);
+    if (payload.type !== "drop") {
+      imageDropActive = over;
+      return;
+    }
+    imageDropActive = false;
+    if (!over) return;
+    const range = markdownEditorMode ? null : editorRangeAtPoint({ clientX, clientY });
+    const position = markdownEditorMode ? markdownImagePosition({ clientX, clientY }) : null;
+    try {
+      const files = await readImagePaths(payload.paths);
+      if (files.length) await insertImageFiles(files, range, position);
+      else imageInsertError = IMAGE_ERROR_MESSAGE;
+    } catch (error) {
+      console.error("Could not read the dropped file.", error);
+      imageInsertError = "Could not read the dropped file.";
+    }
+  }
+
   onMount(() => {
-    const isFileDrag = (event: DragEvent) => {
-      const types = event.dataTransfer?.types;
-      return Boolean(types?.includes("Files")) || (event.type === "drop" && droppedFileUris(event.dataTransfer).length > 0);
-    };
-    const guard = (event: DragEvent) => {
-      if (isFileDrag(event)) event.preventDefault();
-    };
-    window.addEventListener("dragover", guard);
-    window.addEventListener("drop", guard);
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { isTauri } = await import("@tauri-apps/api/core");
+        if (!isTauri()) return;
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        const unlisten = await getCurrentWebview().onDragDropEvent((event) => void handleNativeFileDrop(event.payload));
+        if (disposed) unlisten();
+        else stop = unlisten;
+      } catch (error) {
+        console.error("Could not listen for file drops.", error);
+      }
+    })();
     return () => {
-      window.removeEventListener("dragover", guard);
-      window.removeEventListener("drop", guard);
+      disposed = true;
+      stop?.();
     };
   });
 
