@@ -11,6 +11,7 @@
     Columns2,
     ChevronLeft,
     ChevronRight,
+    Check,
     Download,
     Ellipsis,
     ExternalLink,
@@ -197,14 +198,20 @@
   import { createTimelineNode, normalizeTimelineNodes } from "$lib/timeline";
   import {
     STARTERS,
+    STARTER_MODULES,
     addCustomFolder,
     addCustomPage,
+    addModule,
     allBlueprintKeys,
+    blueprintHasModule,
     buildFromBlueprint,
     filterBlueprint,
     loadCustomStarters,
+    moduleFolderKey,
+    modulesOf,
     removeCustomFolder,
     removeCustomPage,
+    removeModule,
     renameCustomFolder,
     renameCustomPage,
     saveCustomStarters,
@@ -382,6 +389,12 @@
   let starterTemplateName = $state("");
   let starterNotice = $state("");
   let starterSelected = $derived(new Set(starterSelectedKeys));
+  let starterModules = $derived(modulesOf(starterWorking));
+  let starterModulePageCount = $derived(
+    starterWorking.folders
+      .filter((folder) => starterModules.some((id) => moduleFolderKey(id) === folder.key))
+      .reduce((count, folder) => count + folder.pages.length, 0)
+  );
   let starterPageFolderKey = $derived(
     starterWorking.folders.some((folder) => folder.key === starterNewPageFolder)
       ? starterNewPageFolder
@@ -1885,6 +1898,21 @@
 
   function toggleStarterPage(pageKey: string) {
     setStarterKeys([pageKey], !starterSelectedKeys.includes(pageKey));
+  }
+
+  /** Adds or removes a module folder; a new folder and its pages start selected. */
+  function toggleStarterModule(id: string) {
+    if (blueprintHasModule(starterWorking, id)) {
+      applyStarterBlueprint(removeModule(starterWorking, id));
+      return;
+    }
+    const next = addModule(starterWorking, id);
+    const folder = next.folders.find((entry) => entry.key === moduleFolderKey(id));
+    applyStarterBlueprint(next, folder ? [folder.key, ...folder.pages.map((page) => page.key)] : []);
+  }
+
+  function clearStarterModules() {
+    applyStarterBlueprint(starterModules.reduce((next, id) => removeModule(next, id), starterWorking));
   }
 
   /** Replaces the working copy; `added` keys become selected and removable. */
@@ -8255,7 +8283,34 @@
       <section class="starter-customise" aria-label="Customise">
         <div class="preference-heading">
           <strong>Customise</strong>
-          <span>{starterWorking.folders.length > 0 ? starterSummary(starterWorking) : "Blank starts with an empty wiki."}</span>
+          <span>{starterSummary(starterWorking)}</span>
+        </div>
+        <div class="starter-modules">
+          <div class="starter-modules-head">
+            <strong>Modules</strong>
+            <span class="starter-modules-count">{starterModules.length} {starterModules.length === 1 ? "module" : "modules"} · {starterModulePageCount} {starterModulePageCount === 1 ? "page" : "pages"}</span>
+            {#if starterModules.length > 0}
+              <button type="button" class="starter-clear" onclick={clearStarterModules}>Clear</button>
+            {/if}
+          </div>
+          <p class="starter-modules-hint">Click modules to add them to the new project</p>
+          <div class="starter-module-grid">
+            {#each STARTER_MODULES as module (module.id)}
+              <button
+                type="button"
+                class="starter-module"
+                class:active={blueprintHasModule(starterWorking, module.id)}
+                aria-pressed={blueprintHasModule(starterWorking, module.id)}
+                onclick={() => toggleStarterModule(module.id)}
+              >
+                <span class="starter-module-label">
+                  <strong>{module.label}</strong>
+                  {#if blueprintHasModule(starterWorking, module.id)}<Check size={12} aria-hidden="true" />{/if}
+                </span>
+                <span class="starter-module-copy">{module.description}</span>
+              </button>
+            {/each}
+          </div>
         </div>
         <div class="starter-tree" role="group" aria-label="Folders and pages">
           {#each starterWorking.folders as folder (folder.key)}
@@ -9303,14 +9358,30 @@
   .starter-dialog { width: min(760px, calc(100vw - 32px)); overflow: hidden; }
   .starter-dialog[open] { display: flex; flex-direction: column; }
   .starter-dialog form { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; max-height: inherit; }
-  .starter-dialog .settings-body { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
-  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: start; gap: 20px; }
-  .starter-presets, .starter-customise { padding: 17px 0; }
+  .starter-dialog .settings-body { min-height: 0; flex: 1 1 auto; overflow: hidden; }
+  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 20px; }
+  .starter-presets, .starter-customise { min-height: 0; overflow-y: auto; padding: 17px 0; }
   .starter-subheading { margin-top: 16px; }
   .starter-template { display: flex; align-items: center; gap: 6px; }
   .starter-template .starter-option { flex: 1; min-width: 0; }
   .starter-icon { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
   .starter-icon:hover { background: var(--hover-bg); color: var(--text-heading); }
+  .starter-modules { display: grid; gap: 7px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
+  .starter-modules-head { display: flex; align-items: baseline; gap: 7px; }
+  .starter-modules-head strong { color: var(--text-heading); font-size: 11px; font-weight: 600; }
+  .starter-modules-count { color: var(--text-muted); font-size: 10px; }
+  .starter-clear { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; text-decoration: underline; text-underline-offset: 2px; }
+  .starter-clear:hover { color: var(--text-heading); }
+  .starter-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .starter-modules-hint { margin: 0; color: var(--text-muted); font-size: 10px; }
+  .starter-module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
+  .starter-module { display: grid; gap: 3px; padding: 8px 9px; border: 1px solid var(--border-control); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+  .starter-module:hover { border-color: var(--accent); background: var(--hover-bg); }
+  .starter-module.active { border-color: var(--accent); background: var(--selected-bg); }
+  .starter-module:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .starter-module-label { display: flex; align-items: center; gap: 4px; color: var(--text-heading); font-size: 11px; font-weight: 600; }
+  .starter-module-label :global(svg) { flex: 0 0 auto; margin-left: auto; color: var(--accent); }
+  .starter-module-copy { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
   .starter-tree { display: grid; gap: 2px; }
   .starter-tree-folder { display: grid; gap: 2px; }
   .starter-tree-row { display: flex; align-items: center; gap: 6px; min-height: 24px; }
@@ -9654,7 +9725,9 @@
     .settings-header { padding: calc(16px + env(safe-area-inset-top)) 18px 14px; }
     .settings-body { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 18px 12px; }
     .settings-footer { padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); }
-    .starter-body { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .starter-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; gap: 0; }
+    .starter-dialog .settings-body { overflow-y: auto; }
+    .starter-presets, .starter-customise { overflow: visible; }
     .starter-presets { padding-bottom: 0; }
     .starter-customise { padding-top: 12px; }
     .close-settings { width: 40px; height: 40px; }
