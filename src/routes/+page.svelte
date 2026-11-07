@@ -35,6 +35,7 @@
     Redo2,
     RotateCcw,
     Calculator,
+    Search,
     Settings,
     Sigma,
     Square,
@@ -63,6 +64,9 @@
   import { centerCaretInViewport } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
+  import SearchDialog from "$lib/SearchDialog.svelte";
+  import type { ReplaceResult } from "$lib/replace";
+  import { findFirstMatch } from "$lib/search";
   import { commentText, offsetFromPoint, offsetsFromRange, rangeFromOffsets } from "$lib/comment-dom";
   import {
     HARPER_DIALECTS,
@@ -581,6 +585,8 @@
   let commentPopoverSuppressedUntil = 0;
   const commentHighlightName = "prosecraft-comment";
   const commentAuthorStorageKey = "prosecraft-comment-author";
+  let projectSearchOpen = $state(false);
+  let searchInitialQuery = $state("");
   let splitPanes = $state<SplitPaneState[]>([]);
   let splitEditorBasis = $state(690);
   let splitResize = $state<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -4303,6 +4309,88 @@
     }
   }
 
+  /** Opens project search, seeding the query with the current selection when there is one. */
+  function openProjectSearch() {
+    searchInitialQuery = currentSelectionText().split("\n", 1)[0]?.trim().slice(0, 100) ?? "";
+    projectSearchOpen = true;
+  }
+
+  function currentSelectionText(): string {
+    if (markdownEditorMode && markdownCodeEditor) {
+      const range = markdownCodeEditor.state.selection.main;
+      if (!range.empty) return markdownCodeEditor.state.sliceDoc(range.from, range.to);
+      return "";
+    }
+    return window.getSelection()?.toString() ?? "";
+  }
+
+  function openSearchResult(id: string, reveal?: { query: string; caseSensitive: boolean; wholeWord: boolean }) {
+    projectSearchOpen = false;
+    openSidebarDocument(id);
+    if (!reveal) return;
+    void tick().then(() => {
+      if (markdownEditorMode) revealMarkdownMatch(reveal);
+      else revealEditorMatch(reveal);
+    });
+  }
+
+  /** Selects the searched passage in the rich editor and scrolls it into view. */
+  function revealEditorMatch(reveal: { query: string; caseSensitive: boolean; wholeWord: boolean }) {
+    if (!editor) return;
+    const match = findFirstMatch(commentText(editor), reveal.query, reveal);
+    if (!match) return;
+    const range = rangeFromOffsets(editor, match.start, match.end);
+    if (!range) return;
+    editor.focus();
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    range.startContainer.parentElement?.scrollIntoView({ block: "center" });
+  }
+
+  /** Selects the searched passage in the markdown source editor. */
+  function revealMarkdownMatch(reveal: { query: string; caseSensitive: boolean; wholeWord: boolean }) {
+    if (!markdownCodeEditor) return;
+    const match = findFirstMatch(markdownSource, reveal.query, reveal);
+    if (!match) return;
+    markdownCodeEditor.dispatch({
+      selection: { anchor: match.start, head: match.end },
+      scrollIntoView: true
+    });
+    markdownCodeEditor.focus();
+  }
+
+  /** Writes pending editor edits into `documents` so replace counts see them. */
+  function flushEditorForReplace(): DocumentData[] {
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    return documents;
+  }
+
+  function snapshotBeforeReplace(document: DocumentData) {
+    snapshots = addSnapshot(snapshots, createSnapshot(document, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "manual",
+      note: "Before replace"
+    }));
+  }
+
+  function applyProjectReplace(nextDocuments: DocumentData[], changed: ReplaceResult["changed"]) {
+    if (saveTimer) clearTimeout(saveTimer);
+    documents = nextDocuments;
+    const current = nextDocuments.find((doc) => doc.id === activeDocumentId);
+    if (current && changed.some((entry) => entry.id === current.id)) {
+      // Refresh the open layout like a snapshot restore does, from the new HTML.
+      const content = cleanHtml(current.content);
+      setEditorContent(content);
+      setMarkdownSource(htmlToMarkdown(content));
+      refreshCounts();
+      lastEditorWordCount = wordCount;
+    }
+    persist();
+  }
+
   function createScene(
     chapterId: string,
     sceneTitle = "Untitled scene",
@@ -5813,7 +5901,17 @@
       toggleFocusMode();
       return;
     }
-    if (event.key === "Escape") showZenInterface();
+    if (event.key === "Escape" && !projectSearchOpen) showZenInterface();
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      openProjectSearch();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      openProjectSearch();
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
       event.preventDefault();
       createDocument();
@@ -7490,6 +7588,10 @@
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
         <div class="panel-toggles">
+          <button class="panel-toggle" aria-label="Search project" title="Search project (Ctrl+F)" onclick={() => openProjectSearch()}>
+            <Search size={15} aria-hidden="true" />
+            <span>Search</span>
+          </button>
           <button class="panel-toggle split-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
             <Columns2 size={15} aria-hidden="true" />
             <span>Split</span>
@@ -9164,6 +9266,19 @@
     <div class="settings-footer"><span>Only http and https links are supported.</span><button class="done-button" type="submit">Add link</button></div>
   </form>
 </dialog>
+
+{#if projectSearchOpen}
+  <SearchDialog
+    documents={documents}
+    chapters={chapters}
+    initialQuery={searchInitialQuery}
+    onOpen={openSearchResult}
+    onClose={() => projectSearchOpen = false}
+    onFlush={flushEditorForReplace}
+    onSnapshot={snapshotBeforeReplace}
+    onReplace={applyProjectReplace}
+  />
+{/if}
 
 <dialog class="settings-dialog rich-dialog" bind:this={richDialog} onclick={(event) => {
   if (event.target === richDialog) closeRichDialog();
