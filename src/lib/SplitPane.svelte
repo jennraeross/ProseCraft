@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Plus, X } from "@lucide/svelte";
+  import { ArrowLeft, ArrowRight, Plus, X } from "@lucide/svelte";
   import { markdownToHtml } from "$lib/publish/markdown";
   import type { DocumentData, ResearchFile } from "$lib/publish/types";
   import PdfView from "$lib/PdfView.svelte";
@@ -18,10 +18,13 @@
     documents,
     files,
     canAdd,
+    canMoveLeft,
+    canMoveRight,
     readBytes,
     openExternally,
     openUrl,
     onTarget,
+    onMove,
     onAdd,
     onClose
   }: {
@@ -30,10 +33,13 @@
     documents: DocumentData[];
     files: ResearchFile[];
     canAdd: boolean;
+    canMoveLeft: boolean;
+    canMoveRight: boolean;
     readBytes: (file: ResearchFile) => Promise<ArrayBuffer>;
     openExternally: (file: ResearchFile) => void;
     openUrl: (url: string) => void;
     onTarget: (value: string) => void;
+    onMove: (delta: -1 | 1) => void;
     onAdd: () => void;
     onClose: () => void;
   } = $props();
@@ -118,7 +124,9 @@
         </optgroup>
       {/each}
     </select>
-    <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to four reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Move this pane left" title="Move left" disabled={!canMoveLeft} onclick={() => onMove(-1)}><ArrowLeft size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Move this pane right" title="Move right" disabled={!canMoveRight} onclick={() => onMove(1)}><ArrowRight size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to five reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
     <button class="split-button" type="button" aria-label="Close this pane" title="Close this pane" onclick={onClose}><X size={14} aria-hidden="true" /></button>
   </div>
   <div class="split-pane-body">
@@ -141,7 +149,7 @@
 </aside>
 
 <style>
-  .split-pane { display: flex; min-width: 0; max-height: calc(100vh - 88px); max-height: calc(100dvh - 88px); flex: 1 0 260px; max-width: 520px; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .split-pane { display: flex; width: 100%; min-width: 0; max-height: calc(100vh - 88px); max-height: calc(100dvh - 88px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
   .split-pane-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
   .split-pane-header select { min-width: 0; flex: 1; padding: 5px 8px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
   .split-button { width: 26px; height: 26px; flex: none; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; }

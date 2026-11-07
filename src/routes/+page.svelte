@@ -96,9 +96,12 @@
     canAddSplitPane,
     docTarget,
     fileTarget,
+    moveSplitPane,
+    openBeside,
     pruneSplitTargets,
     removeSplitPane,
     setSplitTarget,
+    tileColumns,
     type SplitGroup,
     type SplitPaneState
   } from "$lib/split";
@@ -593,8 +596,7 @@
   let projectSearchOpen = $state(false);
   let searchInitialQuery = $state("");
   let splitPanes = $state<SplitPaneState[]>([]);
-  let splitEditorBasis = $state(690);
-  let splitResize = $state<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  let tileGridWidth = $state(0);
   let snapshots = $state<DocumentSnapshot[]>([]);
   let snapshotsDialog: HTMLDialogElement;
   let snapshotNote = $state("");
@@ -633,7 +635,6 @@
       && (isIosDevice || (canInstallApp && initialCoarsePointer))
   );
   let showUpdateBanner = $derived(updateReady && !updateDismissed);
-  let editorPanel = $state<HTMLDivElement>();
   let storyboardCards = $state<StoryboardCard[]>([]);
   let storyboardDrawings = $state<StoryboardDrawing[]>([]);
   let activeDrawingTool = $state<StoryboardDrawingTool>("select");
@@ -5441,6 +5442,8 @@
   }
 
   const splitFiles = $derived(researchItems.flatMap((item) => item.kind === "file" ? [item] : []));
+  // Zen mode hides the tiles, so the grid then stays a single column for the editor.
+  const splitColumns = $derived(zenInterfaceHidden ? 1 : tileColumns(splitPanes.length + 1, tileGridWidth, 300));
   const splitGroups = $derived.by((): SplitGroup[] => {
     const groups: SplitGroup[] = [];
     for (const chapter of liveChapters) {
@@ -5475,53 +5478,25 @@
       splitPanes = [];
       return;
     }
-    if (editorPanel) {
-      resizeSplitEditor(Math.min(690, Math.max(360, (editorPanel.clientWidth - 24) * 0.55)));
-    }
     splitPanes = addSplitPane([], crypto.randomUUID());
   }
 
-  function resizeSplitEditor(width: number) {
-    const minimumEditorWidth = 360;
-    const minimumPaneWidth = 260;
-    const splitterSpace = 24;
-    const availableWidth = editorPanel?.clientWidth ?? width;
-    const maximumEditorWidth = Math.max(minimumEditorWidth, availableWidth - minimumPaneWidth - splitterSpace);
-    splitEditorBasis = Math.max(minimumEditorWidth, Math.min(width, maximumEditorWidth));
+  function openBesideTarget(target: string) {
+    splitPanes = openBeside(splitPanes, target, crypto.randomUUID());
+    closeSidebarDrawers(false);
+    setWorkspaceView("writing");
   }
 
-  function startSplitResize(event: PointerEvent) {
-    if (event.button !== 0 || !editorColumn) return;
+  // Alt/Option+click opens a row beside the editor instead of replacing it.
+  function openRowBeside(event: MouseEvent, target: string): boolean {
+    if (!event.altKey) return false;
     event.preventDefault();
-    splitResize = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: editorColumn.getBoundingClientRect().width
-    };
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    openBesideTarget(target);
+    return true;
   }
 
-  function moveSplitResize(event: PointerEvent) {
-    if (!splitResize || splitResize.pointerId !== event.pointerId) return;
-    resizeSplitEditor(splitResize.startWidth + event.clientX - splitResize.startX);
-  }
-
-  function finishSplitResize(event: PointerEvent) {
-    if (!splitResize || splitResize.pointerId !== event.pointerId) return;
-    const handle = event.currentTarget as HTMLElement;
-    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-    splitResize = null;
-  }
-
-  function handleSplitResizeKeydown(event: KeyboardEvent) {
-    const step = event.shiftKey ? 40 : 16;
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      resizeSplitEditor(splitEditorBasis - step);
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      resizeSplitEditor(splitEditorBasis + step);
-    }
+  function chapterFirstScene(chapterId: string): DocumentData | undefined {
+    return documents.find((doc) => doc.chapterId === chapterId && !doc.trashed);
   }
 
   async function readResearchBytes(item: ResearchFile): Promise<ArrayBuffer> {
@@ -7281,6 +7256,7 @@
                       bind:this={rowMenuElement}
                       onpointerdown={(event) => event.stopPropagation()}
                     >
+                      <button type="button" role="menuitem" disabled={!chapterFirstScene(chapter.id)} onclick={() => { const scene = chapterFirstScene(chapter.id); if (!scene) return; closeRowMenu(); openBesideTarget(docTarget(scene.id)); }}>Open beside</button>
                       <button type="button" role="menuitem" onclick={() => { closeRowMenu(); startChapterRename(chapter); }}>Rename chapter</button>
                       <button type="button" role="menuitem" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => { closeRowMenu(); moveChapter(chapter.id, -1); }}>Move up</button>
                       <button type="button" role="menuitem" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => { closeRowMenu(); moveChapter(chapter.id, 1); }}>Move down</button>
@@ -7296,7 +7272,7 @@
                 {#each documents.filter((doc) => doc.chapterId === chapter.id && !doc.trashed && (!filterLabelDef || doc.labelId === filterLabelDef.id)) as doc (doc.id)}
                   {@const sceneLabel = labelFor(doc.labelId)}
                   <div class:current={doc.id === activeDocumentId} class="document-row scene-row">
-                    <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(doc.id)}>
+                    <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(doc.id))) return; openSidebarDocument(doc.id); }}>
                       <span class="scene-mark">¶</span>
                       <span class="tree-name">{doc.title || "Untitled scene"}</span>
                     </button>
@@ -7352,6 +7328,7 @@
                           onpointerdown={(event) => event.stopPropagation()}
                         >
                           <button type="button" role="menuitem" onclick={() => { closeRowMenu(); openSidebarDocument(doc.id); }}>Open scene</button>
+                          <button type="button" role="menuitem" onclick={() => { closeRowMenu(); openBesideTarget(docTarget(doc.id)); }}>Open beside</button>
                           <button type="button" role="menuitem" class="danger" onclick={() => { closeRowMenu(); moveToTrash(doc.id); }}>Move to Trash</button>
                         </div>
                       {/if}
@@ -7436,7 +7413,7 @@
                 </div>
               {:else if item.kind === "document"}
                 <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
-                  <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={() => openSidebarDocument(item.document.id)}>
+                  <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(item.document.id))) return; openSidebarDocument(item.document.id); }}>
                     <span class="scene-mark">¶</span>
                     <span class="tree-name">{item.document.title || "Untitled"}</span>
                   </button>
@@ -7453,6 +7430,7 @@
                       {/each}
                     </select>
                   {/if}
+                  <button class="row-action" aria-label="Open {item.document.title || 'wiki page'} beside" title="Open beside" onclick={() => openBesideTarget(docTarget(item.document.id))}><PanelRight size={13} aria-hidden="true" /></button>
                   <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else if item.kind === "file"}
@@ -7460,7 +7438,7 @@
                   <button
                     class="document-select"
                     title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
-                    onclick={() => openResearchFile(item.item)}
+                    onclick={(event) => { if (openRowBeside(event, fileTarget(item.item.id))) return; openResearchFile(item.item); }}
                   >
                     {#if item.item.mimeType === "application/pdf"}
                       <span class="scene-mark research-file-mark">PDF</span>
@@ -7487,6 +7465,7 @@
                   {#if desktopRuntime}
                     <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}><Folder size={13} aria-hidden="true" /></button>
                   {/if}
+                  <button class="row-action" aria-label="Open {researchItemTitle(item.item)} beside" title="Open beside" onclick={() => openBesideTarget(fileTarget(item.item.id))}><PanelRight size={13} aria-hidden="true" /></button>
                   <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
@@ -7658,7 +7637,8 @@
           </button>
         </div>
       </div>
-      <div bind:this={editorPanel} class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode} class:split-open={splitPanes.length > 0} style={`--split-editor-basis: ${splitEditorBasis}px`}>
+      <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode}>
+      <div class="tile-grid" class:split-open={splitPanes.length > 0 && !zenInterfaceHidden} style={`--tile-columns: ${splitColumns}`} bind:clientWidth={tileGridWidth}>
       <div
         class="editor-column"
         bind:this={editorColumn}
@@ -7904,42 +7884,27 @@
           </span>
         </footer>
       </div>
-      {#if splitPanes.length > 0}
-        <div
-          class="split-resizer"
-          role="slider"
-          tabindex="0"
-          aria-label="Resize editor and reference panes"
-          aria-orientation="vertical"
-          aria-valuemin="360"
-          aria-valuemax={Math.max(360, (editorPanel?.clientWidth ?? 644) - 284)}
-          aria-valuenow={Math.round(splitEditorBasis)}
-          title="Drag to resize editor and reference panes"
-          onpointerdown={startSplitResize}
-          onpointermove={moveSplitResize}
-          onpointerup={finishSplitResize}
-          onpointercancel={finishSplitResize}
-          onlostpointercapture={() => { splitResize = null; }}
-          onkeydown={handleSplitResizeKeydown}
-        ></div>
-        <div class="split-panes" style={`--panes: ${splitPanes.length}`}>
-          {#each splitPanes as pane (pane.id)}
-            <SplitPane
-              target={pane.target}
-              groups={splitGroups}
-              {documents}
-              files={splitFiles}
-              canAdd={canAddSplitPane(splitPanes)}
-              readBytes={readResearchBytes}
-              openExternally={(file) => void openResearchFile(file, { external: true })}
-              openUrl={openExternalUrl}
-              onTarget={(value) => { splitPanes = setSplitTarget(splitPanes, pane.id, value); }}
-              onAdd={() => { splitPanes = addSplitPane(splitPanes, crypto.randomUUID()); }}
-              onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
-            />
-          {/each}
+      {#each splitPanes as pane, index (pane.id)}
+        <div class="split-tile">
+          <SplitPane
+            target={pane.target}
+            groups={splitGroups}
+            {documents}
+            files={splitFiles}
+            canAdd={canAddSplitPane(splitPanes)}
+            readBytes={readResearchBytes}
+            openExternally={(file) => void openResearchFile(file, { external: true })}
+            openUrl={openExternalUrl}
+            canMoveLeft={index > 0}
+            canMoveRight={index < splitPanes.length - 1}
+            onMove={(delta) => { splitPanes = moveSplitPane(splitPanes, pane.id, delta); }}
+            onTarget={(value) => { splitPanes = setSplitTarget(splitPanes, pane.id, value); }}
+            onAdd={() => { splitPanes = addSplitPane(splitPanes, crypto.randomUUID()); }}
+            onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
+          />
         </div>
-      {/if}
+      {/each}
+      </div>
       </div>
         {#if workspaceView === "outline"}
           <OutlineView
@@ -9892,22 +9857,13 @@
   .editor-panel.typewriter-mode { padding-bottom: 50vh; }
   .editor-panel-hidden { display: none; }
   .editor-column { position: relative; width: min(100%, 690px); }
-  .editor-panel.split-open { align-items: flex-start; justify-content: flex-start; gap: 8px; }
-  /* The editor gives up width first (down to 360px); the panes then share what is left and scroll sideways. */
-  .editor-panel.split-open .editor-column { width: auto; min-width: 360px; flex: 0 1 var(--split-editor-basis); }
-  .editor-panel.split-open .toolbar { flex-wrap: wrap; }
-  .split-resizer { position: relative; z-index: 1; width: 8px; min-width: 8px; align-self: stretch; padding: 0; border: 0; background: transparent; cursor: col-resize; touch-action: none; }
-  .split-resizer::after { position: absolute; inset: 0 3px; border-radius: 3px; background: var(--border); content: ""; opacity: 0; transition: opacity .12s; }
-  .split-resizer:hover::after, .split-resizer:focus-visible::after, .split-resizer:active::after { opacity: 1; }
-  .split-resizer:focus-visible { outline: none; }
-  .split-panes { position: sticky; top: 64px; display: flex; min-width: 0; flex: 1 1 calc(var(--panes) * 300px + (var(--panes) - 1) * 14px); gap: 14px; overflow-x: auto; }
+  /* Tiles share their row equally; the column count follows the measured width, so tiles wrap on narrow screens. */
+  .tile-grid { display: grid; width: 100%; min-width: 0; align-items: start; gap: 14px; grid-template-columns: repeat(var(--tile-columns, 1), minmax(0, 1fr)); }
+  .tile-grid:not(.split-open) { justify-items: center; }
+  .tile-grid.split-open .editor-column { width: 100%; min-width: 0; }
+  .tile-grid.split-open .toolbar { flex-wrap: wrap; }
+  .split-tile { position: sticky; top: 64px; min-width: 0; }
   .panel-toggle.active { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
-  @container writing-area (max-width: 700px) {
-    .editor-panel.split-open { flex-direction: column; align-items: center; }
-    .editor-panel.split-open .editor-column { width: min(100%, 690px); flex: none; }
-    .split-resizer { display: none; }
-    .split-panes { position: static; width: min(100%, 690px); flex: none; flex-direction: column; overflow: visible; }
-  }
   .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
   .document-meta { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 10px; }
   .document-type { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 650; letter-spacing: .8px; }
@@ -10423,7 +10379,6 @@
     .toolbar { top: calc(8px + env(safe-area-inset-top)); }
     .panel-toggles { margin-left: auto; }
     .panel-toggle span { display: none; }
-    .split-toggle { display: none; }
     .storage-banner { align-items: flex-start; flex-direction: column; gap: 8px; }
     .storage-banner-actions { width: 100%; }
     .storage-banner .data-button { flex: 1; }
@@ -10566,7 +10521,7 @@
     pointer-events: none;
   }
   .app-shell.zen-hidden .main-panel { margin-right: 0; margin-left: 0; }
-  .app-shell.zen-hidden .split-panes,
+  .app-shell.zen-hidden .split-tile,
   .app-shell.zen-hidden .workspace-controls,
   .app-shell.zen-hidden .document-meta,
   .app-shell.zen-hidden .title-input,
