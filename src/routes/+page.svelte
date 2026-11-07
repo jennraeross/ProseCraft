@@ -185,6 +185,7 @@
     type SpaceName
   } from "$lib/publish/types";
   import { saveExport } from "$lib/publish/save";
+  import type { DragDropEvent } from "@tauri-apps/api/webview";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
     createResearchFolderName,
@@ -280,6 +281,7 @@
   const typewriterStorageKey = "prosecraft-typewriter-mode";
   const fadeParagraphsStorageKey = "prosecraft-fade-other-paragraphs";
   const zenModeStorageKey = "prosecraft-zen-mode";
+  const modifierName = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "Cmd" : "Ctrl";
   const harperEnabledStorageKey = "prosecraft-harper-enabled";
   const harperDialectStorageKey = "prosecraft-harper-dialect";
   const researchRootStorageKey = "prosecraft-research-root";
@@ -435,6 +437,9 @@
   let fadeOtherParagraphs = $state(false);
   let zenMode = $state(false);
   let zenInterfaceHidden = $state(false);
+  let focusMode = $state(false);
+  let focusHintVisible = $state(false);
+  let focusHintTimer: ReturnType<typeof setTimeout> | undefined;
   let harperEnabled = $state(false);
   let harperDialect = $state<HarperDialect>("american");
   let harperLints = $state<HarperLint[]>([]);
@@ -1652,8 +1657,27 @@
   }
 
   function showZenInterface() {
-    if (!zenInterfaceHidden) return;
+    // Focus mode keeps the interface hidden until it is left explicitly.
+    if (focusMode || !zenInterfaceHidden) return;
     zenInterfaceHidden = false;
+  }
+
+  /** Hides everything but the text right away; the same shortcut brings it back. */
+  function toggleFocusMode() {
+    clearTimeout(focusHintTimer);
+    if (focusMode) {
+      focusMode = false;
+      focusHintVisible = false;
+      zenInterfaceHidden = false;
+      return;
+    }
+    if (workspaceView !== "writing") return;
+    focusMode = true;
+    leftSidebarHovered = false;
+    rightSidebarHovered = false;
+    zenInterfaceHidden = true;
+    focusHintVisible = true;
+    focusHintTimer = setTimeout(() => { focusHintVisible = false; }, 3000);
   }
 
   function setZenMode(enabled: boolean, syncMenu = true) {
@@ -2660,6 +2684,7 @@
   function setWorkspaceView(next: WorkspaceView) {
     if (next === workspaceView) return;
     commitPageState();
+    if (focusMode) toggleFocusMode();
     showZenInterface();
     if (workspaceView === "writing" && next !== "writing") {
       writingSidebarState = { left: leftSidebarVisible, right: rightSidebarVisible };
@@ -2805,8 +2830,13 @@
     png: "image/png",
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
-    webp: "image/webp"
+    webp: "image/webp",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    avif: "image/avif"
   };
+  const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/avif"];
+  const IMAGE_ERROR_MESSAGE = "Use a PNG, JPG, WebP, GIF, BMP, or AVIF image.";
 
   function imageFiles(files: FileList | null | undefined): File[] {
     return Array.from(files ?? []).filter((file) =>
@@ -2816,23 +2846,23 @@
 
   function isSupportedImage(file: File): boolean {
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-    return ["image/png", "image/jpeg", "image/webp"].includes(file.type)
+    return IMAGE_MIME_TYPES.includes(file.type)
       || (!file.type || file.type === "application/octet-stream" || file.type === "image/jpg")
         && extension in IMAGE_MIME_BY_EXTENSION;
   }
 
-  function markdownImagePosition(event?: DragEvent | ClipboardEvent): number | null {
+  function markdownImagePosition(event?: DragEvent | ClipboardEvent | { clientX: number; clientY: number }): number | null {
     const view = markdownCodeEditor;
     if (!view) return null;
-    if (event instanceof DragEvent) {
+    if (event && "clientX" in event) {
       return view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head;
     }
     return view.state.selection.main.head;
   }
 
-  function editorRangeAtPoint(event?: DragEvent | ClipboardEvent): Range | null {
+  function editorRangeAtPoint(event?: DragEvent | ClipboardEvent | { clientX: number; clientY: number }): Range | null {
     const selection = window.getSelection();
-    if (event instanceof DragEvent) {
+    if (event && "clientX" in event) {
       const range = document.caretRangeFromPoint(event.clientX, event.clientY);
       if (range && editor.contains(range.startContainer)) return range;
     }
@@ -2846,7 +2876,7 @@
   }
 
   async function imageFileToDataUrl(file: File): Promise<string> {
-    if (!isSupportedImage(file)) throw new Error("Use a PNG, JPG, or WebP image.");
+    if (!isSupportedImage(file)) throw new Error(IMAGE_ERROR_MESSAGE);
     if (file.size > MAX_IMAGE_FILE_BYTES) throw new Error("Images must be 15 MB or smaller.");
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
     const source = !file.type || file.type === "application/octet-stream"
@@ -3040,7 +3070,7 @@
   async function insertImageFiles(files: File[], range: Range | null, markdownPosition: number | null) {
     const documentId = activeDocumentId;
     if (files.some((file) => !isSupportedImage(file))) {
-      imageInsertError = "Use a PNG, JPG, or WebP image.";
+      imageInsertError = IMAGE_ERROR_MESSAGE;
       return;
     }
     imageInsertError = "";
@@ -3063,8 +3093,44 @@
     }
   }
 
+  /** file:// entries of a drop; WebKitGTK reports files from a file manager only as a URI list. */
+  function droppedFileUris(dataTransfer: DataTransfer | null | undefined): string[] {
+    const raw = dataTransfer?.getData("text/uri-list") ?? "";
+    return raw.split(/\r?\n/).filter((line) => line.startsWith("file://"));
+  }
+
+  function pathFromFileUri(uri: string): string | null {
+    try {
+      const url = new URL(uri);
+      let path = decodeURIComponent(url.pathname);
+      if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
+      return path;
+    } catch {
+      return null;
+    }
+  }
+
+  async function readDroppedImagePaths(uris: string[]): Promise<File[]> {
+    return readImagePaths(uris.map(pathFromFileUri).filter((path): path is string => Boolean(path)));
+  }
+
+  async function readImagePaths(paths: string[]): Promise<File[]> {
+    const { invoke, isTauri } = await import("@tauri-apps/api/core");
+    if (!isTauri()) return [];
+    const files: File[] = [];
+    for (const path of paths) {
+      const extension = path.split(".").pop()?.toLowerCase() ?? "";
+      if (!(extension in IMAGE_MIME_BY_EXTENSION)) continue;
+      const bytes = await invoke<ArrayBuffer>("read_import_file", { path });
+      const name = path.split(/[\\/]/).pop() || `image.${extension}`;
+      files.push(new File([bytes], name, { type: IMAGE_MIME_BY_EXTENSION[extension] }));
+    }
+    return files;
+  }
+
   function handleImageDragOver(event: DragEvent) {
-    if (!event.dataTransfer?.types.includes("Files")) return;
+    const types = event.dataTransfer?.types;
+    if (!types?.includes("Files") && !types?.includes("text/uri-list")) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
     imageDropActive = true;
@@ -3078,12 +3144,23 @@
 
   function handleImageDrop(event: DragEvent) {
     const files = imageFiles(event.dataTransfer?.files);
-    if (!files.length) return;
+    const uris = files.length ? [] : droppedFileUris(event.dataTransfer);
+    if (!files.length && !uris.length) return;
     event.preventDefault();
     imageDropActive = false;
     const range = markdownEditorMode ? null : editorRangeAtPoint(event);
     const position = markdownEditorMode ? markdownImagePosition(event) : null;
-    void insertImageFiles(files, range, position);
+    if (files.length) {
+      void insertImageFiles(files, range, position);
+      return;
+    }
+    readDroppedImagePaths(uris).then((read) => {
+      if (read.length) void insertImageFiles(read, range, position);
+      else imageInsertError = IMAGE_ERROR_MESSAGE;
+    }).catch((error) => {
+      console.error("Could not read the dropped file.", error);
+      imageInsertError = "Could not read the dropped file.";
+    });
   }
 
   function handleImagePaste(event: ClipboardEvent) {
@@ -5511,6 +5588,16 @@
       closeSidebarDrawers();
       return;
     }
+    if (event.key === "Escape" && focusMode) {
+      event.preventDefault();
+      toggleFocusMode();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === "Enter") {
+      event.preventDefault();
+      toggleFocusMode();
+      return;
+    }
     if (event.key === "Escape") showZenInterface();
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
       event.preventDefault();
@@ -6413,6 +6500,63 @@
     };
   });
 
+  // On Linux and macOS Tauri takes file drops over natively, so the webview can never
+  // navigate to a dropped file. The paths arrive with a window position; images dropped
+  // on the editor are read from disk and inserted there. (Windows keeps HTML5 drops,
+  // see tauri.windows.conf.json.)
+  function overEditorArea(x: number, y: number): boolean {
+    const element = document.elementFromPoint(x, y);
+    return Boolean(element && element.closest(".editor-column"));
+  }
+
+  async function handleNativeFileDrop(payload: DragDropEvent) {
+    if (payload.type === "leave") {
+      imageDropActive = false;
+      return;
+    }
+    const scale = window.devicePixelRatio || 1;
+    const clientX = payload.position.x / scale;
+    const clientY = payload.position.y / scale;
+    const over = workspaceView === "writing" && overEditorArea(clientX, clientY);
+    if (payload.type !== "drop") {
+      imageDropActive = over;
+      return;
+    }
+    imageDropActive = false;
+    if (!over) return;
+    const range = markdownEditorMode ? null : editorRangeAtPoint({ clientX, clientY });
+    const position = markdownEditorMode ? markdownImagePosition({ clientX, clientY }) : null;
+    try {
+      const files = await readImagePaths(payload.paths);
+      if (files.length) await insertImageFiles(files, range, position);
+      else imageInsertError = IMAGE_ERROR_MESSAGE;
+    } catch (error) {
+      console.error("Could not read the dropped file.", error);
+      imageInsertError = "Could not read the dropped file.";
+    }
+  }
+
+  onMount(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { isTauri } = await import("@tauri-apps/api/core");
+        if (!isTauri()) return;
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        const unlisten = await getCurrentWebview().onDragDropEvent((event) => void handleNativeFileDrop(event.payload));
+        if (disposed) unlisten();
+        else stop = unlisten;
+      } catch (error) {
+        console.error("Could not listen for file drops.", error);
+      }
+    })();
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  });
+
   onMount(() => {
     const onPointerDown = (event: PointerEvent) => {
       if (!openRowMenu) return;
@@ -6440,6 +6584,9 @@
 </svelte:head>
 
 <div class="app-shell" class:zen-hidden={zenInterfaceHidden}>
+  {#if focusHintVisible}
+    <p class="focus-hint" role="status">Focus mode · {modifierName}+Shift+Enter or Escape to leave</p>
+  {/if}
   {#if mobileDrawerOpen}
     <button
       type="button"
@@ -7694,9 +7841,11 @@
           checked={zenMode}
           onchange={(event) => setZenMode((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Zen mode</span>
+        <span>Hide the interface while typing (Zen mode)</span>
       </label>
-      <p class="preference-help">Hides the interface while you type. Move the mouse outside the editor or press Escape to bring it back.</p>
+      <p class="preference-help">Only hides the interface once you start typing in the editor. Move the mouse outside the editor or press Escape to bring it back.</p>
+      <div class="preference-heading"><strong>Focus mode</strong><span>Hides everything except your text right now. Press {modifierName}+Shift+Enter (or Escape) to bring it back.</span></div>
+      <button class="data-button" type="button" onclick={() => { settingsDialog.close(); toggleFocusMode(); }}>Enter focus mode</button>
     </section>
     <section class="preference-section">
       <div class="preference-heading"><strong>Markdown editor</strong><span>Enable an optional plain-text Markdown editor alongside rich text</span></div>
@@ -8747,6 +8896,7 @@
   .research-file-mark { min-width: 20px; font-size: 9px; letter-spacing: -.02em; text-align: center; }
   .research-link-mark { color: var(--text-muted); font-family: inherit; font-size: 12px; }
   .research-item-row .document-select { gap: 5px; }
+  .focus-hint { position: fixed; z-index: 50; bottom: 22px; left: 50%; margin: 0; padding: 7px 14px; transform: translateX(-50%); border: 1px solid var(--border-control); border-radius: 999px; background: var(--surface); color: var(--text-muted); font-size: 10px; pointer-events: none; }
   .research-status { margin: 4px 6px 3px; color: var(--text-muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
   .trashed-document { color: var(--text-muted); }
   .empty-tree, .empty-action { display: block; padding: 5px 7px; color: var(--text-faint); font-size: 10px; }
