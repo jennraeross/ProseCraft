@@ -24,7 +24,7 @@ function serializeNode(node: Node, resolveImage?: (src: string) => string): stri
     if (classes.length > 0) attributes.push(`class="${classes.join(" ")}"`);
   }
   if (node.tagName === "SPAN" || node.tagName === "DIV") {
-    const classes = ["math-inline", "math-block", "mermaid-diagram"]
+    const classes = ["math-inline", "math-block", "mermaid-diagram", "calc-worksheet"]
       .filter((name) => node.classList.contains(name));
     if (classes.length > 0) attributes.push(`class="${classes.join(" ")}"`);
   }

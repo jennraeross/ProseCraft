@@ -34,7 +34,7 @@ export type ProofreadText = {
 };
 
 /** Subtrees that should never be proofread (code, math, diagrams, widgets). */
-const SKIP_SELECTOR = "a,code,pre,.math-inline,.math-block,.mermaid-diagram,[contenteditable=false]";
+const SKIP_SELECTOR = "a,code,pre,.math-inline,.math-block,.mermaid-diagram,.calc-worksheet,[contenteditable=false]";
 
 /** Extracts checkable text from the rich-text editor with an offset map. */
 export function extractProofreadText(root: Node): ProofreadText {
