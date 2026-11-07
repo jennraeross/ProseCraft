@@ -97,6 +97,7 @@
     docTarget,
     fileTarget,
     moveSplitPane,
+    parseSplitTarget,
     openBeside,
     pruneSplitTargets,
     removeSplitPane,
@@ -5483,6 +5484,16 @@
     splitPanes = addSplitPane([], crypto.randomUUID());
   }
 
+  /** Puts a tile's document into the editor and the document that was being edited into the tile. */
+  function swapTileWithEditor(paneId: string) {
+    const pane = splitPanes.find((entry) => entry.id === paneId);
+    const parsed = pane ? parseSplitTarget(pane.target) : null;
+    if (!pane || parsed?.kind !== "doc" || !activeDocumentId) return;
+    const previous = activeDocumentId;
+    splitPanes = setSplitTarget(splitPanes, paneId, docTarget(previous));
+    openSidebarDocument(parsed.id);
+  }
+
   function openBesideTarget(target: string) {
     splitPanes = openBeside(splitPanes, target, crypto.randomUUID());
     closeSidebarDrawers(false);
@@ -7983,6 +7994,8 @@
             openUrl={openExternalUrl}
             canMoveLeft={index > 0}
             canMoveRight={index < splitPanes.length - 1}
+            canSwap={parseSplitTarget(pane.target)?.kind === "doc" && Boolean(activeDocumentId)}
+            onSwap={() => swapTileWithEditor(pane.id)}
             onMove={(delta) => { splitPanes = moveSplitPane(splitPanes, pane.id, delta); }}
             onTarget={(value) => { splitPanes = setSplitTarget(splitPanes, pane.id, value); }}
             onAdd={() => { splitPanes = addSplitPane(splitPanes, crypto.randomUUID()); }}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowLeft, ArrowRight, Plus, X } from "@lucide/svelte";
+  import { ArrowLeft, ArrowLeftRight, ArrowRight, Plus, X } from "@lucide/svelte";
   import { markdownToHtml } from "$lib/publish/markdown";
   import type { DocumentData, ResearchFile } from "$lib/publish/types";
   import PdfView from "$lib/PdfView.svelte";
@@ -20,11 +20,13 @@
     canAdd,
     canMoveLeft,
     canMoveRight,
+    canSwap,
     readBytes,
     openExternally,
     openUrl,
     onTarget,
     onMove,
+    onSwap,
     onAdd,
     onClose
   }: {
@@ -35,11 +37,14 @@
     canAdd: boolean;
     canMoveLeft: boolean;
     canMoveRight: boolean;
+    /** True when this pane shows a document that can take the editor's place. */
+    canSwap: boolean;
     readBytes: (file: ResearchFile) => Promise<ArrayBuffer>;
     openExternally: (file: ResearchFile) => void;
     openUrl: (url: string) => void;
     onTarget: (value: string) => void;
     onMove: (delta: -1 | 1) => void;
+    onSwap: () => void;
     onAdd: () => void;
     onClose: () => void;
   } = $props();
@@ -124,6 +129,7 @@
         </optgroup>
       {/each}
     </select>
+    <button class="split-button" type="button" aria-label="Edit this in the main editor and show the current text here" title="Swap with the editor" disabled={!canSwap} onclick={onSwap}><ArrowLeftRight size={14} aria-hidden="true" /></button>
     <button class="split-button" type="button" aria-label="Move this pane left" title="Move left" disabled={!canMoveLeft} onclick={() => onMove(-1)}><ArrowLeft size={14} aria-hidden="true" /></button>
     <button class="split-button" type="button" aria-label="Move this pane right" title="Move right" disabled={!canMoveRight} onclick={() => onMove(1)}><ArrowRight size={14} aria-hidden="true" /></button>
     <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to five reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
