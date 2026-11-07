@@ -72,7 +72,7 @@ the release once they succeed.
 - [x] Snapshots of a scene (save, preview and restore earlier versions)
 - [x] LaTeX math (MathJax)
 - [x] Mermaid
-- [ ] MathCAD
+- [x] MathCAD-style calculations (units, functions, live results)
 - [ ] Wiki previews
 
 #### Publishing

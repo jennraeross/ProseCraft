@@ -1,6 +1,7 @@
 import TurndownService from "turndown";
 import { marked, type Token } from "marked";
 import {
+  CALC_CLASS,
   DIAGRAM_CLASS,
   MATH_BLOCK_CLASS,
   MATH_INLINE_CLASS,
@@ -61,6 +62,14 @@ function markdownService(): TurndownService {
       const source = richSource(node as HTMLElement, "data-source").trim();
       const fence = source.includes("```") ? "~~~~" : "```";
       return `\n\n${fence}mermaid\n${source}\n${fence}\n\n`;
+    }
+  });
+  service.addRule("calc", {
+    filter: (node) => node.classList.contains(CALC_CLASS),
+    replacement: (_content, node) => {
+      const source = richSource(node as HTMLElement, "data-source").trim();
+      const fence = source.includes("```") ? "~~~~" : "```";
+      return `\n\n${fence}calc\n${source}\n${fence}\n\n`;
     }
   });
   return service;
@@ -132,8 +141,12 @@ function configureMarked(): void {
     ],
     renderer: {
       code(token) {
-        if ((token.lang ?? "").trim().toLowerCase() === "mermaid") {
+        const lang = (token.lang ?? "").trim().toLowerCase();
+        if (lang === "mermaid") {
           return `<div class="${DIAGRAM_CLASS}" data-source="${escapeAttribute(token.text)}"></div>\n`;
+        }
+        if (lang === "calc" || lang === "mathcad") {
+          return `<div class="${CALC_CLASS}" data-source="${escapeAttribute(token.text)}"></div>\n`;
         }
         return false;
       }
