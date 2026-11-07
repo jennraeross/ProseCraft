@@ -779,7 +779,9 @@ pub fn run() {
             {
                 let settings =
                     MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-                let quit = PredefinedMenuItem::quit(app, Some("Quit ProseCraft"))?;
+                // A plain item instead of the predefined one, which stays greyed out on some Linux desktops.
+                let quit =
+                    MenuItem::with_id(app, "quit", "Quit ProseCraft", true, Some("CmdOrCtrl+Q"))?;
                 let shortcuts_item = MenuItem::with_id(
                     app,
                     "keyboard-shortcuts",
@@ -876,6 +878,10 @@ pub fn run() {
 
     #[cfg(desktop)]
     let builder = builder.on_menu_event(|app, event| {
+        if event.id().as_ref() == "quit" {
+            app.exit(0);
+            return;
+        }
         let event_name = match event.id().as_ref() {
             "settings" => Some("prosecraft:open-settings"),
             "project-settings" => Some("prosecraft:open-project-settings"),
