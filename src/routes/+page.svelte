@@ -30,6 +30,7 @@
     List,
     ListOrdered,
     MessageSquareText,
+    Minus,
     MousePointer2,
     PanelLeft,
     PanelRight,
@@ -151,6 +152,14 @@
     type SystemFontFamily
   } from "$lib/editor-fonts";
   import { sanitizeHtml as cleanHtml } from "$lib/sanitize";
+  import {
+    buildChapterHtml,
+    isSceneBreakElement,
+    joinChapterMarkdown,
+    sceneBreakHtml,
+    splitChapterHtml,
+    splitChapterMarkdown
+  } from "$lib/chapter-sections";
   import { encodeSelection, restoreSelection, type CaretSelection } from "$lib/undo/caret";
   import {
     applyStateStep,
@@ -314,6 +323,7 @@
   const markdownSystemFontStorageKey = "prosecraft-markdown-editor-system-font";
   const scaleStorageKey = "prosecraft-editor-scale";
   const markdownEditorStorageKey = "prosecraft-markdown-editor-enabled";
+  const timelineStorageKey = "prosecraft-timeline-enabled";
   const typewriterStorageKey = "prosecraft-typewriter-mode";
   const fadeParagraphsStorageKey = "prosecraft-fade-other-paragraphs";
   const zenModeStorageKey = "prosecraft-zen-mode";
@@ -368,7 +378,7 @@
   const storyboardDrawingTools: { tool: StoryboardDrawingTool; label: string; icon: typeof MousePointer2 }[] = [
     { tool: "select", label: "Select", icon: MousePointer2 },
     { tool: "pan", label: "Pan", icon: Hand },
-    { tool: "line", label: "Line", icon: ArrowRight },
+    { tool: "line", label: "Line", icon: Minus },
     { tool: "arrow", label: "Arrow", icon: ArrowRight },
     { tool: "box", label: "Box", icon: Square },
     { tool: "text", label: "Text", icon: Type }
@@ -497,6 +507,7 @@
   let systemFontsRequest: Promise<void> | undefined;
   let editorScale = $state(100);
   let markdownEditorEnabled = $state(false);
+  let timelineEnabled = $state(false);
   let typewriterMode = $state(false);
   let fadeOtherParagraphs = $state(false);
   let zenMode = $state(false);
@@ -571,18 +582,30 @@
     || (initialCoarsePointer && initialViewportHeight <= 520);
   let leftSidebarVisible = $state(!initialPhoneLayout);
   let rightSidebarVisible = $state(initialViewportWidth > 1050);
+  // Split view borrows the sidebar space and gives it back when it closes.
+  // Hover-peek keeps working while hidden.
+  function leftSidebarShown(): boolean {
+    return leftSidebarVisible && !tilesOpen;
+  }
+  function rightSidebarShown(): boolean {
+    return rightSidebarVisible && !tilesOpen;
+  }
   let compactChapterLayout = $state(initialPhoneLayout);
   let compactProgressLayout = $state(initialViewportWidth <= 1050);
   let leftSidebarHovered = $state(false);
   let rightSidebarHovered = $state(false);
+  let rightSidebarTab = $state<"progress" | "comments" | "snapshots">("progress");
   // On phones both sidebars are overlay drawers. On tablets the progress
   // sidebar still overlays, but the binder remains part of the layout.
   let mobileDrawerOpen = $derived(
-    compactChapterLayout && (leftSidebarVisible || rightSidebarVisible)
+    compactChapterLayout && (leftSidebarShown() || rightSidebarShown())
   );
   let drawerTrigger: HTMLElement | null = null;
   let editingChapterId = $state<string | null>(null);
   let chapterNameDraft = $state("");
+  let editingSceneId = $state<string | null>(null);
+  let sceneTitleDraft = $state("");
+  let sceneNameInput = $state<HTMLInputElement>();
   let researchFolderInput = $state<HTMLInputElement>();
   let editingResearchFolderId = $state<string | null>(null);
   let researchFolderNameDraft = $state("");
@@ -602,7 +625,9 @@
   let commentDraft = $state("");
   let commentAuthor = $state("");
   let pendingAnchor = $state<CommentAnchor | null>(null);
+  let pendingAnchorScene = $state<string | null>(null);
   let showResolvedComments = $state(false);
+  let showAllComments = $state(false);
   let commentPositions = $state<Record<string, number | null>>({});
   let commentSpans: Array<{ comment: TextComment; start: number; end: number }> = [];
   let commentPreview = $state<{ comments: TextComment[]; left: number; top: number } | null>(null);
@@ -640,10 +665,26 @@
   let boardTouchPoints = $state<Map<number, BoardPoint>>(new Map());
   let boardSpacePan = $state(false);
   let openRowMenu = $state<RowMenuTarget | null>(null);
-  let rowMenuElement = $state<HTMLDivElement>();
   let openLabelMenu = $state<LabelMenuTarget | null>(null);
-  let labelMenuElement = $state<HTMLDivElement>();
   let labelMenuTrigger = $state<HTMLButtonElement>();
+  type ContextMenuTarget =
+    | { kind: "chapter"; id: string }
+    | { kind: "scene"; id: string }
+    | { kind: "wiki-root" }
+    | { kind: "wiki-folder"; id: string }
+    | { kind: "wiki-doc"; id: string }
+    | { kind: "wiki-file"; id: string }
+    | { kind: "wiki-link"; id: string };
+  let contextMenu = $state<{ target: ContextMenuTarget; x: number; y: number } | null>(null);
+  let contextMenuElement = $state<HTMLDivElement>();
+  let contextMenuMoveOpen = $state(false);
+  let draggedSceneId = $state<string | null>(null);
+  let sceneDropTarget = $state<{ id: string; after: boolean } | null>(null);
+  let sceneDropChapterId = $state<string | null>(null);
+  let pressTimer: ReturnType<typeof setTimeout> | undefined;
+  let pressTarget: ContextMenuTarget | null = null;
+  let pressX = 0;
+  let pressY = 0;
   let installPromptEvent = $state<BeforeInstallPromptEvent | null>(null);
   let installDismissed = $state(false);
   let installedStandalone = $state(false);
@@ -695,6 +736,53 @@
   $effect(() => {
     if (labelFilter && !labelById(projectLabelList, labelFilter)) labelFilter = "";
   });
+  let peekedChapterId = $state<string | null>(null);
+  let lastSceneByChapter = $state<Record<string, string>>({});
+  // Chapters stay open only while active in the editor or a split pane. The
+  // chevron merely peeks an inactive chapter open until the next doc switch.
+  let activeChapterIds = $derived.by(() => {
+    const ids = new Set<string>();
+    const active = documents.find((doc) => doc.id === activeDocumentId);
+    if (active?.chapterId) ids.add(active.chapterId);
+    for (const pane of splitPanes) {
+      const parsed = parseSplitTarget(pane.target);
+      if (parsed?.kind !== "doc") continue;
+      const doc = documents.find((entry) => entry.id === parsed.id);
+      if (doc?.chapterId) ids.add(doc.chapterId);
+    }
+    return ids;
+  });
+  $effect(() => {
+    void activeDocumentId;
+    peekedChapterId = null;
+  });
+  $effect(() => {
+    const doc = documents.find((entry) => entry.id === activeDocumentId);
+    if (doc?.chapterId) lastSceneByChapter[doc.chapterId] = doc.id;
+  });
+  function isChapterOpen(id: string) {
+    return activeChapterIds.has(id) || peekedChapterId === id;
+  }
+
+  function peekChapter(id: string) {
+    if (activeChapterIds.has(id)) return;
+    peekedChapterId = peekedChapterId === id ? null : id;
+  }
+  /** Clicking a chapter goes there: opens its last active scene. */
+  function openChapter(id: string) {
+    const visible = documents.filter((doc) => doc.chapterId === id && !doc.trashed
+      && (!filterLabelDef || doc.labelId === filterLabelDef.id));
+    const remembered = lastSceneByChapter[id];
+    const target = remembered && visible.some((doc) => doc.id === remembered)
+      ? remembered
+      : visible[0]?.id;
+    if (!target) {
+      peekChapter(id);
+      return;
+    }
+    if (target === activeDocumentId) scrollToScene(target);
+    else openSidebarDocument(target);
+  }
   let trashCount = $derived(
     documents.filter((doc) => doc.trashed
       && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)).length
@@ -710,6 +798,12 @@
   $effect(() => {
     refreshWikiMentionHighlights(documents, activeDocumentId);
   });
+  // Chapter mode: the editor shows every scene of the active chapter as one
+  // scrollable document. Scene documents stay separate in storage.
+  let activeChapter = $derived(activeDocument?.chapterId
+    ? chapters.find((chapter) => chapter.id === activeDocument.chapterId)
+    : undefined);
+  let inChapterMode = $derived(!!activeChapter);
   class EmbeddedImageWidget extends WidgetType {
     toDOM() {
       const element = document.createElement("span");
@@ -849,6 +943,12 @@
     return `markdown:${markdownStateKey}`;
   }
 
+  /** CodeMirror state follows the chapter in chapter mode, like undo does. */
+  function markdownDocKey() {
+    const scope = inChapterMode && activeChapter ? `chapter:${activeChapter.id}` : activeDocumentId;
+    return `${activeProjectId}/${scope}`;
+  }
+
   function trackMarkdownHistory(update: ViewUpdate) {
     if (loadingMarkdownDocument) return;
     const page = currentUndoPage();
@@ -870,7 +970,7 @@
   });
   $effect(() => {
     if (!markdownEditorMode || !markdownEditorHost) return;
-    const savedStateKey = untrack(() => `${activeProjectId}/${activeDocumentId}`);
+    const savedStateKey = untrack(() => markdownDocKey());
     const savedState = markdownStates.get(savedStateKey);
     markdownStateKey = savedStateKey;
     if (!savedState || savedState.doc.toString() !== untrack(() => markdownSource)) {
@@ -1045,11 +1145,6 @@
   });
   let activeDaysThisMonth = $derived(calendarCells.filter((cell) => cell?.record?.edits).length);
   let themeMediaQuery: MediaQueryList | undefined;
-  let locationLabel = $derived.by(() => {
-    if (activeDocument?.space) return activeDocument.space;
-    const chapter = chapters.find((item) => item.id === activeDocument?.chapterId);
-    return chapter ? chapterLabel(chapter) : "Chapters";
-  });
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let publishTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -1252,10 +1347,12 @@
       ?? documents.find((doc) => !doc.trashed);
     if (active) {
       activeDocumentId = active.id;
-      title = active.title;
-      clearRichTextFade();
-      setEditorContent(active.content);
-      setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+      if (!renderChapter(active.id)) {
+        title = active.title;
+        clearRichTextFade();
+        setEditorContent(active.content);
+        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+      }
     } else {
       activeDocumentId = "";
       title = "";
@@ -1392,7 +1489,8 @@
   function handleSidebarPointerMove(event: PointerEvent) {
     if (event.pointerType !== "mouse") return;
     // Phones use explicit drawer buttons; edge-hover peeking would fight them.
-    if (compactChapterLayout) {
+    // The storyboard owns the whole window, so there is nothing to peek.
+    if (compactChapterLayout || workspaceView === "storyboard") {
       leftSidebarHovered = false;
       rightSidebarHovered = false;
       return;
@@ -1436,6 +1534,7 @@
       localStorage.setItem(markdownSystemFontStorageKey, markdownSystemFont);
       localStorage.setItem(scaleStorageKey, String(editorScale));
       localStorage.setItem(markdownEditorStorageKey, String(markdownEditorEnabled));
+      localStorage.setItem(timelineStorageKey, String(timelineEnabled));
       localStorage.setItem(typewriterStorageKey, String(typewriterMode));
       localStorage.setItem(fadeParagraphsStorageKey, String(fadeOtherParagraphs));
       localStorage.setItem(zenModeStorageKey, String(zenMode));
@@ -1671,10 +1770,26 @@
       return;
     }
 
+    syncAnchorToCaret();
     updateCommentSelectionPopover();
     if (fadeOtherParagraphs) scheduleRichTextFade();
     // Note: typewriter recentering runs on input (typing), not here, so caret
     // moves from clicks or arrow keys never yank the scroll position.
+  }
+
+  /**
+   * Follows the caret across sections so the sidebar highlight tracks the
+   * scene being edited. Anchor-only: never re-renders or saves.
+   */
+  function syncAnchorToCaret() {
+    if (!editor || !inChapterMode || !activeChapter || markdownEditorMode) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    if (!editor.contains(selection.anchorNode)) return;
+    const block = editorTopBlock(selection.anchorNode);
+    if (!block || isSceneBreakElement(block)) return;
+    const doc = scenesInChapter(activeChapter.id)[sectionIndexOf(block)];
+    if (doc && doc.id !== activeDocumentId) activeDocumentId = doc.id;
   }
 
   /** Shows the "Comment" button above a selection, mirroring the comment toolbar button. */
@@ -1919,6 +2034,12 @@
   function setMarkdownEditorEnabled(enabled: boolean) {
     if (!enabled && markdownEditorMode) switchToRichTextEditor();
     markdownEditorEnabled = enabled;
+    savePreferences();
+  }
+
+  function setTimelineEnabled(enabled: boolean) {
+    timelineEnabled = enabled;
+    if (!enabled && workspaceView === "timeline") setWorkspaceView("writing");
     savePreferences();
   }
 
@@ -3101,20 +3222,34 @@
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const active = documents.find((doc) => doc.id === activeDocumentId);
-    setMarkdownSource(active?.markdownSource ?? htmlToMarkdown(editor.innerHTML));
+    setMarkdownSource(inChapterMode ? chapterMarkdownSource() : (active?.markdownSource ?? htmlToMarkdown(editor.innerHTML)));
     selectEditorImage(null);
     clearRichTextFade();
     markdownEditorMode = true;
   }
 
+  /** Writes the chapter markdown source back to scene documents. */
+  function applyMarkdownSourceToDocs() {
+    const mdSections = splitChapterMarkdown(markdownSource);
+    writeChapterSections(mdSections.map((section) => cleanHtml(markdownToHtml(section))), mdSections);
+  }
+
   function switchToRichTextEditor() {
     if (!markdownEditorMode) return;
     if (saveTimer) clearTimeout(saveTimer);
-    const html = cleanHtml(markdownToHtml(markdownSource));
-    setEditorContent(html);
-    documents = documents.map((doc) => doc.id === activeDocumentId
-      ? { ...doc, content: html, markdownSource }
-      : doc);
+    if (inChapterMode && activeChapter) {
+      applyMarkdownSourceToDocs();
+      setEditorContent(buildChapterHtml(
+        scenesInChapter(activeChapter.id).map((doc) => doc.content),
+        publishOptions.sceneSeparator
+      ));
+    } else {
+      const html = cleanHtml(markdownToHtml(markdownSource));
+      setEditorContent(html);
+      documents = documents.map((doc) => doc.id === activeDocumentId
+        ? { ...doc, content: html, markdownSource }
+        : doc);
+    }
     markdownEditorMode = false;
     refreshCounts();
     lastEditorWordCount = wordCount;
@@ -3130,10 +3265,16 @@
 
   function handleMarkdownInput() {
     const previousWordCount = lastEditorWordCount;
-    const html = cleanHtml(markdownToHtml(markdownSource));
-    documents = documents.map((doc) => doc.id === activeDocumentId
-      ? { ...doc, content: html, markdownSource }
-      : doc);
+    if (inChapterMode) applyMarkdownSourceToDocs();
+    else {
+      const single = cleanHtml(markdownToHtml(markdownSource));
+      documents = documents.map((doc) => doc.id === activeDocumentId
+        ? { ...doc, content: single, markdownSource }
+        : doc);
+    }
+    const html = inChapterMode && activeChapter
+      ? buildChapterHtml(scenesInChapter(activeChapter.id).map((doc) => doc.content), publishOptions.sceneSeparator)
+      : cleanHtml(markdownToHtml(markdownSource));
     const text = htmlToPlainText(html, { rich: "omit" });
     wordCount = countWords(text);
     characterCount = text.replace(/\n/g, "").length;
@@ -3278,6 +3419,12 @@
 
   function handleEditorClick(event: MouseEvent) {
     const target = event.target;
+    const divider = target instanceof Element ? target.closest<HTMLElement>(".scene-break") : null;
+    if (divider && editor.contains(divider)) {
+      event.preventDefault();
+      placeCaretAfterDivider(divider);
+      return;
+    }
     const rich = target instanceof Element
       ? target.closest<HTMLElement>(".math-inline, .math-block, .mermaid-diagram, .calc-worksheet")
       : null;
@@ -3512,7 +3659,7 @@
     const view = markdownCodeEditor;
     if (!view) return;
     markdownStates.set(markdownStateKey, view.state);
-    markdownStateKey = `${activeProjectId}/${activeDocumentId}`;
+    markdownStateKey = markdownDocKey();
     const saved = markdownStates.get(markdownStateKey);
     if (saved && saved.doc.toString() === source) {
       view.setState(saved);
@@ -3951,12 +4098,23 @@
 
   function persistNow() {
     if (!editor) return;
-    const content = markdownEditorMode
-      ? cleanHtml(markdownToHtml(markdownSource))
-      : cleanHtml(editor.innerHTML);
-    documents = documents.map((doc) => doc.id === activeDocumentId
-      ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
-      : doc);
+    if (inChapterMode && activeChapter) {
+      if (markdownEditorMode) {
+        const mdSections = splitChapterMarkdown(markdownSource);
+        writeChapterSections(mdSections.map((section) => cleanHtml(markdownToHtml(section))), mdSections);
+      } else {
+        writeChapterSections(splitChapterHtml(cleanHtml(editor.innerHTML)));
+      }
+      chapters = chapters.map((chapter) => chapter.id === activeChapter.id ? { ...chapter, title } : chapter);
+      persistChapters();
+    } else {
+      const content = markdownEditorMode
+        ? cleanHtml(markdownToHtml(markdownSource))
+        : cleanHtml(editor.innerHTML);
+      documents = documents.map((doc) => doc.id === activeDocumentId
+        ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
+        : doc);
+    }
     commitPageState();
     try {
       persistProjectCollection();
@@ -3973,15 +4131,79 @@
     saveTimer = setTimeout(persistNow, 350);
   }
 
-  const activeComments = $derived(commentsForDocument(comments, activeDocumentId)
-    .filter((comment) => showResolvedComments || !comment.resolved)
-    .sort((a, b) => (commentPositions[a.id] ?? Infinity) - (commentPositions[b.id] ?? Infinity)
-      || a.createdAt - b.createdAt));
-  const resolvedCommentCount = $derived(commentsForDocument(comments, activeDocumentId)
+  const activeComments = $derived.by(() => {
+    const pool = showAllComments
+      ? comments.filter((comment) => {
+        const doc = documents.find((entry) => entry.id === comment.documentId);
+        return doc && !doc.trashed;
+      })
+      : comments.filter((comment) => commentDocs().some((doc) => doc.id === comment.documentId));
+    const visible = pool.filter((comment) => showResolvedComments || !comment.resolved);
+    if (!showAllComments) {
+      return visible.sort((a, b) => (commentPositions[a.id] ?? Infinity) - (commentPositions[b.id] ?? Infinity)
+        || a.createdAt - b.createdAt);
+    }
+    const chapterOrder = new Map(liveChapters.map((chapter, index) => [chapter.id, index]));
+    const docOrder = new Map(documents.map((doc, index) => [doc.id, index]));
+    const chapterOf = (comment: TextComment) => documents.find((doc) => doc.id === comment.documentId)?.chapterId;
+    return visible.sort((a, b) =>
+      (chapterOrder.get(chapterOf(a) ?? "") ?? liveChapters.length) - (chapterOrder.get(chapterOf(b) ?? "") ?? liveChapters.length)
+      || (docOrder.get(a.documentId) ?? 0) - (docOrder.get(b.documentId) ?? 0)
+      || (commentPositions[a.id] ?? Infinity) - (commentPositions[b.id] ?? Infinity)
+      || a.createdAt - b.createdAt);
+  });
+
+  /** Location label for a comment outside the current chapter. */
+  function commentLocation(comment: TextComment): string {
+    const doc = documents.find((entry) => entry.id === comment.documentId);
+    if (!doc) return "";
+    if (doc.space) return doc.space;
+    const chapter = doc.chapterId ? chapters.find((entry) => entry.id === doc.chapterId) : undefined;
+    const scene = doc.title || "Untitled scene";
+    return chapter ? `${chapterLabel(chapter)} · ${scene}` : scene;
+  }
+  const resolvedCommentCount = $derived(comments
+    .filter((comment) => commentDocs().some((doc) => doc.id === comment.documentId))
     .filter((comment) => comment.resolved).length);
 
-  // Draws the open comments of the current scene on top of the text, using the
-  // same highlight API as the wiki mentions, so the scene HTML stays untouched.
+  /** Scenes shown in the editor: the whole chapter, or one Wiki document. */
+  function commentDocs(): DocumentData[] {
+    if (inChapterMode && activeChapter) return scenesInChapter(activeChapter.id);
+    const doc = documents.find((entry) => entry.id === activeDocumentId);
+    return doc ? [doc] : [];
+  }
+
+  /**
+   * Cumulative comment-text offsets of each top-level section. Dividers
+   * contribute no text, so boundaries align scenes with documents in order.
+   */
+  function chapterSectionOffsets(): number[] {
+    if (!editor) return [];
+    const offsets: number[] = [];
+    const probe = document.createElement("div");
+    let total = 0;
+    for (const child of Array.from(editor.childNodes)) {
+      if (isSceneBreakElement(child)) continue;
+      probe.replaceChildren();
+      probe.append(child.cloneNode(true));
+      total += commentText(probe).length;
+      offsets.push(total);
+    }
+    return offsets;
+  }
+
+  function sceneIdAtOffset(offset: number): string | null {
+    const docs = commentDocs();
+    if (!inChapterMode) return activeDocumentId || null;
+    const boundaries = chapterSectionOffsets();
+    for (let index = 0; index < docs.length; index++) {
+      if (offset < (boundaries[index] ?? Infinity)) return docs[index].id;
+    }
+    return docs[docs.length - 1]?.id ?? null;
+  }
+
+  // Draws the open comments of the current chapter on top of the text, using
+  // the same highlight API as the wiki mentions, so the scene HTML stays untouched.
   function refreshCommentHighlights() {
     const registry = Reflect.get(window.CSS, "highlights") as {
       set: (name: string, highlight: unknown) => void;
@@ -3998,17 +4220,24 @@
       return;
     }
     const text = commentText(editor);
+    const docs = commentDocs();
+    const boundaries = inChapterMode ? chapterSectionOffsets() : [text.length];
     const positions: Record<string, number | null> = {};
     const spans: Array<{ comment: TextComment; start: number; end: number }> = [];
     const ranges: Range[] = [];
-    for (const comment of commentsForDocument(comments, activeDocumentId)) {
-      const found = locateAnchor(text, comment);
-      positions[comment.id] = found ? found.start : null;
-      if (!found || comment.resolved) continue;
-      spans.push({ comment, start: found.start, end: found.end });
-      const range = rangeFromOffsets(editor, found.start, found.end);
-      if (range) ranges.push(range);
-    }
+    docs.forEach((doc, index) => {
+      const base = index === 0 ? 0 : (boundaries[index - 1] ?? text.length);
+      const sectionText = text.slice(base, boundaries[index] ?? text.length);
+      for (const comment of commentsForDocument(comments, doc.id)) {
+        const found = locateAnchor(sectionText, comment);
+        const global = found ? { start: found.start + base, end: found.end + base } : null;
+        positions[comment.id] = global ? global.start : null;
+        if (!global || comment.resolved) continue;
+        spans.push({ comment, start: global.start, end: global.end });
+        const range = rangeFromOffsets(editor, global.start, global.end);
+        if (range) ranges.push(range);
+      }
+    });
     commentPositions = positions;
     commentSpans = spans;
     if (ranges.length > 0 && registry && HighlightConstructor) {
@@ -4258,11 +4487,15 @@
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     pendingAnchor = null;
+    pendingAnchorScene = null;
     if (editor && !markdownEditorMode) {
       const selection = window.getSelection();
       if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
         const offsets = offsetsFromRange(editor, selection.getRangeAt(0));
-        if (offsets) pendingAnchor = buildAnchor(commentText(editor), offsets.start, offsets.end);
+        if (offsets) {
+          pendingAnchor = buildAnchor(commentText(editor), offsets.start, offsets.end);
+          pendingAnchorScene = sceneIdAtOffset(offsets.start);
+        }
       }
     }
     commentDraft = "";
@@ -4283,23 +4516,38 @@
     }
     comments = [...comments, createComment({
       id: crypto.randomUUID(),
-      documentId: activeDocumentId,
+      documentId: pendingAnchorScene ?? activeDocumentId,
       anchor: pendingAnchor,
       body: commentDraft,
       author,
       now: Date.now()
     })];
     pendingAnchor = null;
+    pendingAnchorScene = null;
     commentDraft = "";
     persistNow();
   }
 
   function goToComment(comment: TextComment) {
     if (!editor || markdownEditorMode) return;
+    const sameChapter = inChapterMode && activeChapter
+      && documents.find((doc) => doc.id === comment.documentId)?.chapterId === activeChapter.id;
+    if (comment.documentId !== activeDocumentId && !sameChapter) {
+      const target = documents.find((doc) => doc.id === comment.documentId && !doc.trashed);
+      if (!target) return;
+      openSidebarDocument(target.id);
+      void tick().then(() => goToCommentInEditor(comment));
+      return;
+    }
+    goToCommentInEditor(comment);
+  }
+
+  function goToCommentInEditor(comment: TextComment) {
+    if (!editor || markdownEditorMode) return;
     const found = locateAnchor(commentText(editor), comment);
     const range = found ? rangeFromOffsets(editor, found.start, found.end) : null;
     if (!range) return;
-    commentsDialog.close();
+    if (commentsDialog?.open) commentsDialog.close();
     editor.focus();
     const selection = window.getSelection();
     selection?.removeAllRanges();
@@ -4317,7 +4565,21 @@
     persistNow();
   }
 
-  const activeSnapshots = $derived(snapshotsForDocument(snapshots, activeDocumentId));
+  /** Scenes a snapshot covers: the whole chapter, or one Wiki document. */
+  function snapshotDocs(): DocumentData[] {
+    if (inChapterMode && activeChapter) return scenesInChapter(activeChapter.id);
+    const doc = documents.find((entry) => entry.id === activeDocumentId);
+    return doc ? [doc] : [];
+  }
+
+  const activeSnapshots = $derived(snapshotDocs()
+    .flatMap((doc) => snapshotsForDocument(snapshots, doc.id))
+    .sort((a, b) => b.createdAt - a.createdAt));
+
+  function snapshotSceneTitle(snapshot: DocumentSnapshot): string {
+    if (!inChapterMode) return "";
+    return documents.find((doc) => doc.id === snapshot.documentId)?.title || "Untitled scene";
+  }
 
   function openSnapshots() {
     if (!activeDocumentId) return;
@@ -4332,21 +4594,28 @@
     event.preventDefault();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
-    const current = documents.find((doc) => doc.id === activeDocumentId);
-    if (!current) return;
-    snapshots = addSnapshot(snapshots, createSnapshot(current, {
-      id: crypto.randomUUID(),
-      now: Date.now(),
-      reason: "manual",
-      note: snapshotNote
-    }));
+    const docs = snapshotDocs();
+    if (docs.length === 0) return;
+    const now = Date.now();
+    for (const current of docs) {
+      snapshots = addSnapshot(snapshots, createSnapshot(current, {
+        id: crypto.randomUUID(),
+        now,
+        reason: "manual",
+        note: snapshotNote
+      }));
+    }
     snapshotNote = "";
     persistNow();
   }
 
   function restoreSnapshot(id: string) {
     const snapshot = snapshots.find((entry) => entry.id === id);
-    if (!snapshot || snapshot.documentId !== activeDocumentId) return;
+    if (!snapshot) return;
+    const inScope = inChapterMode && activeChapter
+      ? snapshotDocs().some((doc) => doc.id === snapshot.documentId)
+      : snapshot.documentId === activeDocumentId;
+    if (!inScope) return;
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const current = documents.find((doc) => doc.id === snapshot.documentId);
@@ -4363,13 +4632,23 @@
       const { markdownSource: _discarded, ...rest } = doc;
       return { ...rest, content: restored };
     });
-    setEditorContent(restored);
-    setMarkdownSource(htmlToMarkdown(restored));
+    if (inChapterMode && activeChapter) {
+      activeDocumentId = snapshot.documentId;
+      setEditorContent(buildChapterHtml(
+        scenesInChapter(activeChapter.id).map((doc) => doc.content),
+        publishOptions.sceneSeparator
+      ));
+      setMarkdownSource(chapterMarkdownSource());
+      scrollToScene(snapshot.documentId);
+    } else {
+      setEditorContent(restored);
+      setMarkdownSource(htmlToMarkdown(restored));
+    }
     refreshCounts();
     lastEditorWordCount = wordCount;
     snapshotPreviewId = null;
     persistNow();
-    snapshotsDialog.close();
+    if (snapshotsDialog?.open) snapshotsDialog.close();
   }
 
   function deleteSnapshot(id: string) {
@@ -4383,6 +4662,275 @@
     return snapshot.reason === "before-restore" ? `${when} (before a restore)` : when;
   }
 
+  function chapterMarkdownSource(): string {
+    if (!activeChapter) return "";
+    const docs = scenesInChapter(activeChapter.id);
+    if (docs.length > 0 && docs.every((doc) => typeof doc.markdownSource === "string")) {
+      return joinChapterMarkdown(docs.map((doc) => doc.markdownSource as string));
+    }
+    return joinChapterMarkdown(docs.map((doc) => htmlToMarkdown(doc.content)));
+  }
+
+  /**
+   * Writes chapter sections back to scene documents in order. Surplus
+   * sections fold into the last scene; scenes left without a section are
+   * emptied and moved to Trash; trashed scenes regaining a section are
+   * restored (undo of a merge).
+   */
+  function writeChapterSections(sections: string[], markdownSections?: string[]) {
+    const chapterId = activeChapter?.id;
+    if (!chapterId) return;
+    writeChapterSectionsFor(chapterId, sections, markdownSections);
+  }
+
+  function writeChapterSectionsFor(chapterId: string, sections: string[], markdownSections?: string[]) {
+    const live = documents.filter((doc) => doc.chapterId === chapterId && !doc.trashed);
+    if (live.length === 0) return;
+    const trashed = documents.filter((doc) => doc.chapterId === chapterId && doc.trashed);
+    const revived: DocumentData[] = [];
+    for (let index = live.length; index < sections.length; index++) {
+      const donor = trashed.find((doc) => !revived.some((entry) => entry.id === doc.id));
+      if (!donor) break;
+      revived.push(donor);
+    }
+    const targets = [...live, ...revived];
+    const merged = [...sections];
+    const mergedMarkdown = markdownSections ? [...markdownSections] : undefined;
+    while (merged.length > targets.length) {
+      const extra = merged.pop() as string;
+      merged[merged.length - 1] = `${merged[merged.length - 1]}${extra}`;
+      if (mergedMarkdown) {
+        const extraSource = mergedMarkdown.pop() as string;
+        mergedMarkdown[mergedMarkdown.length - 1] = `${mergedMarkdown[mergedMarkdown.length - 1]}\n\n${extraSource}`;
+      }
+    }
+    const updates = new Map<string, { content: string; markdownSource: string | undefined }>();
+    targets.forEach((target, index) => {
+      // Scenes left without a section are emptied and trashed below.
+      if (index >= merged.length) return;
+      updates.set(target.id, {
+        content: cleanHtml(merged[index]),
+        markdownSource: mergedMarkdown ? mergedMarkdown[index] ?? "" : undefined
+      });
+    });
+    documents = documents.map((doc) => {
+      if (doc.chapterId !== chapterId) return doc;
+      const update = updates.get(doc.id);
+      if (update) {
+        if (mergedMarkdown) {
+          return { ...doc, content: update.content, markdownSource: update.markdownSource, trashed: false };
+        }
+        if (doc.markdownSource === undefined && !doc.trashed) return { ...doc, content: update.content };
+        const { markdownSource: _dropped, ...rest } = doc;
+        return { ...rest, content: update.content, trashed: false };
+      }
+      if (!doc.trashed) {
+        const { markdownSource: _dropped, ...rest } = doc;
+        return { ...rest, content: "<p><br></p>", trashed: true };
+      }
+      return doc;
+    });
+  }
+
+  function scrollToScene(docId: string) {
+    const docs = activeChapter ? scenesInChapter(activeChapter.id) : [];
+    const index = docs.findIndex((doc) => doc.id === docId);
+    void tick().then(() => {
+      if (!editor || index < 0) return;
+      if (index === 0) {
+        editor.firstElementChild?.scrollIntoView({ block: "center" });
+        return;
+      }
+      editor.querySelectorAll(".scene-break")[index - 1]?.scrollIntoView({ block: "center" });
+    });
+  }
+
+  function editorTopBlock(node: Node | null): HTMLElement | null {
+    let current = node instanceof Element ? node : node?.parentElement ?? null;
+    while (current && current.parentElement !== editor) current = current.parentElement as HTMLElement | null;
+    return current instanceof HTMLElement ? current : null;
+  }
+
+  // WebKit (the desktop shell) splits paragraphs into DIVs on Enter while
+  // Blink uses Ps, so any empty plain block can start a new scene.
+  function isEmptySplittableBlock(element: HTMLElement | null): boolean {
+    if (!element) return false;
+    if (element.tagName !== "P" && element.tagName !== "DIV") return false;
+    if (element.classList.contains("scene-break")) return false;
+    if (richKindOf(element)) return false;
+    return (element.textContent ?? "").trim() === ""
+      && element.querySelector("img, svg, video, audio, canvas") === null;
+  }
+
+  function significantSibling(node: Node, direction: "next" | "previous"): Node | null {
+    let sibling = direction === "next" ? node.nextSibling : node.previousSibling;
+    while (sibling && sibling.nodeType === Node.TEXT_NODE && !(sibling.textContent ?? "").trim()) {
+      sibling = direction === "next" ? sibling.nextSibling : sibling.previousSibling;
+    }
+    return sibling;
+  }
+
+  function sectionIndexOf(block: HTMLElement): number {
+    let index = 0;
+    for (let sibling = block.previousSibling; sibling; sibling = sibling.previousSibling) {
+      if (isSceneBreakElement(sibling)) index++;
+    }
+    return index;
+  }
+
+  function caretAtBlockEdge(anchorNode: Node | null, offset: number, block: HTMLElement, edge: "start" | "end"): boolean {
+    if (!anchorNode) return false;
+    try {
+      const range = document.createRange();
+      if (edge === "start") {
+        range.setStart(block, 0);
+        range.setEnd(anchorNode, offset);
+      } else {
+        range.setStart(anchorNode, offset);
+        range.setEnd(block, block.childNodes.length);
+      }
+      return range.toString() === "";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Enter on an empty paragraph starts a new scene: the paragraph becomes a
+   * divider and the content after it moves into the new scene. Never leads
+   * the chapter with a divider.
+   */
+  function handleChapterEnter(event: KeyboardEvent): boolean {
+    if (!inChapterMode || !activeChapter || !editor || event.isComposing) return false;
+    const selection = window.getSelection();
+    if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return false;
+    const block = editorTopBlock(selection.anchorNode);
+    if (!isEmptySplittableBlock(block)) return false;
+    const sectionIndex = sectionIndexOf(block as HTMLElement);
+    if (sectionIndex === 0 && !significantSibling(block as HTMLElement, "previous")) return false;
+    event.preventDefault();
+    const docs = scenesInChapter(activeChapter.id);
+    const next: DocumentData = {
+      id: crypto.randomUUID(),
+      title: "Untitled scene",
+      content: "<p><br></p>",
+      chapterId: activeChapter.id
+    };
+    const anchorId = docs[sectionIndex]?.id;
+    const at = anchorId ? documents.findIndex((doc) => doc.id === anchorId) + 1 : documents.length;
+    documents = [...documents.slice(0, at), next, ...documents.slice(at)];
+    activeDocumentId = next.id;
+    const dividerTemplate = document.createElement("div");
+    dividerTemplate.innerHTML = sceneBreakHtml(publishOptions.sceneSeparator);
+    const divider = dividerTemplate.firstElementChild as HTMLElement;
+    (block as HTMLElement).replaceWith(divider);
+    let target = significantSibling(divider, "next");
+    let caretHost: HTMLElement;
+    if (target instanceof HTMLElement && !isSceneBreakElement(target)) {
+      caretHost = target;
+    } else {
+      caretHost = document.createElement("p");
+      caretHost.append(document.createElement("br"));
+      divider.after(caretHost);
+    }
+    const range = document.createRange();
+    range.selectNodeContents(caretHost);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    editor.focus();
+    refreshCounts();
+    persist();
+    scheduleHarperLint();
+    refreshWikiMentionHighlights();
+    return true;
+  }
+
+  /**
+   * Backspace/Delete against a divider removes it and merges the two scenes;
+   * the emptied scene is moved to Trash on save (recoverable).
+   */
+  function handleChapterBoundaryDelete(event: KeyboardEvent, forward: boolean): boolean {
+    if (!inChapterMode || !activeChapter || !editor || event.isComposing) return false;
+    const selection = window.getSelection();
+    if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return false;
+    const block = editorTopBlock(selection.anchorNode);
+    if (!block || isSceneBreakElement(block)) return false;
+    const edge = forward ? "end" : "start";
+    if (!caretAtBlockEdge(selection.anchorNode, selection.anchorOffset, block, edge)) return false;
+    const neighbor = significantSibling(block, forward ? "next" : "previous");
+    // Only merge at section edges: the adjacent block must be a divider,
+    // otherwise the browser merges paragraphs natively within the section.
+    if (!isSceneBreakElement(neighbor)) return false;
+    event.preventDefault();
+    (neighbor as HTMLElement).remove();
+    refreshCounts();
+    persist();
+    scheduleHarperLint();
+    return true;
+  }
+
+  /** Clicking a divider drops the caret into the following section. */
+  function placeCaretAfterDivider(divider: HTMLElement) {
+    if (!editor) return;
+    let target = significantSibling(divider, "next");
+    if (!(target instanceof HTMLElement) || isSceneBreakElement(target)) {
+      const paragraph = document.createElement("p");
+      paragraph.append(document.createElement("br"));
+      divider.after(paragraph);
+      target = paragraph;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.focus();
+  }
+
+  /**
+   * Re-renders divider glyphs when the publish separator changes, without
+   * touching the caret or rewriting text.
+   */
+  function refreshDividerGlyphs() {
+    if (!editor || !inChapterMode) return;
+    const template = document.createElement("div");
+    template.innerHTML = sceneBreakHtml(publishOptions.sceneSeparator);
+    const fresh = template.firstElementChild as HTMLElement | null;
+    if (!fresh) return;
+    for (const divider of Array.from(editor.querySelectorAll(".scene-break"))) {
+      if (divider.isEqualNode(fresh)) continue;
+      divider.className = fresh.className;
+      divider.replaceChildren(...Array.from(fresh.childNodes).map((node) => node.cloneNode(true)));
+    }
+  }
+
+  $effect(() => {
+    void publishOptions.sceneSeparator;
+    refreshDividerGlyphs();
+  });
+
+  /** Renders a whole chapter for the anchor scene. Returns false for Wiki docs. */
+  function renderChapter(anchorId: string, focusEditor = false): boolean {
+    const anchor = documents.find((doc) => doc.id === anchorId);
+    const chapter = anchor?.chapterId ? chapters.find((entry) => entry.id === anchor.chapterId) : undefined;
+    if (!chapter) return false;
+    activeDocumentId = anchorId;
+    title = chapter.title;
+    clearRichTextFade();
+    setEditorContent(buildChapterHtml(
+      scenesInChapter(chapter.id).map((doc) => doc.content),
+      publishOptions.sceneSeparator
+    ));
+    setMarkdownSource(chapterMarkdownSource());
+    refreshCounts();
+    lastEditorWordCount = wordCount;
+    scrollToScene(anchorId);
+    if (focusEditor) editor?.focus();
+    return true;
+  }
+
   function openDocument(id: string) {
     if (id === activeDocumentId) return;
     if (saveTimer) clearTimeout(saveTimer);
@@ -4390,6 +4938,7 @@
     const next = documents.find((doc) => doc.id === id && !doc.trashed);
     if (!next) return;
     selectEditorImage(null);
+    if (renderChapter(next.id)) return;
     activeDocumentId = next.id;
     title = next.title;
     clearRichTextFade();
@@ -4478,12 +5027,28 @@
   function applyProjectReplace(nextDocuments: DocumentData[], changed: ReplaceResult["changed"]) {
     if (saveTimer) clearTimeout(saveTimer);
     documents = nextDocuments;
-    const current = nextDocuments.find((doc) => doc.id === activeDocumentId);
-    if (current && changed.some((entry) => entry.id === current.id)) {
+    const changedIds = new Set(changed.map((entry) => entry.id));
+    const touched = inChapterMode && activeChapter
+      ? scenesInChapter(activeChapter.id).some((doc) => changedIds.has(doc.id))
+      : changedIds.has(activeDocumentId);
+    if (touched) {
       // Refresh the open layout like a snapshot restore does, from the new HTML.
-      const content = cleanHtml(current.content);
-      setEditorContent(content);
-      setMarkdownSource(htmlToMarkdown(content));
+      if (inChapterMode && activeChapter) {
+        setEditorContent(buildChapterHtml(
+          scenesInChapter(activeChapter.id).map((doc) => doc.content),
+          publishOptions.sceneSeparator
+        ));
+        setMarkdownSource(chapterMarkdownSource());
+      } else {
+        const current = nextDocuments.find((doc) => doc.id === activeDocumentId);
+        if (!current) {
+          persist();
+          return;
+        }
+        const content = cleanHtml(current.content);
+        setEditorContent(content);
+        setMarkdownSource(htmlToMarkdown(content));
+      }
       refreshCounts();
       lastEditorWordCount = wordCount;
     }
@@ -4504,15 +5069,8 @@
       chapterId
     };
     documents = [...documents, next];
-    activeDocumentId = next.id;
-    title = next.title;
-    clearRichTextFade();
-    setEditorContent(next.content);
-    setMarkdownSource("");
-    refreshCounts();
-    lastEditorWordCount = wordCount;
+    renderChapter(next.id, options.focusEditor !== false);
     persist();
-    if (options.focusEditor !== false) editor.focus();
     return next;
   }
 
@@ -4559,6 +5117,29 @@
   function cancelChapterRename() {
     editingChapterId = null;
     chapterNameDraft = "";
+  }
+
+  async function startSceneRename(doc: DocumentData) {
+    editingSceneId = doc.id;
+    sceneTitleDraft = doc.title || "Untitled scene";
+    await tick();
+    sceneNameInput?.focus();
+    sceneNameInput?.select();
+  }
+
+  function saveSceneRename(id: string) {
+    if (editingSceneId !== id) return;
+    const nextTitle = sceneTitleDraft.trim();
+    if (nextTitle) {
+      documents = documents.map((doc) => doc.id === id ? { ...doc, title: nextTitle } : doc);
+      persist();
+    }
+    editingSceneId = null;
+  }
+
+  function cancelSceneRename() {
+    editingSceneId = null;
+    sceneTitleDraft = "";
   }
 
   function moveChapter(id: string, offset: number) {
@@ -5605,8 +6186,20 @@
 
   /** Applies an edit made in a reference tile to its document and saves it. */
   function updateTileDocument(id: string, patch: TileDocumentPatch) {
+    const doc = documents.find((entry) => entry.id === id);
+    if (patch.content !== undefined && doc?.chapterId
+      && chapters.some((chapter) => chapter.id === doc.chapterId)) {
+      writeChapterSectionsFor(doc.chapterId, splitChapterHtml(cleanHtml(patch.content)));
+      persist();
+      return;
+    }
     documents = patchTileDocument(documents, id, patch);
     persist();
+  }
+
+  function updateTileChapterTitle(chapterId: string, value: string) {
+    chapters = chapters.map((chapter) => chapter.id === chapterId ? { ...chapter, title: value } : chapter);
+    persistChapters();
   }
 
   function openBesideTarget(target: string) {
@@ -5648,6 +6241,460 @@
   function resetTargetDrops() {
     gridDropActive = false;
     paneDropActive = null;
+    draggedSceneId = null;
+    sceneDropTarget = null;
+    sceneDropChapterId = null;
+    draggedWiki = null;
+    wikiDropTarget = null;
+    wikiDropFolderId = null;
+    wikiDropRoot = false;
+  }
+
+  const WIKI_DRAG_TYPE = "application/x-prosecraft-wiki";
+  type WikiDragKind = "folder" | "document" | "file" | "link";
+  type WikiDragSource = { kind: WikiDragKind; id: string };
+  let draggedWiki = $state<WikiDragSource | null>(null);
+  let wikiDropTarget = $state<{ key: string; after: boolean } | null>(null);
+  let wikiDropFolderId = $state<string | null>(null);
+  let wikiDropRoot = $state(false);
+
+  function wikiRowKey(kind: string, id: string) {
+    return `${kind}:${id}`;
+  }
+
+  // Wiki rows are draggable twice: the split target opens them beside the
+  // editor, while the wiki payload reorders the tree.
+  function startWikiDrag(event: DragEvent, kind: WikiDragKind, id: string) {
+    if (event.target instanceof HTMLElement && event.target.closest("input, select, textarea")) {
+      event.preventDefault();
+      return;
+    }
+    const transfer = event.dataTransfer;
+    if (!transfer) return;
+    transfer.setData(WIKI_DRAG_TYPE, JSON.stringify({ kind, id }));
+    transfer.effectAllowed = "copyMove";
+    draggedWiki = { kind, id };
+  }
+
+  function hasWikiDrag(event: DragEvent): boolean {
+    return event.dataTransfer?.types.includes(WIKI_DRAG_TYPE) ?? false;
+  }
+
+  function wikiDragSource(event: DragEvent): WikiDragSource | null {
+    try {
+      const raw = event.dataTransfer?.getData(WIKI_DRAG_TYPE) ?? "";
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<WikiDragSource>;
+        if (parsed && typeof parsed.id === "string"
+          && (parsed.kind === "folder" || parsed.kind === "document"
+            || parsed.kind === "file" || parsed.kind === "link")) {
+          return { kind: parsed.kind, id: parsed.id };
+        }
+      }
+    } catch {
+      // Fall through to the in-progress drag state.
+    }
+    return draggedWiki;
+  }
+
+  function wikiParentOf(kind: WikiDragKind, id: string): string | null | undefined {
+    if (kind === "folder") return researchFolders.find((folder) => folder.id === id)?.parentId ?? null;
+    if (kind === "document") {
+      const doc = documents.find((entry) => entry.id === id);
+      if (!doc || doc.space !== "Wiki") return undefined;
+      return doc.folderId ?? null;
+    }
+    return researchItems.find((item) => item.id === id)?.folderId ?? null;
+  }
+
+  function isFolderDescendant(folderId: string, ancestorId: string): boolean {
+    let current: string | null | undefined = researchFolders.find((folder) => folder.id === folderId)?.parentId;
+    while (current) {
+      if (current === ancestorId) return true;
+      current = researchFolders.find((folder) => folder.id === current)?.parentId;
+    }
+    return false;
+  }
+
+  function arrayMoveTo<T extends { id: string }>(list: T[], dragId: string, targetId: string, after: boolean): T[] {
+    if (dragId === targetId) return list;
+    const dragged = list.find((entry) => entry.id === dragId);
+    const rest = list.filter((entry) => entry.id !== dragId);
+    const at = rest.findIndex((entry) => entry.id === targetId);
+    if (!dragged || at < 0) return list;
+    const insertAt = after ? at + 1 : at;
+    return [...rest.slice(0, insertAt), dragged, ...rest.slice(insertAt)];
+  }
+
+  /** Drops an item into a folder (or the root), appended to that group. */
+  function moveWikiIntoFolder(source: WikiDragSource, folderId: string | null) {
+    if (folderId && !researchFolders.some((folder) => folder.id === folderId)) return;
+    if (source.kind === "folder") {
+      const folder = researchFolders.find((entry) => entry.id === source.id);
+      if (!folder || folder.parentId === folderId) {
+        if (folder && folderId) expandResearchFolderPath(folderId);
+        return;
+      }
+      if (folderId && (folderId === source.id || isFolderDescendant(folderId, source.id))) return;
+      researchFolders = [
+        ...researchFolders.filter((entry) => entry.id !== source.id),
+        { ...folder, parentId: folderId }
+      ];
+      if (folderId) expandResearchFolderPath(folderId);
+      persist();
+      return;
+    }
+    if (source.kind === "document") {
+      const doc = documents.find((entry) => entry.id === source.id);
+      if (!doc || doc.space !== "Wiki") return;
+      const moved = folderId
+        ? { ...doc, folderId }
+        : (() => {
+          const { folderId: _folderId, ...withoutFolder } = doc;
+          return withoutFolder;
+        })();
+      documents = [...documents.filter((entry) => entry.id !== source.id), moved];
+      if (folderId) expandResearchFolderPath(folderId);
+      persist();
+      return;
+    }
+    const item = researchItems.find((entry) => entry.id === source.id);
+    if (!item) return;
+    researchItems = [...researchItems.filter((entry) => entry.id !== source.id), { ...item, folderId }];
+    if (folderId) expandResearchFolderPath(folderId);
+    persist();
+  }
+
+  /**
+   * Drops onto a row: adopts the row's parent and orders within it. Folders
+   * reorder among folders, pages and files/links within their own lists.
+   */
+  function moveWikiToRow(source: WikiDragSource, targetKind: WikiDragKind, targetId: string, after: boolean) {
+    if (source.id === targetId) return;
+    if (source.kind === "folder" && targetKind === "folder") {
+      const target = researchFolders.find((folder) => folder.id === targetId);
+      const folder = researchFolders.find((entry) => entry.id === source.id);
+      if (!target || !folder) return;
+      researchFolders = arrayMoveTo(
+        researchFolders.map((entry) => entry.id === source.id ? { ...entry, parentId: target.parentId } : entry),
+        source.id,
+        targetId,
+        after
+      );
+      persist();
+      return;
+    }
+    if (source.kind === "folder") {
+      // Folders land at the end of their new sibling group.
+      const parent = wikiParentOf(targetKind, targetId);
+      if (parent === undefined) return;
+      moveWikiIntoFolder(source, parent);
+      return;
+    }
+    if (targetKind === "folder") {
+      const folder = researchFolders.find((entry) => entry.id === targetId);
+      if (!folder) return;
+      moveWikiIntoFolder(source, folder.parentId);
+      return;
+    }
+    const parent = wikiParentOf(targetKind, targetId);
+    if (parent === undefined) return;
+    if (source.kind === "document") {
+      const doc = documents.find((entry) => entry.id === source.id);
+      if (!doc || doc.space !== "Wiki") return;
+      const withParent = documents.map((entry) => {
+        if (entry.id !== source.id) return entry;
+        if (parent) return { ...entry, folderId: parent };
+        const { folderId: _folderId, ...withoutFolder } = entry;
+        return withoutFolder;
+      });
+      documents = arrayMoveTo(withParent, source.id, targetId, after);
+      persist();
+      return;
+    }
+    const item = researchItems.find((entry) => entry.id === source.id);
+    if (!item || (source.kind !== item.kind)) return;
+    researchItems = arrayMoveTo(
+      researchItems.map((entry) => entry.id === source.id ? { ...entry, folderId: parent } : entry),
+      source.id,
+      targetId,
+      after
+    );
+    persist();
+  }
+
+  function handleWikiRowDragOver(event: DragEvent, kind: WikiDragKind, id: string) {
+    if (!hasWikiDrag(event) || !draggedWiki || draggedWiki.id === id) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    if (kind === "folder") {
+      const row = event.currentTarget as HTMLElement;
+      const bounds = row.getBoundingClientRect();
+      const ratio = (event.clientY - bounds.top) / Math.max(1, bounds.height);
+      const intoFolder = draggedWiki.kind !== "folder" || (ratio > 1 / 3 && ratio < 2 / 3);
+      if (intoFolder) {
+        if (draggedWiki.kind === "folder" && isFolderDescendant(id, draggedWiki.id)) {
+          wikiDropFolderId = null;
+          wikiDropTarget = null;
+          wikiDropRoot = false;
+          return;
+        }
+        wikiDropFolderId = id;
+        wikiDropTarget = null;
+        wikiDropRoot = false;
+        return;
+      }
+    }
+    wikiDropFolderId = null;
+    wikiDropRoot = false;
+    const row = event.currentTarget as HTMLElement;
+    const bounds = row.getBoundingClientRect();
+    wikiDropTarget = { key: wikiRowKey(kind, id), after: event.clientY >= bounds.top + bounds.height / 2 };
+  }
+
+  function handleWikiRowDrop(event: DragEvent, kind: WikiDragKind, id: string) {
+    if (!hasWikiDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = wikiDragSource(event);
+    const intoFolder = wikiDropFolderId === id;
+    const after = wikiDropTarget?.key === wikiRowKey(kind, id) ? wikiDropTarget.after : false;
+    resetTargetDrops();
+    if (!source) return;
+    if (intoFolder) {
+      moveWikiIntoFolder(source, id);
+      return;
+    }
+    moveWikiToRow(source, kind, id, after);
+  }
+
+  function handleWikiRowDragLeave(event: DragEvent, kind: WikiDragKind, id: string) {
+    if (!hasWikiDrag(event) || !targetDragLeaves(event)) return;
+    if (wikiDropTarget?.key === wikiRowKey(kind, id)) wikiDropTarget = null;
+    if (wikiDropFolderId === id) wikiDropFolderId = null;
+  }
+
+  function handleWikiRootDragOver(event: DragEvent) {
+    if (!hasWikiDrag(event) || !draggedWiki) return;
+    if (event.target instanceof Element
+      && event.target.closest(".note-folder-row, .note-document-row")) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    wikiDropFolderId = null;
+    wikiDropTarget = null;
+    wikiDropRoot = true;
+  }
+
+  function handleWikiRootDrop(event: DragEvent) {
+    if (!hasWikiDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = wikiDragSource(event);
+    resetTargetDrops();
+    if (source) moveWikiIntoFolder(source, null);
+  }
+
+  function handleWikiRootDragLeave(event: DragEvent) {
+    if (!hasWikiDrag(event) || !targetDragLeaves(event)) return;
+    wikiDropRoot = false;
+  }
+
+  const SCENE_DRAG_TYPE = "application/x-prosecraft-scene";
+
+  function scenesInChapter(chapterId: string): DocumentData[] {
+    return documents.filter((doc) => doc.chapterId === chapterId && !doc.trashed);
+  }
+
+  // Scene rows are draggable twice: the split target opens them beside the
+  // editor, while the scene id reorders them in the sidebar.
+  function startSceneDrag(event: DragEvent, id: string) {
+    startTargetDrag(event, docTarget(id));
+    const transfer = event.dataTransfer;
+    if (!transfer) return;
+    transfer.setData(SCENE_DRAG_TYPE, id);
+    transfer.effectAllowed = "copyMove";
+    draggedSceneId = id;
+  }
+
+  function hasSceneDrag(event: DragEvent): boolean {
+    return event.dataTransfer?.types.includes(SCENE_DRAG_TYPE) ?? false;
+  }
+
+  function sceneDragId(event: DragEvent): string {
+    return event.dataTransfer?.getData(SCENE_DRAG_TYPE) ?? "";
+  }
+
+  /**
+   * Re-renders the chapter editor from documents after sidebar structure
+   * edits (trash, restore, moves). No-ops outside chapter mode.
+   */
+  function refreshChapterView(scrollToId?: string | null) {
+    if (!inChapterMode || !activeChapter) return;
+    if (markdownEditorMode) {
+      setMarkdownSource(chapterMarkdownSource());
+      return;
+    }
+    setEditorContent(buildChapterHtml(
+      scenesInChapter(activeChapter.id).map((doc) => doc.content),
+      publishOptions.sceneSeparator
+    ));
+    refreshCounts();
+    if (scrollToId) scrollToScene(scrollToId);
+  }
+
+  /**
+   * Surgically removes one scene's section and divider from the live editor,
+   * preserving caret and undo. The caller updates documents afterwards.
+   */
+  function removeEditorSection(docId: string): boolean {
+    if (!editor || !inChapterMode || !activeChapter || markdownEditorMode) return false;
+    const docs = scenesInChapter(activeChapter.id);
+    const index = docs.findIndex((doc) => doc.id === docId);
+    if (index < 0) return false;
+    const breaks = Array.from(editor.querySelectorAll(".scene-break"));
+    const start = index === 0 ? editor.firstChild : breaks[index - 1]?.nextSibling ?? null;
+    const end = breaks[index] ?? null;
+    if (!start) return false;
+    const selection = window.getSelection();
+    const top = selection ? editorTopBlock(selection.anchorNode) : null;
+    let node: ChildNode | null = start;
+    let caretInside = false;
+    while (node && node !== end) {
+      const next: ChildNode | null = node.nextSibling;
+      if (node === top) caretInside = true;
+      node.remove();
+      node = next;
+    }
+    if (caretInside && selection) {
+      let host: Node | null = end;
+      while (host && ((host.nodeType === Node.TEXT_NODE && !(host.textContent ?? "").trim())
+        || isSceneBreakElement(host))) {
+        host = host.nextSibling;
+      }
+      const range = document.createRange();
+      if (host) {
+        range.selectNodeContents(host);
+        range.collapse(true);
+      } else if (editor.lastChild) {
+        range.selectNodeContents(editor.lastChild);
+        range.collapse(false);
+      } else {
+        return true;
+      }
+      selection.removeAllRanges();
+      selection.addRange(range);
+      editor.focus();
+    }
+    refreshCounts();
+    return true;
+  }
+
+  function moveScene(id: string, offset: number) {
+    const scene = documents.find((doc) => doc.id === id);
+    if (!scene?.chapterId) return;
+    const list = scenesInChapter(scene.chapterId);
+    const index = list.findIndex((doc) => doc.id === id);
+    const targetIndex = index + offset;
+    if (index < 0 || targetIndex < 0 || targetIndex >= list.length) return;
+    const next = [...documents];
+    const from = next.findIndex((doc) => doc.id === list[index].id);
+    const to = next.findIndex((doc) => doc.id === list[targetIndex].id);
+    [next[from], next[to]] = [next[to], next[from]];
+    documents = next;
+    if (activeChapter && scene.chapterId === activeChapter.id) refreshChapterView(id);
+    persist();
+  }
+
+  function moveSceneToPosition(sceneId: string, targetSceneId: string, after: boolean) {
+    if (sceneId === targetSceneId) return;
+    const scene = documents.find((doc) => doc.id === sceneId);
+    const target = documents.find((doc) => doc.id === targetSceneId);
+    if (!scene || !target?.chapterId) return;
+    const fromChapter = scene.chapterId;
+    const without = documents.filter((doc) => doc.id !== sceneId);
+    const targetIndex = without.findIndex((doc) => doc.id === targetSceneId);
+    if (targetIndex < 0) return;
+    const moved = scene.chapterId === target.chapterId ? scene : { ...scene, chapterId: target.chapterId };
+    const insertAt = after ? targetIndex + 1 : targetIndex;
+    documents = [...without.slice(0, insertAt), moved, ...without.slice(insertAt)];
+    if (activeChapter && (fromChapter === activeChapter.id || target.chapterId === activeChapter.id)) {
+      refreshChapterView(sceneId);
+    }
+    persist();
+  }
+
+  function moveSceneToChapterEnd(sceneId: string, chapterId: string) {
+    const scene = documents.find((doc) => doc.id === sceneId);
+    if (!scene || !liveChapters.some((chapter) => chapter.id === chapterId)) return;
+    if (scene.chapterId === chapterId) {
+      const list = scenesInChapter(chapterId);
+      if (list.length > 0 && list[list.length - 1].id !== sceneId) {
+        moveSceneToPosition(sceneId, list[list.length - 1].id, true);
+      }
+      return;
+    }
+    const fromChapter = scene.chapterId;
+    const without = documents.filter((doc) => doc.id !== sceneId);
+    let insertAt = without.length;
+    for (let index = without.length - 1; index >= 0; index--) {
+      if (without[index].chapterId === chapterId) {
+        insertAt = index + 1;
+        break;
+      }
+    }
+    documents = [...without.slice(0, insertAt), { ...scene, chapterId }, ...without.slice(insertAt)];
+    if (activeChapter && (fromChapter === activeChapter.id || chapterId === activeChapter.id)) {
+      refreshChapterView(sceneId);
+    }
+    persist();
+  }
+
+  function handleSceneDragOver(event: DragEvent, id: string) {
+    if (!hasSceneDrag(event) || !draggedSceneId || draggedSceneId === id) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const row = event.currentTarget as HTMLElement;
+    const bounds = row.getBoundingClientRect();
+    sceneDropTarget = { id, after: event.clientY >= bounds.top + bounds.height / 2 };
+    sceneDropChapterId = null;
+  }
+
+  function handleSceneDrop(event: DragEvent, id: string) {
+    if (!hasSceneDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const sceneId = sceneDragId(event) || draggedSceneId;
+    const after = sceneDropTarget?.id === id ? sceneDropTarget.after : false;
+    resetTargetDrops();
+    if (sceneId) moveSceneToPosition(sceneId, id, after);
+  }
+
+  function handleSceneDragLeave(event: DragEvent, id: string) {
+    if (!hasSceneDrag(event) || !targetDragLeaves(event)) return;
+    if (sceneDropTarget?.id === id) sceneDropTarget = null;
+  }
+
+  function handleChapterSceneDragOver(event: DragEvent, chapterId: string) {
+    if (!hasSceneDrag(event) || !draggedSceneId) return;
+    if (event.target instanceof Element && event.target.closest(".scene-row")) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    sceneDropChapterId = chapterId;
+    sceneDropTarget = null;
+  }
+
+  function handleChapterSceneDrop(event: DragEvent, chapterId: string) {
+    if (!hasSceneDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const sceneId = sceneDragId(event) || draggedSceneId;
+    resetTargetDrops();
+    if (sceneId) moveSceneToChapterEnd(sceneId, chapterId);
+  }
+
+  function handleChapterSceneDragLeave(event: DragEvent, chapterId: string) {
+    if (!hasSceneDrag(event) || !targetDragLeaves(event)) return;
+    if (sceneDropChapterId === chapterId) sceneDropChapterId = null;
   }
 
   function handleGridDragEnter(event: DragEvent) {
@@ -5889,14 +6936,12 @@
     }
   }
 
-  function toggleChapter(id: string) {
-    chapters = chapters.map((chapter) => chapter.id === id
-      ? { ...chapter, expanded: !chapter.expanded }
-      : chapter);
-    persistChapters();
-  }
-
   function moveToTrash(id: string) {
+    const target = documents.find((doc) => doc.id === id);
+    const inActiveChapter = !!target?.chapterId && inChapterMode
+      && activeChapter?.id === target.chapterId && id !== activeDocumentId;
+    // Remove the section first so the documents below still line up with it.
+    if (inActiveChapter && !markdownEditorMode) removeEditorSection(id);
     documents = documents.map((doc) => doc.id === id ? { ...doc, trashed: true } : doc);
     if (activeDocumentId === id) {
       const next = documents.find((doc) => !doc.trashed);
@@ -5910,6 +6955,8 @@
         setMarkdownSource("");
         refreshCounts();
       }
+    } else if (inActiveChapter && markdownEditorMode) {
+      setMarkdownSource(chapterMarkdownSource());
     }
     persist();
   }
@@ -5924,6 +6971,9 @@
       return;
     }
     documents = documents.map((doc) => doc.id === id ? { ...doc, trashed: false } : doc);
+    if (inChapterMode && activeChapter && document?.chapterId === activeChapter.id) {
+      refreshChapterView(id);
+    }
     persist();
   }
 
@@ -6100,10 +7150,11 @@
         return;
       }
     }
-    if (event.key === "Escape" && (openRowMenu || openLabelMenu)) {
+    if (event.key === "Escape" && (openRowMenu || openLabelMenu || contextMenu)) {
       event.preventDefault();
       openRowMenu = null;
       closeLabelMenu(true);
+      closeContextMenu();
       return;
     }
     if (event.key === "Escape" && mobileDrawerOpen) {
@@ -6148,8 +7199,10 @@
       recordFieldEdit(editor, cleanHtml(editor.innerHTML), encodeSelection(editor));
     }
     const previousWordCount = lastEditorWordCount;
+    const chapterId = inChapterMode ? activeChapter?.id : undefined;
     documents = documents.map((doc) => {
-      if (doc.id !== activeDocumentId || doc.markdownSource === undefined) return doc;
+      if (doc.markdownSource === undefined) return doc;
+      if (chapterId ? doc.chapterId !== chapterId : doc.id !== activeDocumentId) return doc;
       const { markdownSource: _markdownSource, ...withoutMarkdownSource } = doc;
       return withoutMarkdownSource;
     });
@@ -6196,6 +7249,7 @@
   }
 
   function bodyUndoKey() {
+    if (inChapterMode && activeChapter) return `${activeProjectId}/body:chapter:${activeChapter.id}`;
     return `${activeProjectId}/body:${activeDocumentId}`;
   }
 
@@ -6216,7 +7270,8 @@
   }
 
   function currentUndoPage() {
-    const page = workspaceView === "writing" ? `writing:${activeDocumentId}` : workspaceView;
+    const scope = inChapterMode && activeChapter ? `chapter:${activeChapter.id}` : activeDocumentId;
+    const page = workspaceView === "writing" ? `writing:${scope}` : workspaceView;
     return `${activeProjectId}/${page}`;
   }
 
@@ -6508,6 +7563,7 @@
       const savedScale = Number(localStorage.getItem(scaleStorageKey));
       if ([80, 90, 100, 110, 120, 130, 140].includes(savedScale)) editorScale = savedScale;
       markdownEditorEnabled = localStorage.getItem(markdownEditorStorageKey) === "true";
+      timelineEnabled = localStorage.getItem(timelineStorageKey) === "true";
       typewriterMode = localStorage.getItem(typewriterStorageKey) === "true";
       fadeOtherParagraphs = localStorage.getItem(fadeParagraphsStorageKey) === "true";
       zenMode = localStorage.getItem(zenModeStorageKey) === "true";
@@ -6662,9 +7718,11 @@
           ?? documents.find((doc) => !doc.trashed);
         if (active) {
           activeDocumentId = active.id;
-          title = active.title;
-          setEditorContent(active.content);
-          setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+          if (!renderChapter(active.id)) {
+            title = active.title;
+            setEditorContent(active.content);
+            setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+          }
         } else {
           activeDocumentId = "";
           title = "";
@@ -6746,19 +7804,92 @@
     waiting.postMessage({ type: "SKIP_WAITING" });
   }
 
-  function toggleRowMenu(kind: RowMenuTarget["kind"], id: string) {
-    if (openRowMenu?.kind === kind && openRowMenu.id === id) {
-      openRowMenu = null;
-      return;
-    }
-    openRowMenu = { kind, id };
+  function openContextMenu(target: ContextMenuTarget, x: number, y: number) {
+    openRowMenu = null;
+    closeLabelMenu();
+    contextMenuMoveOpen = false;
+    contextMenu = { target, x, y };
     void tick().then(() => {
-      rowMenuElement?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+      positionContextMenu();
+      contextMenuElement?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
     });
   }
 
-  function closeRowMenu() {
-    openRowMenu = null;
+  function closeContextMenu(restoreFocus = false) {
+    void restoreFocus;
+    contextMenu = null;
+    contextMenuMoveOpen = false;
+  }
+
+  function positionContextMenu() {
+    const menu = contextMenuElement;
+    if (!menu || !contextMenu) return;
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    let x = contextMenu.x;
+    let y = contextMenu.y;
+    if (x + rect.width > window.innerWidth - margin) x = Math.max(margin, window.innerWidth - rect.width - margin);
+    if (y + rect.height > window.innerHeight - margin) y = Math.max(margin, window.innerHeight - rect.height - margin);
+    if (x !== contextMenu.x || y !== contextMenu.y) contextMenu = { ...contextMenu, x, y };
+  }
+
+  function handleRowContextMenu(event: MouseEvent, target: ContextMenuTarget) {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelPressTimer();
+    openContextMenu(target, event.clientX, event.clientY);
+  }
+
+  function handleRowPointerDown(event: PointerEvent, target: ContextMenuTarget) {
+    if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+    if (event.button !== 0 && event.pointerType !== "touch") return;
+    cancelPressTimer();
+    pressTarget = target;
+    pressX = event.clientX;
+    pressY = event.clientY;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    pressTimer = setTimeout(() => {
+      if (!pressTarget) return;
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        // Vibration is best-effort.
+      }
+      openContextMenu(pressTarget, startX, startY);
+      pressTarget = null;
+    }, 550);
+  }
+
+  function handlePressMove(event: PointerEvent) {
+    if (!pressTimer || !pressTarget) return;
+    if (Math.hypot(event.clientX - pressX, event.clientY - pressY) > 10) cancelPressTimer();
+  }
+
+  function cancelPressTimer() {
+    if (pressTimer) clearTimeout(pressTimer);
+    pressTimer = undefined;
+    pressTarget = null;
+  }
+
+  function handleRowKeydown(event: KeyboardEvent, target: ContextMenuTarget, anchor: HTMLElement) {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = anchor.getBoundingClientRect();
+    openContextMenu(target, Math.min(rect.left + 40, window.innerWidth - 220), rect.bottom + 4);
+  }
+
+  function openWikiAddMenu(event: MouseEvent, folderId: string | null) {
+    event.stopPropagation();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    openContextMenu(
+      folderId ? { kind: "wiki-folder", id: folderId } : { kind: "wiki-root" },
+      Math.max(8, rect.left - 160),
+      rect.bottom + 4
+    );
+    contextMenuMoveOpen = false;
+    // Focus lands on the menu; the add section is first for wiki targets.
   }
 
   function labelColorCss(color: string) {
@@ -6769,59 +7900,6 @@
 
   function labelFor(id?: string): LabelDef | undefined {
     return id ? labelById(projectLabelList, id) : undefined;
-  }
-
-  function toggleLabelMenu(kind: LabelMenuTarget["kind"], id: string, trigger: HTMLButtonElement) {
-    if (openLabelMenu?.kind === kind && openLabelMenu.id === id) {
-      closeLabelMenu(true);
-      return;
-    }
-    openRowMenu = null;
-    labelMenuTrigger = trigger;
-    openLabelMenu = { kind, id };
-    void tick().then(() => {
-      positionLabelMenu();
-      labelMenuElement?.querySelector<HTMLButtonElement>("button")?.focus();
-    });
-  }
-
-  function positionLabelMenu() {
-    const menu = labelMenuElement;
-    const trigger = labelMenuTrigger;
-    if (!menu || !trigger) return;
-    menu.style.left = "";
-    menu.style.right = "";
-    menu.style.top = "";
-    menu.style.bottom = "";
-    const tree = trigger.closest(".sidebar-tree") as HTMLElement | null;
-    const fallback = document.querySelector(".sidebar");
-    const container = tree?.getBoundingClientRect() ?? fallback?.getBoundingClientRect();
-    if (!container) return;
-    const scrollbarWidth = tree ? tree.offsetWidth - tree.clientWidth : 0;
-    const margin = 4;
-    const menuRect = menu.getBoundingClientRect();
-    const wrapRect = menu.parentElement?.getBoundingClientRect();
-    if (!wrapRect) return;
-    const minLeft = container.left + margin;
-    const maxLeft = container.right - scrollbarWidth - margin - menuRect.width;
-    let left = menuRect.left;
-    if (maxLeft >= minLeft) {
-      left = Math.min(Math.max(left, minLeft), maxLeft);
-    } else {
-      left = minLeft;
-    }
-    menu.style.left = `${left - wrapRect.left}px`;
-    menu.style.right = "auto";
-    const placed = menu.getBoundingClientRect();
-    const maxBottom = Math.min(window.innerHeight - margin, container.bottom - margin);
-    if (placed.bottom > maxBottom) {
-      menu.style.top = "auto";
-      menu.style.bottom = "calc(100% + 4px)";
-      if (menu.getBoundingClientRect().top < margin) {
-        menu.style.top = "";
-        menu.style.bottom = "";
-      }
-    }
   }
 
   function closeLabelMenu(restoreFocus = false) {
@@ -6840,23 +7918,6 @@
     }
     documents = documents.map((doc) => doc.id === id ? setLabel(doc, labelId) : doc);
     persist();
-  }
-
-  function handleLabelMenuKeydown(event: KeyboardEvent) {
-    if (!openLabelMenu) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      closeLabelMenu(true);
-      return;
-    }
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    const items = Array.from(labelMenuElement?.querySelectorAll<HTMLButtonElement>("button") ?? []);
-    if (items.length === 0) return;
-    const step = event.key === "ArrowDown" ? 1 : -1;
-    const index = items.indexOf(document.activeElement as HTMLButtonElement);
-    items[(index + step + items.length) % items.length]?.focus();
   }
 
   function openLabelsDialog(trigger?: HTMLButtonElement) {
@@ -7256,11 +8317,13 @@
 
   onMount(() => {
     const onPointerDown = (event: PointerEvent) => {
-      if (!openRowMenu && !openLabelMenu) return;
+      if (pressTimer) handlePressMove(event);
+      if (!openRowMenu && !openLabelMenu && !contextMenu) return;
       const target = event.target;
-      if (target instanceof Element && target.closest(".row-menu-wrap, .label-menu-wrap")) return;
+      if (target instanceof Element && target.closest(".ctx-menu, .ctx-add-wrap")) return;
       openRowMenu = null;
       closeLabelMenu();
+      closeContextMenu();
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
@@ -7298,9 +8361,9 @@
   {/if}
   <aside
     class="sidebar"
-    class:peek={!leftSidebarVisible}
-    class:peek-open={!leftSidebarVisible && leftSidebarHovered}
-    inert={zenInterfaceHidden || (!leftSidebarVisible && !leftSidebarHovered)}
+    class:peek={!leftSidebarShown()}
+    class:peek-open={!leftSidebarShown() && leftSidebarHovered}
+    inert={zenInterfaceHidden || (!leftSidebarShown() && !leftSidebarHovered)}
     aria-label="Chapter and story navigation"
   >
     <div class="sidebar-mobile-head">
@@ -7374,7 +8437,20 @@
             aria-label="{chapterLabel(chapter)} chapter"
             data-chapter-id={chapter.id}
           >
-            <div class="chapter-row">
+            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+            <div
+              class="chapter-row"
+              class:scene-drop-target={sceneDropChapterId === chapter.id}
+              oncontextmenu={(event) => handleRowContextMenu(event, { kind: "chapter", id: chapter.id })}
+              onpointerdown={(event) => handleRowPointerDown(event, { kind: "chapter", id: chapter.id })}
+              onpointermove={handlePressMove}
+              onpointerup={cancelPressTimer}
+              onpointercancel={cancelPressTimer}
+              onkeydown={(event) => handleRowKeydown(event, { kind: "chapter", id: chapter.id }, event.currentTarget as HTMLElement)}
+              ondragover={(event) => handleChapterSceneDragOver(event, chapter.id)}
+              ondragleave={(event) => handleChapterSceneDragLeave(event, chapter.id)}
+              ondrop={(event) => handleChapterSceneDrop(event, chapter.id)}
+            >
               <button
                 class="chapter-drag"
                 aria-label="Drag to reorder {chapterLabel(chapter)}"
@@ -7396,146 +8472,87 @@
                     onpointerdown={(event) => event.stopPropagation()}
                   />
               {:else}
-                <button class="chapter-toggle" aria-label="{chapter.expanded ? 'Collapse' : 'Expand'} {chapterLabel(chapter)}" aria-expanded={chapter.expanded} onclick={() => toggleChapter(chapter.id)}>
-                  <span class:rotated={chapter.expanded} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
+                <button class="chapter-toggle" aria-label="Open {chapterLabel(chapter)}" aria-expanded={isChapterOpen(chapter.id)} onclick={() => openChapter(chapter.id)}>
+                  <span class:rotated={isChapterOpen(chapter.id)} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
                   <span class="folder-icon"><Folder size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
                   <span class="tree-name">{chapterLabel(chapter)}</span>
                 </button>
               {/if}
               <div class="chapter-actions">
-                <div class="label-menu-wrap">
-                  <button
-                    class="label-trigger"
-                    class:has-label={chapterLabelDef !== undefined}
-                    aria-label="Label for {chapterLabel(chapter)}: {chapterLabelDef?.name ?? 'none'}"
-                    aria-haspopup="menu"
-                    aria-expanded={openLabelMenu?.kind === "chapter" && openLabelMenu.id === chapter.id}
-                    title={chapterLabelDef ? `Label: ${chapterLabelDef.name}` : "Set label"}
-                    onclick={(event) => { event.stopPropagation(); toggleLabelMenu("chapter", chapter.id, event.currentTarget as HTMLButtonElement); }}
-                  >
-                    <span class="label-dot" style={chapterLabelDef ? `--label-color: ${labelColorCss(chapterLabelDef.color)}` : undefined}></span>
-                  </button>
-                  {#if openLabelMenu?.kind === "chapter" && openLabelMenu.id === chapter.id}
-                    <div
-                      class="label-menu label-menu-chapter"
-                      role="menu"
-                      tabindex="-1"
-                      aria-label="Labels for {chapterLabel(chapter)}"
-                      bind:this={labelMenuElement}
-                      onpointerdown={(event) => event.stopPropagation()}
-                      onkeydown={handleLabelMenuKeydown}
-                    >
-                      {#each projectLabelList as label (label.id)}
-                        <button type="button" role="menuitemradio" aria-checked={chapter.labelId === label.id} onclick={() => applyLabel("chapter", chapter.id, label.id)}>
-                          <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
-                          <span class="label-menu-name">{label.name}</span>
-                        </button>
-                      {/each}
-                      <button type="button" role="menuitemradio" aria-checked={!chapter.labelId} class="label-menu-none" onclick={() => applyLabel("chapter", chapter.id, undefined)}>No label</button>
-                      <button type="button" role="menuitem" class="label-menu-manage" onclick={() => openLabelsDialog(labelMenuTrigger)}>Manage labels…</button>
-                    </div>
-                  {/if}
-                </div>
-                <button class="chapter-action" aria-label="Rename {chapterLabel(chapter)}" title="Rename chapter" onclick={() => startChapterRename(chapter)}><Pencil size={13} aria-hidden="true" /></button>
-                <button class="chapter-action chapter-move-action" aria-label="Move {chapterLabel(chapter)} up" title="Move chapter up" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => moveChapter(chapter.id, -1)}><ArrowUp size={13} aria-hidden="true" /></button>
-                <button class="chapter-action chapter-move-action" aria-label="Move {chapterLabel(chapter)} down" title="Move chapter down" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => moveChapter(chapter.id, 1)}><ArrowDown size={13} aria-hidden="true" /></button>
-                <button class="chapter-action" aria-label="Move {chapterLabel(chapter)} to Trash" title="Move chapter and scenes to Trash" onclick={() => trashChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
                 <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}><Plus size={13} aria-hidden="true" /></button>
-                <div class="row-menu-wrap">
-                  <button
-                    class="row-menu-trigger"
-                    aria-label="More actions for {chapterLabel(chapter)}"
-                    aria-haspopup="menu"
-                    aria-expanded={openRowMenu?.kind === "chapter" && openRowMenu.id === chapter.id}
-                    onclick={(event) => { event.stopPropagation(); toggleRowMenu("chapter", chapter.id); }}
-                  ><Ellipsis size={16} aria-hidden="true" /></button>
-                  {#if openRowMenu?.kind === "chapter" && openRowMenu.id === chapter.id}
-                    <div
-                      class="row-menu"
-                      role="menu"
-                      tabindex="-1"
-                      aria-label="Actions for {chapterLabel(chapter)}"
-                      bind:this={rowMenuElement}
-                      onpointerdown={(event) => event.stopPropagation()}
-                    >
-                      <button type="button" role="menuitem" disabled={!chapterFirstScene(chapter.id)} onclick={() => { const scene = chapterFirstScene(chapter.id); if (!scene) return; closeRowMenu(); openBesideTarget(docTarget(scene.id)); }}>Open beside</button>
-                      <button type="button" role="menuitem" onclick={() => { closeRowMenu(); startChapterRename(chapter); }}>Rename chapter</button>
-                      <button type="button" role="menuitem" disabled={liveChapters.indexOf(chapter) === 0} onclick={() => { closeRowMenu(); moveChapter(chapter.id, -1); }}>Move up</button>
-                      <button type="button" role="menuitem" disabled={liveChapters.indexOf(chapter) === liveChapters.length - 1} onclick={() => { closeRowMenu(); moveChapter(chapter.id, 1); }}>Move down</button>
-                      <button type="button" role="menuitem" onclick={() => { closeRowMenu(); createScene(chapter.id); }}>Add scene</button>
-                      <button type="button" role="menuitem" class="danger" onclick={() => { closeRowMenu(); trashChapter(chapter.id); }}>Move to Trash</button>
-                    </div>
-                  {/if}
-                </div>
+                <button
+                  class="label-trigger"
+                  class:has-label={chapterLabelDef !== undefined}
+                  aria-label="Label for {chapterLabel(chapter)}: {chapterLabelDef?.name ?? 'none'}. Activate for label options."
+                  title={chapterLabelDef ? `Label: ${chapterLabelDef.name}` : "Set label"}
+                  onclick={(event) => { const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); openContextMenu({ kind: "chapter", id: chapter.id }, Math.max(8, rect.left - 170), rect.bottom + 4); }}
+                >
+                  <span class="label-dot" style={chapterLabelDef ? `--label-color: ${labelColorCss(chapterLabelDef.color)}` : undefined}></span>
+                </button>
               </div>
             </div>
-            {#if chapter.expanded}
-              <div class="scene-list">
+            {#if isChapterOpen(chapter.id)}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="scene-list"
+                class:scene-drop-target={sceneDropChapterId === chapter.id}
+                ondragover={(event) => handleChapterSceneDragOver(event, chapter.id)}
+                ondragleave={(event) => handleChapterSceneDragLeave(event, chapter.id)}
+                ondrop={(event) => handleChapterSceneDrop(event, chapter.id)}
+              >
                 {#each documents.filter((doc) => doc.chapterId === chapter.id && !doc.trashed && (!filterLabelDef || doc.labelId === filterLabelDef.id)) as doc (doc.id)}
                   {@const sceneLabel = labelFor(doc.labelId)}
-                  <div class:current={doc.id === activeDocumentId} class="document-row scene-row" role="group" aria-label={doc.title || "Untitled scene"} draggable="true" ondragstart={(event) => startTargetDrag(event, docTarget(doc.id))}>
-                    <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(doc.id))) return; openSidebarDocument(doc.id); }}>
-                      <span class="scene-mark">¶</span>
-                      <span class="tree-name">{doc.title || "Untitled scene"}</span>
-                    </button>
-                    <div class="label-menu-wrap">
-                      <button
-                        class="label-trigger"
-                        class:has-label={sceneLabel !== undefined}
-                        aria-label="Label for {doc.title || 'Untitled scene'}: {sceneLabel?.name ?? 'none'}"
-                        aria-haspopup="menu"
-                        aria-expanded={openLabelMenu?.kind === "scene" && openLabelMenu.id === doc.id}
-                        title={sceneLabel ? `Label: ${sceneLabel.name}` : "Set label"}
-                        onclick={(event) => { event.stopPropagation(); toggleLabelMenu("scene", doc.id, event.currentTarget as HTMLButtonElement); }}
-                      >
-                        <span class="label-dot" style={sceneLabel ? `--label-color: ${labelColorCss(sceneLabel.color)}` : undefined}></span>
+            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+                  <div
+                    class:current={doc.id === activeDocumentId}
+                    class="document-row scene-row"
+                    class:dragging={draggedSceneId === doc.id}
+                    class:drop-before={sceneDropTarget?.id === doc.id && !sceneDropTarget.after}
+                    class:drop-after={sceneDropTarget?.id === doc.id && sceneDropTarget.after}
+                    role="group"
+                    aria-label={doc.title || "Untitled scene"}
+                    draggable="true"
+                    ondragstart={(event) => startSceneDrag(event, doc.id)}
+                    ondragover={(event) => handleSceneDragOver(event, doc.id)}
+                    ondragleave={(event) => handleSceneDragLeave(event, doc.id)}
+                    ondrop={(event) => handleSceneDrop(event, doc.id)}
+                    oncontextmenu={(event) => handleRowContextMenu(event, { kind: "scene", id: doc.id })}
+                    onpointerdown={(event) => handleRowPointerDown(event, { kind: "scene", id: doc.id })}
+                    onpointermove={handlePressMove}
+                    onpointerup={cancelPressTimer}
+                    onpointercancel={cancelPressTimer}
+                    onkeydown={(event) => handleRowKeydown(event, { kind: "scene", id: doc.id }, event.currentTarget as HTMLElement)}
+                  >
+                    {#if editingSceneId === doc.id}
+                      <input
+                        bind:this={sceneNameInput}
+                        class="chapter-name-input"
+                        aria-label="Rename {doc.title || 'Untitled scene'}"
+                        bind:value={sceneTitleDraft}
+                        maxlength="120"
+                        onblur={() => saveSceneRename(doc.id)}
+                        onkeydown={(event) => {
+                          if (event.key === "Enter") (event.currentTarget as HTMLInputElement).blur();
+                          if (event.key === "Escape") cancelSceneRename();
+                        }}
+                        onpointerdown={(event) => event.stopPropagation()}
+                        ondragstart={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                      />
+                    {:else}
+                      <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(doc.id))) return; openSidebarDocument(doc.id); }}>
+                        <span class="scene-mark">¶</span>
+                        <span class="tree-name">{doc.title || "Untitled scene"}</span>
                       </button>
-                      {#if openLabelMenu?.kind === "scene" && openLabelMenu.id === doc.id}
-                        <div
-                          class="label-menu"
-                          role="menu"
-                          tabindex="-1"
-                          aria-label="Labels for {doc.title || 'Untitled scene'}"
-                          bind:this={labelMenuElement}
-                          onpointerdown={(event) => event.stopPropagation()}
-                          onkeydown={handleLabelMenuKeydown}
-                        >
-                          {#each projectLabelList as label (label.id)}
-                            <button type="button" role="menuitemradio" aria-checked={doc.labelId === label.id} onclick={() => applyLabel("scene", doc.id, label.id)}>
-                              <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
-                              <span class="label-menu-name">{label.name}</span>
-                            </button>
-                          {/each}
-                          <button type="button" role="menuitemradio" aria-checked={!doc.labelId} class="label-menu-none" onclick={() => applyLabel("scene", doc.id, undefined)}>No label</button>
-                          <button type="button" role="menuitem" class="label-menu-manage" onclick={() => openLabelsDialog(labelMenuTrigger)}>Manage labels…</button>
-                        </div>
-                      {/if}
-                    </div>
-                    <button class="row-action" aria-label="Open {doc.title || 'Untitled scene'} beside" title="Open beside" onclick={() => openBesideTarget(docTarget(doc.id))}><PanelRight size={13} aria-hidden="true" /></button>
-                    <button class="row-action" aria-label="Move {doc.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
-                    <div class="row-menu-wrap">
-                      <button
-                        class="row-menu-trigger"
-                        aria-label="More actions for {doc.title || 'Untitled scene'}"
-                        aria-haspopup="menu"
-                        aria-expanded={openRowMenu?.kind === "scene" && openRowMenu.id === doc.id}
-                        onclick={(event) => { event.stopPropagation(); toggleRowMenu("scene", doc.id); }}
-                      ><Ellipsis size={16} aria-hidden="true" /></button>
-                      {#if openRowMenu?.kind === "scene" && openRowMenu.id === doc.id}
-                        <div
-                          class="row-menu"
-                          role="menu"
-                          tabindex="-1"
-                          aria-label="Actions for {doc.title || 'Untitled scene'}"
-                          bind:this={rowMenuElement}
-                          onpointerdown={(event) => event.stopPropagation()}
-                        >
-                          <button type="button" role="menuitem" onclick={() => { closeRowMenu(); openSidebarDocument(doc.id); }}>Open scene</button>
-                          <button type="button" role="menuitem" onclick={() => { closeRowMenu(); openBesideTarget(docTarget(doc.id)); }}>Open beside</button>
-                          <button type="button" role="menuitem" class="danger" onclick={() => { closeRowMenu(); moveToTrash(doc.id); }}>Move to Trash</button>
-                        </div>
-                      {/if}
-                    </div>
+                    {/if}
+                    <button
+                      class="label-trigger"
+                      class:has-label={sceneLabel !== undefined}
+                      aria-label="Label for {doc.title || 'Untitled scene'}: {sceneLabel?.name ?? 'none'}. Activate for label options."
+                      title={sceneLabel ? `Label: ${sceneLabel.name}` : "Set label"}
+                      onclick={(event) => { const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); openContextMenu({ kind: "scene", id: doc.id }, Math.max(8, rect.left - 170), rect.bottom + 4); }}
+                    >
+                      <span class="label-dot" style={sceneLabel ? `--label-color: ${labelColorCss(sceneLabel.color)}` : undefined}></span>
+                    </button>
                   </div>
                 {/each}
                 {#if !documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed && (!filterLabelDef || doc.labelId === filterLabelDef.id))}
@@ -7555,28 +8572,53 @@
       </div>
 
       <div class="tree-divider"></div>
-      <div class="tree-heading spaces-heading"><span class="nav-label">WIKI</span></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+      <div
+        class="tree-heading spaces-heading"
+        oncontextmenu={(event) => handleRowContextMenu(event, { kind: "wiki-root" })}
+        onpointerdown={(event) => handleRowPointerDown(event, { kind: "wiki-root" })}
+        onpointermove={handlePressMove}
+        onpointerup={cancelPressTimer}
+        onpointercancel={cancelPressTimer}
+        onkeydown={(event) => handleRowKeydown(event, { kind: "wiki-root" }, event.currentTarget as HTMLElement)}
+      ><span class="nav-label">WIKI</span><button class="tree-add" aria-label="Add to Wiki" title="Add to Wiki" aria-haspopup="menu" onclick={(event) => openWikiAddMenu(event, null)}><Plus size={14} aria-hidden="true" /></button></div>
       <div class="space-group">
-        <div class="space-heading">
-          <button class="space-toggle" aria-expanded={expandedSpaces.Wiki} onclick={() => expandedSpaces.Wiki = !expandedSpaces.Wiki}>
-            <span class:rotated={expandedSpaces.Wiki} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
-            <span class="space-icon"><FileText size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
-            <span class="tree-name">Wiki</span>
-          </button>
-          <button class="row-add research-add" aria-label="Add folder to Wiki" title="Add folder" onclick={() => createResearchFolder()}><FolderPlus size={13} aria-hidden="true" /></button>
-          <button class="row-add research-add" aria-label="Add file to Wiki" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles()}><Upload size={13} aria-hidden="true" /></button>
-          <button class="row-add research-add" aria-label="Add link to Wiki" title="Add web link" onclick={() => openResearchLinkDialog()}><LinkIcon size={13} aria-hidden="true" /></button>
-          <button class="row-add research-add" aria-label="Add page to Wiki" title="Add page" onclick={() => createSpaceDocument("Wiki")}><Plus size={13} aria-hidden="true" /></button>
-        </div>
-        {#if expandedSpaces.Wiki}
-          <div class="space-items">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="space-items wiki-items"
+            class:wiki-drop-root={wikiDropRoot}
+            role="group"
+            aria-label="Wiki root drop zone"
+            ondragover={handleWikiRootDragOver}
+            ondragleave={handleWikiRootDragLeave}
+            ondrop={handleWikiRootDrop}
+          >
             {#each researchTreeItems as item (item.kind === "folder"
               ? `folder-${item.folder.id}`
               : item.kind === "document"
                 ? `document-${item.document.id}`
                 : `${item.kind}-${item.item.id}`)}
               {#if item.kind === "folder"}
-                <div class="note-folder-row research-folder-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+                <div
+                  class="note-folder-row research-folder-row"
+                  class:dragging={draggedWiki?.id === item.folder.id}
+                  class:drop-before={wikiDropTarget?.key === wikiRowKey("folder", item.folder.id) && !wikiDropTarget.after}
+                  class:drop-after={wikiDropTarget?.key === wikiRowKey("folder", item.folder.id) && wikiDropTarget.after}
+                  class:wiki-drop-target={wikiDropFolderId === item.folder.id}
+                  style={`padding-left: ${item.depth * 14 + 2}px`}
+                  draggable="true"
+                  ondragstart={(event) => startWikiDrag(event, "folder", item.folder.id)}
+                  ondragover={(event) => handleWikiRowDragOver(event, "folder", item.folder.id)}
+                  ondragleave={(event) => handleWikiRowDragLeave(event, "folder", item.folder.id)}
+                  ondrop={(event) => handleWikiRowDrop(event, "folder", item.folder.id)}
+                  oncontextmenu={(event) => handleRowContextMenu(event, { kind: "wiki-folder", id: item.folder.id })}
+                  onpointerdown={(event) => handleRowPointerDown(event, { kind: "wiki-folder", id: item.folder.id })}
+                  onpointermove={handlePressMove}
+                  onpointerup={cancelPressTimer}
+                  onpointercancel={cancelPressTimer}
+                  onkeydown={(event) => handleRowKeydown(event, { kind: "wiki-folder", id: item.folder.id }, event.currentTarget as HTMLElement)}
+                >
                   {#if editingResearchFolderId === item.folder.id}
                     <input
                       bind:this={researchFolderInput}
@@ -7606,38 +8648,59 @@
                     </button>
                   {/if}
                   <div class="note-folder-actions">
-                    <button class="chapter-action" aria-label="Add subfolder to {item.folder.title}" title="Add subfolder" onclick={() => createResearchFolder(item.folder.id)}><FolderPlus size={13} aria-hidden="true" /></button>
-                    <button class="chapter-action" aria-label="Add page to {item.folder.title}" title="Add page" onclick={() => createSpaceDocument("Wiki", item.folder.id)}><Plus size={13} aria-hidden="true" /></button>
-                    <button class="chapter-action" aria-label="Add file to {item.folder.title}" title="Add file" disabled={researchBusy} onclick={() => addResearchFiles(item.folder.id)}><Upload size={13} aria-hidden="true" /></button>
-                    <button class="chapter-action" aria-label="Add link to {item.folder.title}" title="Add web link" onclick={() => openResearchLinkDialog(item.folder.id)}><LinkIcon size={13} aria-hidden="true" /></button>
-                    <button class="chapter-action" aria-label="Rename folder {item.folder.title}" title="Rename folder" onclick={() => startResearchFolderRename(item.folder)}><Pencil size={13} aria-hidden="true" /></button>
-                    <button class="row-action" aria-label="Remove folder {item.folder.title}" title="Remove folder (contents move to the parent)" onclick={() => removeResearchFolder(item.folder)}><Trash2 size={13} aria-hidden="true" /></button>
+                    <button class="row-add research-add" aria-label="Add to {item.folder.title}" title="Add to folder" aria-haspopup="menu" onclick={(event) => openWikiAddMenu(event, item.folder.id)}><Plus size={13} aria-hidden="true" /></button>
                   </div>
                 </div>
               {:else if item.kind === "document"}
-                <div class:current={item.document.id === activeDocumentId} class="document-row note-document-row" role="group" aria-label={item.document.title || "wiki page"} style={`padding-left: ${item.depth * 14 + 2}px`} draggable="true" ondragstart={(event) => startTargetDrag(event, docTarget(item.document.id))}>
+                <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+                <div
+                  class:current={item.document.id === activeDocumentId}
+                  class="document-row note-document-row"
+                  class:dragging={draggedWiki?.id === item.document.id}
+                  class:drop-before={wikiDropTarget?.key === wikiRowKey("document", item.document.id) && !wikiDropTarget.after}
+                  class:drop-after={wikiDropTarget?.key === wikiRowKey("document", item.document.id) && wikiDropTarget.after}
+                  role="group"
+                  aria-label={item.document.title || "wiki page"}
+                  style={`padding-left: ${item.depth * 14 + 2}px`}
+                  draggable="true"
+                  ondragstart={(event) => { startTargetDrag(event, docTarget(item.document.id)); startWikiDrag(event, "document", item.document.id); }}
+                  ondragover={(event) => handleWikiRowDragOver(event, "document", item.document.id)}
+                  ondragleave={(event) => handleWikiRowDragLeave(event, "document", item.document.id)}
+                  ondrop={(event) => handleWikiRowDrop(event, "document", item.document.id)}
+                  oncontextmenu={(event) => handleRowContextMenu(event, { kind: "wiki-doc", id: item.document.id })}
+                  onpointerdown={(event) => handleRowPointerDown(event, { kind: "wiki-doc", id: item.document.id })}
+                  onpointermove={handlePressMove}
+                  onpointerup={cancelPressTimer}
+                  onpointercancel={cancelPressTimer}
+                  onkeydown={(event) => handleRowKeydown(event, { kind: "wiki-doc", id: item.document.id }, event.currentTarget as HTMLElement)}
+                >
                   <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(item.document.id))) return; openSidebarDocument(item.document.id); }}>
                     <span class="scene-mark">¶</span>
                     <span class="tree-name">{item.document.title || "Untitled"}</span>
                   </button>
-                  {#if researchFolderChoices.length > 0}
-                    <select
-                      class="note-folder-select"
-                      aria-label="Move {item.document.title || 'wiki page'} to folder"
-                      value={item.document.folderId ?? ""}
-                      onchange={(event) => moveResearchDocument(item.document.id, (event.currentTarget as HTMLSelectElement).value)}
-                    >
-                      <option value="">Unfiled</option>
-                      {#each researchFolderChoices as choice (choice.folder.id)}
-                        <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
-                      {/each}
-                    </select>
-                  {/if}
-                  <button class="row-action" aria-label="Open {item.document.title || 'wiki page'} beside" title="Open beside" onclick={() => openBesideTarget(docTarget(item.document.id))}><PanelRight size={13} aria-hidden="true" /></button>
-                  <button class="row-action" aria-label="Move {item.document.title} to Trash" title="Move to Trash" onclick={() => moveToTrash(item.document.id)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else if item.kind === "file"}
-                <div class="document-row note-document-row research-item-row" role="group" aria-label={researchItemTitle(item.item)} style={`padding-left: ${item.depth * 14 + 2}px`} draggable="true" ondragstart={(event) => startTargetDrag(event, fileTarget(item.item.id))}>
+            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+                <div
+                  class="document-row note-document-row research-item-row"
+                  class:dragging={draggedWiki?.id === item.item.id}
+                  class:drop-before={wikiDropTarget?.key === wikiRowKey("file", item.item.id) && !wikiDropTarget.after}
+                  class:drop-after={wikiDropTarget?.key === wikiRowKey("file", item.item.id) && wikiDropTarget.after}
+                  role="group"
+                  aria-label={researchItemTitle(item.item)}
+                  style={`padding-left: ${item.depth * 14 + 2}px`}
+                  draggable="true"
+                  ondragstart={(event) => { startTargetDrag(event, fileTarget(item.item.id)); startWikiDrag(event, "file", item.item.id); }}
+                  ondragover={(event) => handleWikiRowDragOver(event, "file", item.item.id)}
+                  ondragleave={(event) => handleWikiRowDragLeave(event, "file", item.item.id)}
+                  ondrop={(event) => handleWikiRowDrop(event, "file", item.item.id)}
+                  oncontextmenu={(event) => handleRowContextMenu(event, { kind: "wiki-file", id: item.item.id })}
+                  onpointerdown={(event) => handleRowPointerDown(event, { kind: "wiki-file", id: item.item.id })}
+                  onpointermove={handlePressMove}
+                  onpointerup={cancelPressTimer}
+                  onpointercancel={cancelPressTimer}
+                  onkeydown={(event) => handleRowKeydown(event, { kind: "wiki-file", id: item.item.id }, event.currentTarget as HTMLElement)}
+                >
                   <button
                     class="document-select"
                     title={`${researchItemTitle(item.item)} — ${researchItemMeta(item.item)}`}
@@ -7652,27 +8715,27 @@
                     {/if}
                     <span class="tree-name">{researchItemTitle(item.item)}</span>
                   </button>
-                  {#if researchFolderChoices.length > 0}
-                    <select
-                      class="note-folder-select"
-                      aria-label="Move {researchItemTitle(item.item)} to folder"
-                      value={item.item.folderId ?? ""}
-                      onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
-                    >
-                      <option value="">Unfiled</option>
-                      {#each researchFolderChoices as choice (choice.folder.id)}
-                        <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
-                      {/each}
-                    </select>
-                  {/if}
-                  {#if desktopRuntime}
-                    <button class="row-action" aria-label="Reveal {researchItemTitle(item.item)} in folder" title="Reveal in folder" onclick={() => revealResearchFile(item.item)}><Folder size={13} aria-hidden="true" /></button>
-                  {/if}
-                  <button class="row-action" aria-label="Open {researchItemTitle(item.item)} beside" title="Open beside" onclick={() => openBesideTarget(fileTarget(item.item.id))}><PanelRight size={13} aria-hidden="true" /></button>
-                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)} and delete its file" title="Remove and delete file" onclick={() => removeResearchItem(item.item)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
-                <div class="document-row note-document-row research-item-row" style={`padding-left: ${item.depth * 14 + 2}px`}>
+            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+                <div
+                  class="document-row note-document-row research-item-row"
+                  class:dragging={draggedWiki?.id === item.item.id}
+                  class:drop-before={wikiDropTarget?.key === wikiRowKey("link", item.item.id) && !wikiDropTarget.after}
+                  class:drop-after={wikiDropTarget?.key === wikiRowKey("link", item.item.id) && wikiDropTarget.after}
+                  style={`padding-left: ${item.depth * 14 + 2}px`}
+                  draggable="true"
+                  ondragstart={(event) => startWikiDrag(event, "link", item.item.id)}
+                  ondragover={(event) => handleWikiRowDragOver(event, "link", item.item.id)}
+                  ondragleave={(event) => handleWikiRowDragLeave(event, "link", item.item.id)}
+                  ondrop={(event) => handleWikiRowDrop(event, "link", item.item.id)}
+                  oncontextmenu={(event) => handleRowContextMenu(event, { kind: "wiki-link", id: item.item.id })}
+                  onpointerdown={(event) => handleRowPointerDown(event, { kind: "wiki-link", id: item.item.id })}
+                  onpointermove={handlePressMove}
+                  onpointerup={cancelPressTimer}
+                  onpointercancel={cancelPressTimer}
+                  onkeydown={(event) => handleRowKeydown(event, { kind: "wiki-link", id: item.item.id }, event.currentTarget as HTMLElement)}
+                >
                   <button
                     class="document-select"
                     title={researchItemMeta(item.item)}
@@ -7681,20 +8744,6 @@
                     <span class="scene-mark research-link-mark"><ExternalLink size={14} aria-hidden="true" /></span>
                     <span class="tree-name">{researchItemTitle(item.item)}</span>
                   </button>
-                  {#if researchFolderChoices.length > 0}
-                    <select
-                      class="note-folder-select"
-                      aria-label="Move {researchItemTitle(item.item)} to folder"
-                      value={item.item.folderId ?? ""}
-                      onchange={(event) => moveResearchItem(item.item.id, (event.currentTarget as HTMLSelectElement).value)}
-                    >
-                      <option value="">Unfiled</option>
-                      {#each researchFolderChoices as choice (choice.folder.id)}
-                        <option value={choice.folder.id}>{"- ".repeat(choice.depth)}{choice.folder.title}</option>
-                      {/each}
-                    </select>
-                  {/if}
-                  <button class="row-action delete-action" aria-label="Remove {researchItemTitle(item.item)}" title="Remove link" onclick={() => removeResearchItem(item.item)}><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
               {/if}
             {/each}
@@ -7705,7 +8754,6 @@
               <p class="research-status" role="status">{researchStatus}</p>
             {/if}
           </div>
-        {/if}
       </div>
 
       <div class="tree-divider"></div>
@@ -7758,6 +8806,139 @@
       </div>
     </div>
 
+    {#if contextMenu}
+      {@const ctx = contextMenu.target}
+      {@const ctxChapter = ctx.kind === "chapter" ? chapters.find((c) => c.id === ctx.id) : undefined}
+      {@const ctxScene = ctx.kind === "scene" ? documents.find((d) => d.id === ctx.id) : undefined}
+      {@const ctxFolder = ctx.kind === "wiki-folder" ? researchFolders.find((f) => f.id === ctx.id) : undefined}
+      {@const ctxDoc = ctx.kind === "wiki-doc" ? documents.find((d) => d.id === ctx.id) : undefined}
+      {@const ctxFile = ctx.kind === "wiki-file" ? researchItems.find((i) => i.id === ctx.id) : undefined}
+      {@const ctxLink = ctx.kind === "wiki-link" ? researchItems.find((i) => i.id === ctx.id) : undefined}
+      {@const ctxChapterIndex = ctxChapter ? liveChapters.findIndex((c) => c.id === ctxChapter.id) : -1}
+      <div
+        class="ctx-menu"
+        role="menu"
+        tabindex="-1"
+        aria-label="Row actions"
+        bind:this={contextMenuElement}
+        style={`left: ${contextMenu.x}px; top: ${contextMenu.y}px;`}
+        onpointerdown={(event) => event.stopPropagation()}
+        oncontextmenu={(event) => event.preventDefault()}
+      >
+        {#if ctx.kind === "chapter" && ctxChapter}
+          <div class="ctx-section" role="group" aria-label="Labels">
+            {#each projectLabelList as label (label.id)}
+              <button type="button" role="menuitemradio" aria-checked={ctxChapter.labelId === label.id} onclick={() => { applyLabel("chapter", ctxChapter.id, label.id); closeContextMenu(); }}>
+                <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
+                <span class="label-menu-name">{label.name}</span>
+              </button>
+            {/each}
+            <button type="button" role="menuitemradio" aria-checked={!ctxChapter.labelId} class="label-menu-none" onclick={() => { applyLabel("chapter", ctxChapter.id, undefined); closeContextMenu(); }}>No label</button>
+          </div>
+          <div class="ctx-divider"></div>
+          <button type="button" role="menuitem" disabled={!chapterFirstScene(ctxChapter.id)} onclick={() => { const scene = chapterFirstScene(ctxChapter.id); closeContextMenu(); if (scene) openBesideTarget(docTarget(scene.id)); }}>Open beside</button>
+          <button type="button" role="menuitem" onclick={() => { startChapterRename(ctxChapter); closeContextMenu(); }}>Rename chapter</button>
+          <button type="button" role="menuitem" disabled={ctxChapterIndex <= 0} onclick={() => { moveChapter(ctxChapter.id, -1); closeContextMenu(); }}>Move up</button>
+          <button type="button" role="menuitem" disabled={ctxChapterIndex < 0 || ctxChapterIndex >= liveChapters.length - 1} onclick={() => { moveChapter(ctxChapter.id, 1); closeContextMenu(); }}>Move down</button>
+          <button type="button" role="menuitem" onclick={() => { createScene(ctxChapter.id); closeContextMenu(); }}>Add scene</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { trashChapter(ctxChapter.id); closeContextMenu(); }}>Move to Trash</button>
+          <div class="ctx-divider"></div>
+          <button type="button" role="menuitem" onclick={() => { openLabelsDialog(); closeContextMenu(); }}>Manage labels…</button>
+        {:else if ctx.kind === "scene" && ctxScene}
+          <div class="ctx-section" role="group" aria-label="Labels">
+            {#each projectLabelList as label (label.id)}
+              <button type="button" role="menuitemradio" aria-checked={ctxScene.labelId === label.id} onclick={() => { applyLabel("scene", ctxScene.id, label.id); closeContextMenu(); }}>
+                <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
+                <span class="label-menu-name">{label.name}</span>
+              </button>
+            {/each}
+            <button type="button" role="menuitemradio" aria-checked={!ctxScene.labelId} class="label-menu-none" onclick={() => { applyLabel("scene", ctxScene.id, undefined); closeContextMenu(); }}>No label</button>
+          </div>
+          <div class="ctx-divider"></div>
+          <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxScene.id); closeContextMenu(); }}>Open scene</button>
+          <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxScene.id)); closeContextMenu(); }}>Open beside</button>
+          <button type="button" role="menuitem" onclick={() => { const scene = documents.find((doc) => doc.id === ctxScene.id); closeContextMenu(); if (scene) startSceneRename(scene); }}>Rename scene</button>
+          {@const ctxSceneList = ctxScene.chapterId ? scenesInChapter(ctxScene.chapterId) : []}
+          {@const ctxSceneIndex = ctxSceneList.findIndex((entry) => entry.id === ctxScene.id)}
+          <button type="button" role="menuitem" disabled={ctxSceneIndex <= 0} onclick={() => { moveScene(ctxScene.id, -1); closeContextMenu(); }}>Move up</button>
+          <button type="button" role="menuitem" disabled={ctxSceneIndex < 0 || ctxSceneIndex >= ctxSceneList.length - 1} onclick={() => { moveScene(ctxScene.id, 1); closeContextMenu(); }}>Move down</button>
+          {#if liveChapters.length > 1}
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to chapter…</button>
+            {#if contextMenuMoveOpen}
+              <div class="ctx-subsection" role="group" aria-label="Move to chapter">
+                {#each liveChapters as targetChapter (targetChapter.id)}
+                  <button type="button" role="menuitemradio" aria-checked={ctxScene.chapterId === targetChapter.id} onclick={() => { moveSceneToChapterEnd(ctxScene.id, targetChapter.id); closeContextMenu(); }}>{chapterLabel(targetChapter)}</button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
+          <button type="button" role="menuitem" class="danger" onclick={() => { moveToTrash(ctxScene.id); closeContextMenu(); }}>Move to Trash</button>
+          <div class="ctx-divider"></div>
+          <button type="button" role="menuitem" onclick={() => { openLabelsDialog(); closeContextMenu(); }}>Manage labels…</button>
+        {:else if ctx.kind === "wiki-root"}
+          <button type="button" role="menuitem" onclick={() => { createSpaceDocument("Wiki"); closeContextMenu(); }}>Add page</button>
+          <button type="button" role="menuitem" onclick={() => { createResearchFolder(); closeContextMenu(); }}>Add folder</button>
+          <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(); closeContextMenu(); }}>Add file</button>
+          <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(); closeContextMenu(); }}>Add web link</button>
+        {:else if ctx.kind === "wiki-folder" && ctxFolder}
+          <button type="button" role="menuitem" onclick={() => { createSpaceDocument("Wiki", ctxFolder.id); closeContextMenu(); }}>Add page</button>
+          <button type="button" role="menuitem" onclick={() => { createResearchFolder(ctxFolder.id); closeContextMenu(); }}>Add subfolder</button>
+          <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(ctxFolder.id); closeContextMenu(); }}>Add file</button>
+          <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(ctxFolder.id); closeContextMenu(); }}>Add web link</button>
+          <div class="ctx-divider"></div>
+          <button type="button" role="menuitem" onclick={() => { startResearchFolderRename(ctxFolder); closeContextMenu(); }}>Rename folder</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchFolder(ctxFolder); closeContextMenu(); }}>Remove folder</button>
+        {:else if ctx.kind === "wiki-doc" && ctxDoc}
+          <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxDoc.id); closeContextMenu(); }}>Open page</button>
+          <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxDoc.id)); closeContextMenu(); }}>Open beside</button>
+          {#if researchFolderChoices.length > 0}
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
+            {#if contextMenuMoveOpen}
+              <div class="ctx-subsection" role="group" aria-label="Move to folder">
+                <button type="button" role="menuitemradio" aria-checked={!ctxDoc.folderId} onclick={() => { moveResearchDocument(ctxDoc.id, ""); closeContextMenu(); }}>Unfiled</button>
+                {#each researchFolderChoices as choice (choice.folder.id)}
+                  <button type="button" role="menuitemradio" aria-checked={ctxDoc.folderId === choice.folder.id} onclick={() => { moveResearchDocument(ctxDoc.id, choice.folder.id); closeContextMenu(); }}><span style={`padding-left: ${choice.depth * 12}px`}>{choice.folder.title}</span></button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
+          <button type="button" role="menuitem" class="danger" onclick={() => { moveToTrash(ctxDoc.id); closeContextMenu(); }}>Move to Trash</button>
+        {:else if ctx.kind === "wiki-file" && ctxFile}
+          <button type="button" role="menuitem" onclick={(event) => { const file = ctxFile as ResearchFile; const beside = openRowBeside(event as unknown as MouseEvent, fileTarget(file.id)); closeContextMenu(); if (!beside) openResearchFile(file); }}>Open file</button>
+          <button type="button" role="menuitem" onclick={() => { openBesideTarget(fileTarget(ctxFile.id)); closeContextMenu(); }}>Open beside</button>
+          {#if desktopRuntime}
+            <button type="button" role="menuitem" onclick={() => { revealResearchFile(ctxFile as ResearchFile); closeContextMenu(); }}>Reveal in folder</button>
+          {/if}
+          {#if researchFolderChoices.length > 0}
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
+            {#if contextMenuMoveOpen}
+              <div class="ctx-subsection" role="group" aria-label="Move to folder">
+                <button type="button" role="menuitemradio" aria-checked={!ctxFile.folderId} onclick={() => { moveResearchItem(ctxFile.id, ""); closeContextMenu(); }}>Unfiled</button>
+                {#each researchFolderChoices as choice (choice.folder.id)}
+                  <button type="button" role="menuitemradio" aria-checked={ctxFile.folderId === choice.folder.id} onclick={() => { moveResearchItem(ctxFile.id, choice.folder.id); closeContextMenu(); }}><span style={`padding-left: ${choice.depth * 12}px`}>{choice.folder.title}</span></button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
+          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchItem(ctxFile as ResearchItem); closeContextMenu(); }}>Remove and delete file</button>
+        {:else if ctx.kind === "wiki-link" && ctxLink}
+          <button type="button" role="menuitem" onclick={() => { openResearchLink(ctxLink as ResearchLink); closeContextMenu(); }}>Open link</button>
+          {#if researchFolderChoices.length > 0}
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
+            {#if contextMenuMoveOpen}
+              <div class="ctx-subsection" role="group" aria-label="Move to folder">
+                <button type="button" role="menuitemradio" aria-checked={!ctxLink.folderId} onclick={() => { moveResearchItem(ctxLink.id, ""); closeContextMenu(); }}>Unfiled</button>
+                {#each researchFolderChoices as choice (choice.folder.id)}
+                  <button type="button" role="menuitemradio" aria-checked={ctxLink.folderId === choice.folder.id} onclick={() => { moveResearchItem(ctxLink.id, choice.folder.id); closeContextMenu(); }}><span style={`padding-left: ${choice.depth * 12}px`}>{choice.folder.title}</span></button>
+                {/each}
+              </div>
+            {/if}
+          {/if}
+          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchItem(ctxLink as ResearchItem); closeContextMenu(); }}>Remove link</button>
+        {/if}
+      </div>
+    {/if}
+
     <div class="sidebar-footer">
       <button
         class="settings-button"
@@ -7771,7 +8952,7 @@
     </div>
   </aside>
 
-  <main class="main-panel" class:left-hidden={!leftSidebarVisible} class:right-hidden={!rightSidebarVisible} inert={mobileDrawerOpen}>
+  <main class="main-panel" class:left-hidden={!leftSidebarShown()} class:right-hidden={!rightSidebarShown()} inert={mobileDrawerOpen}>
     {#if showUpdateBanner}
       <div class="app-banner" role="status">
         <span class="app-banner-message"><strong>A new version is ready.</strong> Reload when you reach a stopping point.</span>
@@ -7808,16 +8989,60 @@
         </span>
       </div>
     {/if}
-    <section class="writing-area" id="editor">
+    <section class="writing-area" class:storyboard-active={workspaceView === "storyboard"} id="editor">
       <div class="workspace-controls" aria-label="Workspace panels">
         <div class="workspace-modes" role="tablist" aria-label="Workspace view">
           <button class="workspace-mode" class:active={workspaceView === "outline"} role="tab" aria-selected={workspaceView === "outline"} onclick={openOutlineView}>Outline</button>
           <button class="workspace-mode" class:active={workspaceView === "writing"} role="tab" aria-selected={workspaceView === "writing"} onclick={() => setWorkspaceView("writing")}>Write</button>
           <button class="workspace-mode" class:active={workspaceView === "storyboard"} role="tab" aria-selected={workspaceView === "storyboard"} onclick={() => setWorkspaceView("storyboard")}>Storyboard</button>
+          {#if timelineEnabled}
           <button class="workspace-mode" class:active={workspaceView === "timeline"} role="tab" aria-selected={workspaceView === "timeline"} onclick={() => setWorkspaceView("timeline")}>Timeline</button>
+          {/if}
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
+        {#if workspaceView === "storyboard"}
+          <div class="board-controls" role="toolbar" aria-label="Storyboard tools">
+            <button class="add-timeline-row" title="Add blank card" aria-label="Add blank card" onclick={() => addStoryboardCard("blank", "")}><Plus size={14} aria-hidden="true" /><span>Add blank card</span></button>
+            <button class="add-timeline-row" title="Reset zoom and position" aria-label="Reset zoom and position" onclick={resetBoardView}><RotateCcw size={14} aria-hidden="true" /><span>Reset view</span></button>
+            <span class="board-zoom-level" aria-live="polite">{Math.round(boardZoom * 100)}%</span>
+            <span class="board-divider" aria-hidden="true"></span>
+            {#each storyboardDrawingTools as item (item.tool)}
+              {@const Icon = item.icon}
+              <button
+                class="drawing-tool"
+                class:active={activeDrawingTool === item.tool}
+                aria-label={`${item.label} tool`}
+                aria-pressed={activeDrawingTool === item.tool}
+                title={`${item.label} tool`}
+                onclick={() => { activeDrawingTool = item.tool; }}
+              ><Icon size={15} aria-hidden="true" /><span>{item.label}</span></button>
+            {/each}
+            {#if activeDrawingTool === "text" || selectedStoryboardTextDrawing()}
+              <label class="drawing-font-size">
+                <span>Text size</span>
+                <input
+                  type="range"
+                  min="8"
+                  max="72"
+                  step="1"
+                  aria-label="Diagram text font size"
+                  value={selectedStoryboardTextDrawing()?.fontSize ?? defaultStoryboardTextFontSize}
+                  oninput={(event) => updateStoryboardTextFontSize((event.currentTarget as HTMLInputElement).value)}
+                />
+                <output>{selectedStoryboardTextDrawing()?.fontSize ?? defaultStoryboardTextFontSize}px</output>
+              </label>
+            {/if}
+            <button
+              class="drawing-delete"
+              aria-label="Delete selected diagram element"
+              title="Delete selected element"
+              disabled={!selectedDrawingId}
+              onclick={() => { if (selectedDrawingId) removeStoryboardDrawing(selectedDrawingId); }}
+            >Delete</button>
+          </div>
+        {/if}
         <div class="panel-toggles">
+          {#if workspaceView === "writing"}
           <button class="panel-toggle" aria-label="Search project" title="Search project (Ctrl+F)" onclick={() => openProjectSearch()}>
             <Search size={15} aria-hidden="true" />
             <span>Search</span>
@@ -7826,6 +9051,8 @@
             <Columns2 size={15} aria-hidden="true" />
             <span>Split</span>
           </button>
+          {/if}
+          {#if workspaceView !== "storyboard"}
           <button class="panel-toggle" aria-label={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} title={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} aria-pressed={leftSidebarVisible} onclick={toggleLeftSidebar}>
             <PanelLeft size={15} aria-hidden="true" />
             <span>Chapters</span>
@@ -7834,6 +9061,7 @@
             <PanelRight size={15} aria-hidden="true" />
             <span>Progress</span>
           </button>
+          {/if}
           <button class="panel-toggle" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (Ctrl/Cmd+/)" aria-pressed={shortcutsOpen} onclick={toggleShortcuts}>
             <Keyboard size={15} aria-hidden="true" />
             <span>Shortcuts</span>
@@ -7862,30 +9090,27 @@
           multiple
           onchange={handleImagePickerChange}
         />
-        <div class="document-meta">
-          <span>{locationLabel}</span>
-          <span class="meta-divider"></span>
-          <span class="document-type"><span class="type-mark">¶</span> {activeDocument?.space ? activeDocument.space.toUpperCase() : "SCENE"}</span>
-          <span class="meta-divider"></span>
-          <span>Edited today</span>
-          {#if markdownEditorEnabled}
-            <button
-              type="button"
-              class="markdown-mode-toggle"
-              aria-pressed={markdownEditorMode}
-              onclick={toggleEditorMode}
-            >{markdownEditorMode ? "Rich text editor" : "Markdown editor"}</button>
-          {/if}
-          <button type="button" class="markdown-mode-toggle image-insert-button" onclick={openImagePicker}>Insert image</button>
-        </div>
+        {#if markdownEditorMode}
+          <div class="markdown-utilities">
+            {#if markdownEditorEnabled}
+              <button
+                type="button"
+                class="markdown-mode-toggle"
+                aria-pressed={markdownEditorMode}
+                onclick={toggleEditorMode}
+              >Rich text editor</button>
+            {/if}
+            <button type="button" class="markdown-mode-toggle" onclick={openImagePicker}>Insert image</button>
+          </div>
+        {/if}
         {#if imageInsertError}
           <p class="image-insert-error" role="status">{imageInsertError}</p>
         {/if}
 
         <input
           class="title-input"
-          data-undo-key={`title:${activeDocumentId}`}
-          aria-label="Document title"
+          data-undo-key={inChapterMode && activeChapter ? `title:chapter:${activeChapter.id}` : `title:${activeDocumentId}`}
+          aria-label={inChapterMode ? "Chapter title" : "Document title"}
           placeholder="Untitled"
           bind:value={title}
           oninput={persist}
@@ -7921,6 +9146,9 @@
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
+          {#if markdownEditorEnabled}
+            <button class="tool-button tool-button-wide" aria-label="Markdown editor" title="Markdown editor" onpointerdown={(event) => event.preventDefault()} onclick={toggleEditorMode}>MD</button>
+          {/if}
         </div>
         {/if}
 
@@ -7969,6 +9197,11 @@
           onpointermove={handleEditorPointerMove}
           onpointerleave={() => { wikiMentionPreview = null; hideCommentPreviewSoon(); }}
           onkeydown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+              if (handleChapterEnter(event)) return;
+            }
+            if (event.key === "Backspace" && handleChapterBoundaryDelete(event, false)) return;
+            if (event.key === "Delete" && handleChapterBoundaryDelete(event, true)) return;
             if (event.key !== "Escape") return;
             selectEditorImage(null);
             hideCommentPreview();
@@ -8104,6 +9337,8 @@
             target={pane.target}
             groups={splitGroups}
             {documents}
+            {chapters}
+            sceneSeparator={publishOptions.sceneSeparator}
             files={splitFiles}
             isActiveDocument={pane.target === docTarget(activeDocumentId)}
             canAdd={canAddSplitPane(splitPanes)}
@@ -8118,6 +9353,7 @@
             onTarget={(value) => { splitPanes = setSplitTarget(splitPanes, pane.id, value); }}
             onAdd={() => { splitPanes = addSplitPane(splitPanes, crypto.randomUUID()); }}
             onEditTitle={(id, value) => updateTileDocument(id, { title: value })}
+            onEditChapterTitle={(chapterId, value) => updateTileChapterTitle(chapterId, value)}
             onEditContent={(id, html) => updateTileDocument(id, { content: html })}
             onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
           />
@@ -8136,7 +9372,7 @@
             onSummaryChange={updateChapterSummary}
           />
         {/if}
-        <div class="storyboard-view" class:storyboard-view-hidden={workspaceView !== "storyboard"}>
+        <div class="storyboard-view" class:storyboard-view-hidden={workspaceView !== "storyboard"} class:left-hidden={!leftSidebarShown()} class:right-hidden={!rightSidebarShown()}>
           <aside class="storyboard-sources" aria-label="Story elements to add">
             <div class="board-sources-heading">
               <span class="board-eyebrow">STORY ELEMENTS</span>
@@ -8190,50 +9426,6 @@
             </section>
           </aside>
           <section class="storyboard-canvas" aria-label="Freeform storyboard">
-            <header class="storyboard-header">
-              <div><span class="board-eyebrow">PLAN YOUR STORY</span><h1>Storyboard</h1></div>
-              <div class="storyboard-header-actions">
-                <span class="board-card-count">{storyboardCards.length} {storyboardCards.length === 1 ? "card" : "cards"}</span>
-                <span class="board-zoom-level" aria-live="polite">{Math.round(boardZoom * 100)}%</span>
-                <button class="add-timeline-row" title="Reset zoom and position" onclick={resetBoardView}><RotateCcw size={14} aria-hidden="true" /> Reset view</button>
-                <button class="add-timeline-row" onclick={() => addStoryboardCard("blank", "")}><Plus size={14} aria-hidden="true" /> Add blank card</button>
-              </div>
-            </header>
-            <div class="storyboard-drawing-toolbar" role="toolbar" aria-label="Diagram drawing tools">
-              {#each storyboardDrawingTools as item (item.tool)}
-                {@const Icon = item.icon}
-                <button
-                  class="drawing-tool"
-                  class:active={activeDrawingTool === item.tool}
-                  aria-label={`${item.label} tool`}
-                  aria-pressed={activeDrawingTool === item.tool}
-                  title={`${item.label} tool`}
-                  onclick={() => { activeDrawingTool = item.tool; }}
-                ><Icon size={15} aria-hidden="true" /><span>{item.label}</span></button>
-              {/each}
-              {#if activeDrawingTool === "text" || selectedStoryboardTextDrawing()}
-                <label class="drawing-font-size">
-                  <span>Text size</span>
-                  <input
-                    type="range"
-                    min="8"
-                    max="72"
-                    step="1"
-                    aria-label="Diagram text font size"
-                    value={selectedStoryboardTextDrawing()?.fontSize ?? defaultStoryboardTextFontSize}
-                    oninput={(event) => updateStoryboardTextFontSize((event.currentTarget as HTMLInputElement).value)}
-                  />
-                  <output>{selectedStoryboardTextDrawing()?.fontSize ?? defaultStoryboardTextFontSize}px</output>
-                </label>
-              {/if}
-              <button
-                class="drawing-delete"
-                aria-label="Delete selected diagram element"
-                title="Delete selected element"
-                disabled={!selectedDrawingId}
-                onclick={() => { if (selectedDrawingId) removeStoryboardDrawing(selectedDrawingId); }}
-              >Delete</button>
-            </div>
             <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
             <div
               class="storyboard-viewport"
@@ -8400,17 +9592,24 @@
 
     <aside
       class="progress-sidebar"
-      class:peek={!rightSidebarVisible}
-      class:peek-open={!rightSidebarVisible && rightSidebarHovered}
-      inert={zenInterfaceHidden || (!rightSidebarVisible && !rightSidebarHovered)}
-      aria-label="Writing goals and activity"
+      class:peek={!rightSidebarShown()}
+      class:peek-open={!rightSidebarShown() && rightSidebarHovered}
+      inert={zenInterfaceHidden || (!rightSidebarShown() && !rightSidebarHovered)}
+      aria-label="Sidebar"
     >
+      <div class="sidebar-tabs" role="tablist" aria-label="Sidebar views">
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "progress"} aria-selected={rightSidebarTab === "progress"} onclick={() => (rightSidebarTab = "progress")}>Progress</button>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "comments"} aria-selected={rightSidebarTab === "comments"} onclick={() => (rightSidebarTab = "comments")}>Comments</button>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "snapshots"} aria-selected={rightSidebarTab === "snapshots"} onclick={() => (rightSidebarTab = "snapshots")}>Snapshots</button>
+        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => closeSidebarDrawers()}><X size={15} aria-hidden="true" /></button>
+      </div>
+
+      {#if rightSidebarTab === "progress"}
       <div class="progress-header">
         <div>
           <span class="progress-eyebrow">YOUR WRITING</span>
           <h2>Progress</h2>
         </div>
-        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => closeSidebarDrawers()}><X size={15} aria-hidden="true" /></button>
       </div>
 
       <section class="progress-section project-progress">
@@ -8510,6 +9709,91 @@
         <div class="calendar-legend"><span>Less</span><i></i><i></i><i></i><i></i><span>More</span></div>
         <p class="activity-note">Activity is recorded when you edit a scene. Added words are estimated from each edit.</p>
       </section>
+      {:else if rightSidebarTab === "comments"}
+      <div class="progress-header"><div><span class="progress-eyebrow">FEEDBACK</span><h2>Comments</h2></div></div>
+      <section class="progress-section">
+        <div class="section-title"><strong>New comment</strong></div>
+        <p class="section-subtitle">Notes for yourself or a proofreader. Never part of the text or any export.</p>
+        {#if pendingAnchor}
+          <form class="comment-form side-form" onsubmit={addComment}>
+            <blockquote class="comment-quote">{pendingAnchor.quote.length > 160 ? `${pendingAnchor.quote.slice(0, 160)}…` : pendingAnchor.quote}</blockquote>
+            <textarea class="preference-select" rows="2" placeholder="Your comment" maxlength="4000" bind:value={commentDraft} aria-label="Comment text" required></textarea>
+            <div class="comment-form-row">
+              <input class="preference-select" type="text" placeholder="Name" maxlength="60" bind:value={commentAuthor} aria-label="Author name" />
+              <button class="data-button" type="submit">Add comment</button>
+            </div>
+          </form>
+        {:else if markdownEditorMode}
+          <p class="data-help">Comments attach to the rich text editor. Switch back to it to add or jump to a comment.</p>
+        {:else}
+          <p class="data-help">Select some text in the scene, then use the comment button in the toolbar.</p>
+        {/if}
+      </section>
+      <section class="progress-section">
+        <div class="section-title"><strong>{showAllComments ? "All comments" : "This chapter"}</strong><span>{activeComments.length}</span></div>
+        <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showAllComments} /> Show all project comments</label>
+        {#if resolvedCommentCount > 0}
+          <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showResolvedComments} /> Show resolved ({resolvedCommentCount})</label>
+        {/if}
+        {#if activeComments.length === 0}
+          <p class="empty-progress">No comments yet. Select text in the editor, then add one above.</p>
+        {:else}
+          <ul class="comment-list">
+            {#each activeComments as comment (comment.id)}
+              <li class="comment-item" class:resolved={comment.resolved}>
+                {#if showAllComments}
+                  <div class="comment-location">{commentLocation(comment)}</div>
+                {/if}
+                <blockquote class="comment-quote">{comment.quote.length > 120 ? `${comment.quote.slice(0, 120)}…` : comment.quote}</blockquote>
+                <p class="comment-body">{comment.body}</p>
+                <div class="comment-meta">{comment.author} · {new Date(comment.createdAt).toLocaleDateString()}{commentPositions[comment.id] === null ? " · text not found any more" : ""}</div>
+                <div class="comment-actions">
+                  <button class="side-action" type="button" disabled={markdownEditorMode || commentPositions[comment.id] === null} onclick={() => goToComment(comment)}>Go to</button>
+                  <button class="side-action" type="button" onclick={() => resolveComment(comment.id, !comment.resolved)}>{comment.resolved ? "Reopen" : "Resolve"}</button>
+                  <button class="side-action danger" type="button" aria-label="Delete comment" onclick={() => deleteComment(comment.id)}>Delete</button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+      {:else}
+      <div class="progress-header"><div><span class="progress-eyebrow">VERSIONS</span><h2>Snapshots</h2></div></div>
+      <section class="progress-section">
+        <div class="section-title"><strong>Save this version</strong></div>
+        <p class="section-subtitle">Keeps a copy of “{title || "Untitled"}” as it is now. Up to ten are kept per scene.</p>
+        <form class="snapshot-form side-form" onsubmit={takeSnapshot}>
+          <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" bind:value={snapshotNote} aria-label="Snapshot note" />
+          <button class="data-button" type="submit">Take snapshot</button>
+        </form>
+      </section>
+      <section class="progress-section">
+        <div class="section-title"><strong>Earlier versions</strong><span>{activeSnapshots.length}</span></div>
+        <p class="section-subtitle">Restoring first saves the current text, so you can go back.</p>
+        {#if activeSnapshots.length === 0}
+          <p class="empty-progress">No snapshots yet. Save one above to freeze this moment.</p>
+        {:else}
+          <ul class="snapshot-list">
+            {#each activeSnapshots as snapshot (snapshot.id)}
+              <li class="snapshot-item">
+                <div class="snapshot-meta">
+                  <strong>{snapshotLabel(snapshot)}</strong>
+                  <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                </div>
+                <div class="snapshot-actions">
+                  <button class="side-action" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
+                  <button class="side-action" type="button" onclick={() => restoreSnapshot(snapshot.id)}>Restore</button>
+                  <button class="side-action danger" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
+                </div>
+                {#if snapshotPreviewId === snapshot.id}
+                  <div class="snapshot-preview">{@html cleanHtml(snapshot.content)}</div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+      {/if}
     </aside>
 </div>
 
@@ -8671,6 +9955,18 @@
       </label>
       <p class="preference-help">When enabled, use the Markdown editor button above a document to switch between Markdown source and rich text.</p>
     </section>
+    <section class="preference-section">
+      <div class="preference-heading"><strong>Timeline view</strong><span>An experimental chronological view of your story</span></div>
+      <label class="preference-toggle">
+        <input
+          type="checkbox"
+          checked={timelineEnabled}
+          onchange={(event) => setTimelineEnabled((event.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>Show Timeline view</span>
+      </label>
+      <p class="preference-help">The Timeline is still taking shape. Turn it on to try it; your timeline data is kept either way.</p>
+    </section>
     </div>
     <div class="settings-pane" id="settings-panel-proofreading" role="tabpanel" aria-labelledby="settings-tab-proofreading" hidden={activeSettingsCategory !== "proofreading"}>
       <h3 class="settings-pane-title">Proofreading</h3>
@@ -8693,14 +9989,14 @@
           {/each}
         </select>
         {#if harperChecking}
-          <p class="preference-help" role="status">Checking the current scene…</p>
+          <p class="preference-help" role="status">Checking the current {inChapterMode ? "chapter" : "scene"}…</p>
         {:else if harperError}
           <p class="preference-error" role="status">{harperError}</p>
         {:else if harperCheckedDocumentId === activeDocumentId && activeDocumentId}
           <p class="preference-help" role="status">
             {harperLints.length === 0
-              ? "No issues found in the current scene."
-              : `${harperLints.length} suggestion${harperLints.length === 1 ? "" : "s"} in the current scene.`}
+              ? `No issues found in the current ${inChapterMode ? "chapter" : "scene"}.`
+              : `${harperLints.length} suggestion${harperLints.length === 1 ? "" : "s"} in the current ${inChapterMode ? "chapter" : "scene"}.`}
           </p>
         {/if}
       {/if}
@@ -9379,7 +10675,7 @@
     </section>
     <section class="preference-section">
       <div class="preference-heading">
-        <strong>In this scene</strong>
+        <strong>{showAllComments ? "All project comments" : "In this scene"}</strong>
         {#if resolvedCommentCount > 0}
           <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showResolvedComments} /> Show resolved ({resolvedCommentCount})</label>
         {/if}
@@ -9390,6 +10686,9 @@
         <ul class="comment-list">
           {#each activeComments as comment (comment.id)}
             <li class="comment-item" class:resolved={comment.resolved}>
+              {#if showAllComments}
+                <div class="comment-location">{commentLocation(comment)}</div>
+              {/if}
               <blockquote class="comment-quote">{comment.quote.length > 120 ? `${comment.quote.slice(0, 120)}…` : comment.quote}</blockquote>
               <p class="comment-body">{comment.body}</p>
               <div class="comment-meta">{comment.author} · {new Date(comment.createdAt).toLocaleDateString()}{commentPositions[comment.id] === null ? " · text not found any more" : ""}</div>
@@ -9410,7 +10709,7 @@
   if (event.target === snapshotsDialog) snapshotsDialog.close();
 }}>
   <div class="settings-header">
-    <div><span class="settings-kicker">SCENE</span><h2>Snapshots</h2></div>
+    <div><span class="settings-kicker">{inChapterMode ? "CHAPTER" : "SCENE"}</span><h2>Snapshots</h2></div>
     <button class="close-settings" aria-label="Close snapshots" type="button" onclick={() => snapshotsDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body">
@@ -9424,14 +10723,14 @@
     <section class="preference-section">
       <div class="preference-heading"><strong>Earlier versions</strong><span>Restoring first saves the current text, so you can go back.</span></div>
       {#if activeSnapshots.length === 0}
-        <p class="data-help">No snapshots of this scene yet.</p>
+        <p class="data-help">No snapshots of this {inChapterMode ? "chapter" : "scene"} yet.</p>
       {:else}
         <ul class="snapshot-list">
           {#each activeSnapshots as snapshot (snapshot.id)}
             <li class="snapshot-item">
               <div class="snapshot-meta">
                 <strong>{snapshotLabel(snapshot)}</strong>
-                <span>{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
               </div>
               <div class="snapshot-actions">
                 <button class="data-button" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
@@ -9898,19 +11197,22 @@
   .chapter-group.dragging { opacity: .45; }
   .chapter-group { position: relative; }
   .chapter-group.drop-before::before, .chapter-group.drop-after::after { position: absolute; right: 2px; left: 2px; z-index: 1; height: 2px; border-radius: 2px; background: var(--accent); content: ""; pointer-events: none; }
+  .scene-row { position: relative; }
+  .scene-row.dragging { opacity: .45; }
+  .scene-row.drop-before::before, .scene-row.drop-after::after { position: absolute; right: 2px; left: 2px; z-index: 1; height: 2px; border-radius: 2px; background: var(--accent); content: ""; pointer-events: none; }
+  .scene-row.drop-before::before { top: -2px; }
+  .scene-row.drop-after::after { bottom: -2px; }
+  .chapter-row.scene-drop-target, .scene-list.scene-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
   .chapter-group.drop-before::before { top: -2px; }
   .chapter-group.drop-after::after { bottom: -2px; }
   .chapter-row, .space-heading { min-height: 32px; padding: 0 4px; border-radius: 5px; }
   .chapter-row:hover, .space-heading:hover { background: var(--hover-bg); }
   .chapter-toggle, .space-toggle { display: flex; min-width: 0; height: 30px; flex: 1; align-items: center; gap: 7px; padding: 0 3px; border: 0; background: transparent; color: var(--text-nav); cursor: pointer; text-align: left; }
-  .chapter-drag, .chapter-action { display: grid; width: 19px; height: 23px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 12px; line-height: 1; }
-  .chapter-drag { cursor: grab; font-size: 15px; touch-action: none; }
+  .chapter-drag { display: grid; width: 19px; height: 23px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: grab; font-size: 15px; line-height: 1; touch-action: none; opacity: 0; }
   .chapter-drag:active { cursor: grabbing; }
+  .chapter-row:hover .chapter-drag, .chapter-row:focus-within .chapter-drag, .chapter-drag:focus-visible { opacity: 1; }
   .chapter-actions { display: flex; flex: 0 0 auto; align-items: center; }
-  .chapter-action { opacity: .45; }
-  .chapter-row:hover .chapter-action, .chapter-action:focus-visible { opacity: 1; }
-  .chapter-action:hover:not(:disabled), .chapter-drag:hover { background: var(--hover-bg); color: var(--text-primary); }
-  .chapter-action:disabled { opacity: .18; cursor: default; }
+  .chapter-drag:hover { background: var(--hover-bg); color: var(--text-primary); }
   .chapter-name-input { min-width: 0; flex: 1; padding: 2px 3px; border: 1px solid var(--border-control); border-radius: 3px; background: var(--control-bg); color: var(--text-primary); font-size: 10px; }
   .chapter-name-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .chevron { display: inline-block; width: 14px; flex: 0 0 auto; color: var(--text-faint); font-size: 17px; line-height: 1; transform: rotate(0deg); transition: transform .12s ease; }
@@ -9919,29 +11221,30 @@
   .tree-name { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
   .chapter-toggle .tree-name, .space-toggle .tree-name { color: var(--text-nav); font-size: 11px; font-weight: 550; }
   .row-add { opacity: 0; }
-  .chapter-row:hover .row-add:not(:disabled), .space-heading:hover .row-add:not(:disabled), .row-add:focus-visible { opacity: 1; }
+  .chapter-row:hover .row-add:not(:disabled), .row-add:focus-visible { opacity: 1; }
   .row-add.research-add { opacity: .55; }
-  .space-heading:hover .row-add.research-add:not(:disabled), .row-add.research-add:focus-visible { opacity: 1; }
+  .row-add.research-add:focus-visible { opacity: 1; }
   .row-add:disabled { opacity: .18; cursor: default; }
-  .row-menu-wrap { position: relative; display: none; flex: 0 0 auto; }
-  .row-menu-trigger { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
-  .row-menu-trigger:hover, .row-menu-trigger[aria-expanded="true"] { background: var(--hover-bg); color: var(--text-primary); }
-  .row-menu-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .row-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; min-width: 190px; flex-direction: column; gap: 1px; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
-  .row-menu button { display: flex; width: 100%; min-height: 38px; align-items: center; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 12px; text-align: left; }
-  .row-menu button:hover:not(:disabled), .row-menu button:focus-visible { background: var(--hover-bg); color: var(--text-heading); outline: none; }
-  .row-menu button:disabled { opacity: .4; cursor: default; }
-  .row-menu button.danger { color: var(--danger); }
-  .row-menu button.danger:hover:not(:disabled), .row-menu button.danger:focus-visible { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
-  .label-menu-wrap { position: relative; display: flex; flex: 0 0 auto; align-items: center; }
+  .ctx-menu { position: fixed; z-index: 80; display: flex; min-width: 210px; max-width: min(280px, calc(100vw - 16px)); max-height: min(70vh, 480px); flex-direction: column; gap: 1px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+  .ctx-menu button { display: flex; width: 100%; min-height: 38px; align-items: center; gap: 8px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 12px; text-align: left; }
+  .ctx-menu button:hover:not(:disabled), .ctx-menu button:focus-visible { background: var(--hover-bg); color: var(--text-heading); outline: none; }
+  .ctx-menu button:disabled { opacity: .4; cursor: default; }
+  .ctx-menu button.danger { color: var(--danger); }
+  .ctx-menu button.danger:hover:not(:disabled), .ctx-menu button.danger:focus-visible { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+  .ctx-menu button[aria-checked="true"] { font-weight: 600; }
+  .ctx-menu .label-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--label-color); }
+  .ctx-section { display: flex; flex-direction: column; gap: 1px; }
+  .ctx-divider { height: 1px; margin: 4px 6px; background: var(--border-soft); }
+  .ctx-subsection { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 2px 10px; padding-left: 6px; border-left: 1px solid var(--border-soft); }
+  .ctx-add-wrap { display: flex; flex: 0 0 auto; align-items: center; }
   .label-trigger { display: grid; width: 16px; height: 22px; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
   .label-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .label-trigger .label-dot { width: 10px; height: 10px; border: 1.5px solid var(--text-faint); border-radius: 50%; opacity: .75; transition: opacity .12s ease, border-color .12s ease; }
   .document-row:hover .label-trigger .label-dot, .chapter-row:hover .label-trigger .label-dot, .label-trigger:hover .label-dot, .label-trigger:focus-visible .label-dot { border-color: var(--text-muted); opacity: 1; }
   .label-trigger.has-label .label-dot { border-color: var(--label-color); background: var(--label-color); opacity: 1; }
-  .label-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; width: 170px; max-height: 230px; flex-direction: column; gap: 1px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
-  .label-menu-chapter { right: auto; left: 0; }
-  .label-menu .label-menu-manage { margin-top: 3px; padding-top: 3px; border-top: 1px solid var(--border-soft); border-radius: 0 0 5px 5px; color: var(--text-muted); }
+  /* Scene rows pad 2px on the right vs 4px on chapter rows; nudge the scene
+     label so both dots share the same right edge. */
+  .scene-row .label-trigger { margin-right: 2px; }
   .label-filter { display: grid; gap: 5px; padding: 0 7px 9px; }
   .label-filter-label { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }
   .label-filter-select { width: 100%; height: 27px; padding: 0 6px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--control-bg); color: var(--text-secondary); font-size: 10px; }
@@ -9961,25 +11264,25 @@
   .label-swatch input:focus-visible + .label-swatch-dot { outline: 2px solid var(--accent); outline-offset: 2px; }
   .label-delete { margin-left: auto; height: 27px; padding: 0 9px; font-size: 10px; }
   .labels-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
-  .label-menu button { display: flex; min-height: 30px; align-items: center; gap: 7px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 11px; text-align: left; }
-  .label-menu button:hover, .label-menu button:focus-visible { background: var(--hover-bg); color: var(--text-heading); outline: none; }
-  .label-menu button[aria-checked="true"] { color: var(--text-heading); font-weight: 600; }
-  .label-menu .label-dot { width: 9px; height: 9px; flex: 0 0 auto; border: 0; border-radius: 50%; background: var(--label-color); opacity: 1; }
   .label-menu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .label-menu-none { color: var(--text-muted); }
   .scene-list, .space-items { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 5px 22px; padding-left: 7px; border-left: 1px solid var(--tree-divider); }
+  .space-items.wiki-items { margin-left: 0; padding-left: 0; border-left: 0; }
+  .space-items.wiki-items.wiki-drop-root { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 6px; }
+  .note-folder-row, .note-document-row { position: relative; }
+  .note-folder-row.dragging, .note-document-row.dragging { opacity: .45; }
+  .note-folder-row.drop-before::before, .note-folder-row.drop-after::after,
+  .note-document-row.drop-before::before, .note-document-row.drop-after::after { position: absolute; right: 2px; left: 2px; z-index: 1; height: 2px; border-radius: 2px; background: var(--accent); content: ""; pointer-events: none; }
+  .note-folder-row.drop-before::before, .note-document-row.drop-before::before { top: -2px; }
+  .note-folder-row.drop-after::after, .note-document-row.drop-after::after { bottom: -2px; }
+  .note-folder-row.wiki-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
   .note-folder-row { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 1px; padding-right: 2px; border-radius: 5px; }
   .note-folder-row:hover { background: var(--hover-bg); }
   .note-folder-toggle { display: flex; min-width: 0; height: 27px; flex: 1; align-items: center; gap: 5px; padding: 0 3px; border: 0; background: transparent; color: var(--text-nav); cursor: pointer; text-align: left; font-size: 10px; }
   .note-folder-icon { width: 13px; flex: 0 0 auto; color: var(--text-muted); font-size: 13px; text-align: center; }
   .note-folder-actions { display: flex; flex: 0 0 auto; align-items: center; }
-  .note-folder-actions .chapter-action { opacity: .45; }
-  .note-folder-row:hover .chapter-action, .note-folder-actions .chapter-action:focus-visible { opacity: 1; }
-  .note-folder-row:hover .row-action, .note-folder-actions .row-action:focus-visible { opacity: 1; }
   .note-folder-name-input { height: 23px; }
   .note-document-row { padding-right: 2px; }
-  .note-folder-select { width: 19px; height: 20px; flex: 0 0 auto; padding: 0; border: 0; appearance: none; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; opacity: .45; }
-  .note-folder-select:focus-visible, .note-document-row:hover .note-folder-select { width: auto; max-width: 88px; appearance: auto; opacity: 1; }
   .document-row { display: flex; min-width: 0; min-height: 29px; align-items: center; gap: 1px; padding: 0 2px; border-radius: 5px; }
   .document-row:hover, .document-row.current { background: var(--selected-bg); }
   .document-select { display: flex; min-width: 0; height: 27px; flex: 1; align-items: center; gap: 7px; padding: 0 4px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; font-size: 10px; }
@@ -10021,6 +11324,12 @@
   .progress-sidebar.peek { transform: translateX(100%); pointer-events: none; }
   .progress-sidebar.peek.peek-open { transform: translateX(0); pointer-events: auto; box-shadow: var(--shadow-panel-left); }
   .progress-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 0 3px 19px; }
+  .sidebar-tabs { display: flex; align-items: center; gap: 5px; margin-bottom: 14px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+  .sidebar-tab { height: 26px; flex: 1; padding: 0 6px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
+  .sidebar-tab:hover { color: var(--text-primary); }
+  .sidebar-tab.active { background: var(--selected-bg); color: var(--selected-text); font-weight: 600; }
+  .sidebar-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .sidebar-tabs .progress-close { margin-left: auto; }
   .progress-close { display: none; width: 26px; height: 26px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 20px; line-height: 1; }
   .progress-close:hover { background: var(--hover-bg); color: var(--text-primary); }
   .progress-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -10029,6 +11338,7 @@
   .progress-section { padding: 16px 3px 18px; border-top: 1px solid var(--tree-divider); }
   .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .section-title strong { color: var(--text-nav); font-size: 11px; font-weight: 600; }
+  .section-subtitle { margin: 6px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
   .goal-tag { padding: 3px 5px; border-radius: 3px; background: var(--selected-bg); color: var(--text-muted); font-size: 8px; font-weight: 650; letter-spacing: .6px; }
   .progress-numbers { display: flex; align-items: baseline; gap: 5px; margin-top: 15px; }
   .progress-numbers strong { color: var(--text-heading); font-family: Georgia, serif; font-size: 23px; font-weight: 500; }
@@ -10106,6 +11416,14 @@
     padding: 15px 0 8px;
     background: var(--page-bg);
   }
+  .board-controls { display: flex; min-width: 0; flex: 1; align-items: center; gap: 4px; overflow-x: auto; margin: 0 8px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); scrollbar-width: none; }
+  .board-controls::-webkit-scrollbar { display: none; }
+  .board-controls .add-timeline-row { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 28px; padding: 0 6px; }
+  .board-controls .add-timeline-row span, .board-controls .drawing-tool span { display: none; }
+  .board-controls .drawing-tool { min-width: 0; }
+  .board-controls .board-zoom-level { flex: 0 0 auto; padding: 0 2px; }
+  .board-controls .drawing-font-size { flex: 0 0 auto; }
+  .board-divider { width: 1px; flex: 0 0 auto; align-self: stretch; margin: 2px 3px; background: var(--border); }
   .workspace-modes, .panel-toggles { display: flex; align-items: center; gap: 5px; }
   .workspace-modes { padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
   .workspace-mode { height: 26px; padding: 0 11px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
@@ -10148,10 +11466,8 @@
   .split-tile.target-drop-active { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 9px; }
   .panel-toggle.active { border-color: var(--border); background: var(--surface); color: var(--text-secondary); }
   .editor-column.image-drop-active { outline: 2px dashed var(--accent); outline-offset: 10px; border-radius: 4px; }
-  .document-meta { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 10px; }
-  .document-type { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 650; letter-spacing: .8px; }
-  .type-mark { color: var(--accent); font-family: Georgia, serif; font-size: 15px; font-weight: 400; }
-  .meta-divider { height: 12px; border-left: 1px solid var(--border); }
+  .markdown-utilities { display: flex; gap: 8px; margin: 0 0 4px; }
+  .markdown-utilities .markdown-mode-toggle { margin-left: 0; }
   .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--writing-font, var(--interface-font)); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
   .title-input::placeholder { color: var(--text-faint); }
   .toolbar { position: sticky; top: 58px; z-index: 1; display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
@@ -10159,13 +11475,12 @@
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
   .tool-button:hover { background: var(--toolbar-hover); color: var(--selected-text); }
+  .tool-button-wide { width: auto; padding: 0 8px; font-size: 10px; font-weight: 700; letter-spacing: .5px; }
   .italic { font-family: Georgia, serif; font-style: italic; }
   .underline { text-decoration: underline; text-underline-offset: 2px; }
   .strike { text-decoration: line-through; }
   .markdown-mode-toggle { margin-left: auto; padding: 5px 8px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-secondary); cursor: pointer; font-size: 9px; }
   .markdown-mode-toggle:hover { border-color: var(--accent); color: var(--text-heading); }
-  .image-insert-button { margin-left: auto; }
-  .document-meta .markdown-mode-toggle + .image-insert-button { margin-left: 0; }
   .image-tool-button { font-size: 17px; }
   .image-insert-error { margin: 8px 0 0; color: var(--danger, #b42318); font-size: 11px; }
   .image-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 12px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
@@ -10183,6 +11498,10 @@
   .markdown-source-editor.fade-other-paragraphs :global(.cm-line.cm-faded-line) { opacity: .38; }
   :global(.markdown-image-placeholder) { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface-raised); color: var(--text-muted); font: 10px/1.6 var(--markdown-editor-font); white-space: nowrap; }
   .editor-content-hidden { display: none; }
+  .scene-break { margin: 30px auto; color: var(--text-faint); font-size: 15px; letter-spacing: 6px; text-align: center; user-select: none; }
+  .scene-break-blank:empty::before { content: "· · ·"; opacity: .7; }
+  .scene-break-line::after { display: block; width: 120px; height: 1px; margin: 0 auto; background: var(--border); content: ""; }
+  .scene-break-blank { min-height: 26px; }
   .editor-content { min-height: 430px; padding: 37px 1px 35px; outline: none; color: var(--text-body); font-family: var(--writing-font, var(--interface-font)); font-size: calc(16px * var(--editor-scale)); line-height: 1.85; }
   :global(::highlight(prosecraft-wiki-mention)) {
     background-color: color-mix(in srgb, var(--accent) 13%, transparent);
@@ -10234,6 +11553,76 @@
   .sr-only { position: absolute; overflow: hidden; width: 1px; height: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
   .storyboard-view { display: grid; width: min(100%, 1120px); min-height: 0; flex: 1; grid-template-columns: minmax(185px, 230px) minmax(0, 1fr); gap: 22px; }
   .storyboard-view-hidden { display: none; }
+  /* Storyboard fills the whole window while active, with the app controls
+     floating on top of it. Sidebars and popovers keep their higher layers.
+     Container queries would contain the fixed view to the writing area, so
+     they are off while the board is up (tiles are hidden then anyway). */
+  .writing-area.storyboard-active { container: none; }
+  .writing-area.storyboard-active .workspace-controls {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    width: 100%;
+    background: transparent;
+    pointer-events: none;
+  }
+  .writing-area.storyboard-active .workspace-modes,
+  .writing-area.storyboard-active .panel-toggles,
+  .writing-area.storyboard-active .board-controls,
+  .writing-area.storyboard-active .storyboard-sources { pointer-events: auto; }
+  .writing-area.storyboard-active .panel-toggles { padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+  .writing-area.storyboard-active .storyboard-view {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 258px;
+    right: 286px;
+    z-index: 1;
+    width: auto;
+    max-width: none;
+    padding: calc(70px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+    background: transparent;
+    pointer-events: none;
+    transition: left .18s ease, right .18s ease;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .writing-area.storyboard-active .storyboard-view.left-hidden { left: 0; }
+  .writing-area.storyboard-active .storyboard-view.right-hidden { right: 0; }
+  .app-shell.zen-hidden .writing-area.storyboard-active .storyboard-view { right: 0; left: 0; }
+  .writing-area.storyboard-active .storyboard-canvas {
+    background: transparent;
+    border: 0;
+    pointer-events: none;
+  }
+  /* The viewport is positioned, so it paints above static content: the
+     floating sources panel needs its own elevation to stay visible. */
+  .writing-area.storyboard-active .storyboard-sources { position: relative; z-index: 2; }
+  /* The panel floats on its own so its scroll never depends on grid sizing. */
+  .writing-area.storyboard-active .storyboard-sources {
+    position: fixed;
+    top: calc(82px + env(safe-area-inset-top));
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    left: 270px;
+    width: 240px;
+    max-height: none;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transition: left .18s ease;
+  }
+  .writing-area.storyboard-active .storyboard-view.left-hidden .storyboard-sources,
+  .app-shell.zen-hidden .writing-area.storyboard-active .storyboard-sources { left: 12px; }
+  .writing-area.storyboard-active .storyboard-viewport {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    border: 0;
+    border-radius: 0;
+    pointer-events: auto;
+    background-color: var(--surface-raised);
+    background-image: radial-gradient(circle, color-mix(in srgb, var(--text-muted) 38%, transparent) 1.2px, transparent 1.7px);
+  }
+  .main-panel:has(.storyboard-active) .app-banner,
+  .main-panel:has(.storyboard-active) .storage-banner { position: relative; z-index: 6; }
   .storyboard-sources { min-height: 0; overflow: auto; padding: 16px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); scrollbar-width: thin; }
   .board-sources-heading { padding: 0 3px 14px; border-bottom: 1px solid var(--border-soft); }
   .board-eyebrow { color: var(--eyebrow); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; }
@@ -10251,14 +11640,9 @@
   .source-name { overflow: hidden; min-width: 0; flex: 1; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
   .board-source-empty { margin: 5px 3px; color: var(--text-muted); font-size: 9px; }
   .storyboard-canvas { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; padding: 18px 20px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
-  .storyboard-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid var(--border-soft); }
-  .storyboard-header h1 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 25px; font-weight: 500; }
-  .storyboard-header-actions { display: flex; align-items: center; gap: 10px; }
-  .board-card-count { padding-bottom: 3px; color: var(--text-muted); font-size: 9px; }
   .board-zoom-level { padding-bottom: 3px; color: var(--text-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
   .add-timeline-row { height: 28px; padding: 0 9px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
   .add-timeline-row:hover { background: var(--control-hover); color: var(--selected-text); }
-  .storyboard-drawing-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: -7px 0 10px; }
   .drawing-tool, .drawing-delete { display: inline-flex; min-height: 28px; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-raised); color: var(--text-nav); cursor: pointer; font-size: 9px; }
   .drawing-tool { min-width: 54px; }
   .drawing-tool.active { border-color: var(--accent); background: var(--selected-bg); color: var(--selected-text); }
@@ -10548,6 +11932,34 @@
   .comment-list { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 12px; list-style: none; }
   .comment-item { display: flex; flex-direction: column; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
   .comment-item.resolved { opacity: .6; }
+  .progress-sidebar .comment-list { gap: 10px; }
+  .progress-sidebar .comment-item,
+  .progress-sidebar .snapshot-item { padding: 12px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow-card); }
+  .progress-sidebar .comment-item.resolved { opacity: .55; }
+  .progress-sidebar .comment-location { margin-bottom: 2px; }
+  .progress-sidebar .comment-quote { font-size: 10px; }
+  .progress-sidebar .comment-body { font-size: 12px; }
+  .progress-sidebar .comment-meta { font-size: 9px; }
+  .progress-sidebar .comment-actions,
+  .progress-sidebar .snapshot-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+  .side-action { padding: 2px 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; font-weight: 600; }
+  .side-action:hover:not(:disabled) { color: var(--text-heading); text-decoration: underline; text-underline-offset: 2px; }
+  .side-action:disabled { opacity: .4; cursor: default; }
+  .side-action.danger { color: var(--danger); }
+  .side-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .progress-sidebar .side-form { gap: 7px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .progress-sidebar .side-form .preference-select { height: 30px; font-size: 10px; }
+  .progress-sidebar .side-form textarea.preference-select { height: auto; min-height: 54px; padding-top: 7px; font-size: 11px; line-height: 1.5; }
+  .progress-sidebar .side-form .comment-form-row { gap: 6px; }
+  .progress-sidebar .side-form .comment-form-row .data-button,
+  .progress-sidebar .side-form.snapshot-form .data-button { height: 30px; font-size: 10px; white-space: nowrap; }
+  .progress-sidebar .snapshot-form.side-form { flex-direction: column; }
+  .progress-sidebar .snapshot-form.side-form .data-button { width: 100%; }
+  .progress-sidebar .comment-resolved-toggle { display: flex; margin: 10px 0 2px; font-size: 9px; }
+  .progress-sidebar .snapshot-meta strong { font-size: 11px; }
+  .progress-sidebar .snapshot-meta span { font-size: 9px; }
+  .progress-sidebar .snapshot-preview { max-height: 160px; font-size: 11px; border-radius: 6px; background: var(--control-bg); }
+  .comment-location { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
   .comment-body { margin: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
   .comment-meta { color: var(--text-muted); font-size: 10px; }
   .comment-actions { display: flex; gap: 6px; }
@@ -10603,8 +12015,7 @@
   .done-button:hover { background: var(--accent-strong-hover); }
 
   @media (hover: none) {
-    .row-add, .chapter-action { opacity: .75; }
-    .note-folder-select { width: auto; max-width: 88px; appearance: auto; opacity: 1; }
+    .row-add { opacity: .75; }
   }
 
   @media (max-width: 1050px) {
@@ -10613,6 +12024,7 @@
     .main-panel { margin-right: 0; }
     .workspace-controls { justify-content: flex-start; gap: 8px; }
     .storyboard-view { gap: 14px; }
+    .writing-area.storyboard-active .storyboard-view { right: 0; }
   }
   @media (max-width: 760px), (pointer: coarse) and (max-height: 520px) {
     .sidebar {
@@ -10660,6 +12072,15 @@
     .main-panel,
     .main-panel.left-hidden,
     .main-panel.right-hidden { margin-right: 0; margin-left: 0; }
+    .writing-area.storyboard-active .storyboard-view {
+      right: 0;
+      left: 0;
+      padding-top: calc(120px + env(safe-area-inset-top));
+    }
+    .writing-area.storyboard-active .storyboard-sources {
+      left: 12px;
+      top: calc(132px + env(safe-area-inset-top));
+    }
     .writing-area {
       padding-top: calc(12px + env(safe-area-inset-top));
       padding-right: max(16px, env(safe-area-inset-right));
@@ -10682,19 +12103,9 @@
     .app-banner { align-items: flex-start; flex-direction: column; gap: 8px; }
     .app-banner-actions { width: 100%; }
     .app-banner .data-button { flex: 1; }
-    .chapter-move-action { display: none; }
-    .chapter-actions > .chapter-action,
-    .chapter-actions > .row-add,
-    .scene-row > .row-action { display: none; }
-    .row-menu-wrap { display: block; }
-    .row-menu-trigger { width: 40px; height: 40px; }
-    .label-trigger { width: 26px; height: 26px; }
-    .label-trigger .label-dot { opacity: .5; }
     .note-folder-row { flex-wrap: wrap; padding-bottom: 2px; }
     .note-folder-actions { flex-wrap: wrap; justify-content: flex-end; }
     .storyboard-view { grid-template-columns: 1fr; }
-    .storyboard-header { align-items: flex-start; flex-direction: column; gap: 8px; }
-    .storyboard-header-actions { width: 100%; flex-wrap: wrap; }
     .storyboard-sources { max-height: 230px; }
     .storyboard-sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0 12px; }
     .board-sources-heading { grid-column: 1 / -1; }
@@ -10744,7 +12155,7 @@
 
     .editor-content { font-size: calc(17px * var(--editor-scale)); line-height: 1.75; }
     .title-input { font-size: clamp(calc(30px * var(--editor-scale)), 9vw, calc(40px * var(--editor-scale))); }
-    .document-meta { flex-wrap: wrap; row-gap: 4px; font-size: 11px; }
+    .markdown-utilities { flex-wrap: wrap; row-gap: 4px; }
   }
   @media (max-width: 640px) {
     .main-settings-dialog { height: 100vh; height: 100dvh; max-height: 100dvh; }
@@ -10788,8 +12199,8 @@
     .note-folder-toggle { height: 38px; font-size: 12px; }
     .document-row { min-height: 42px; }
     .document-select { height: 40px; font-size: 13px; }
-    .chapter-drag, .chapter-action { width: 30px; height: 38px; }
-    .chapter-action, .row-add { opacity: .8; }
+    .chapter-drag { display: none; }
+    .row-add { opacity: .8; }
     .project-identity-actions button { width: 38px; height: 38px; }
     .settings-button { height: 44px; font-size: 12px; }
     .panel-toggle { min-height: 40px; padding: 0 10px; }
@@ -10798,7 +12209,6 @@
     .markdown-mode-toggle { min-height: 36px; font-size: 12px; }
     .export-button { height: 40px; font-size: 12px; }
     .style-select { height: 40px; font-size: 12px; }
-    .note-folder-select { min-height: 32px; }
     .progress-close, .close-settings { width: 40px; height: 40px; }
     .done-button, .data-button { min-height: 40px; }
     .board-source { min-height: 40px; }
@@ -10829,9 +12239,10 @@
   .app-shell.zen-hidden .main-panel { margin-right: 0; margin-left: 0; }
   .app-shell.zen-hidden .split-tile,
   .app-shell.zen-hidden .workspace-controls,
-  .app-shell.zen-hidden .document-meta,
+  .app-shell.zen-hidden .sidebar,
   .app-shell.zen-hidden .title-input,
   .app-shell.zen-hidden .toolbar,
+  .app-shell.zen-hidden .markdown-utilities,
   .app-shell.zen-hidden .image-edit-toolbar,
   .app-shell.zen-hidden .image-insert-error,
   .app-shell.zen-hidden .editor-footer {

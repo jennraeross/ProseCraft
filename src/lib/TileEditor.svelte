@@ -8,12 +8,15 @@
     title,
     html,
     onTitle,
-    onChange
+    onChange,
+    scrollRequest
   }: {
     title: string;
     html: string;
     onTitle: (value: string) => void;
     onChange: (html: string) => void;
+    /** Scroll to a section when the pane retargets; null scrolls to top. */
+    scrollRequest?: { key: string; section: number } | null;
   } = $props();
 
   let titleInput = $state<HTMLInputElement>();
@@ -23,6 +26,7 @@
   // The body HTML this editor last emitted, so the prop echo does not reset the caret.
   let emittedHtml = "";
   let emitTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastScrollKey: string | null | undefined = undefined;
 
   // Content changed from outside (another tile, a rename, an undo): show it,
   // unless this is our own echo or the user is typing in this tile.
@@ -38,6 +42,20 @@
     const next = title;
     if (next === titleValue || document.activeElement === titleInput) return;
     titleValue = next;
+  });
+
+  // Jump to the requested section once per retarget; later content updates
+  // must never yank the scroll position while reading or typing.
+  $effect(() => {
+    const request = scrollRequest;
+    const element = body;
+    if (!element || !request || request.key === lastScrollKey) return;
+    lastScrollKey = request.key;
+    if (request.section <= 0) {
+      element.scrollTop = 0;
+      return;
+    }
+    element.querySelectorAll(".scene-break")[request.section - 1]?.scrollIntoView({ block: "center" });
   });
 
   function emit() {
@@ -120,4 +138,8 @@
   .tile-body :global(code) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
   .tile-body :global(table) { width: 100%; border-collapse: collapse; font-size: .9em; }
   .tile-body :global(th), .tile-body :global(td) { padding: 5px 8px; border: 1px solid var(--border); text-align: left; }
+  .tile-body :global(.scene-break) { margin: 24px auto; color: var(--text-faint); font-size: 14px; letter-spacing: 6px; text-align: center; user-select: none; }
+  .tile-body :global(.scene-break-blank:empty::before) { content: "· · ·"; opacity: .7; }
+  .tile-body :global(.scene-break-line::after) { display: block; width: 100px; height: 1px; margin: 0 auto; background: var(--border); content: ""; }
+  .tile-body :global(.scene-break-blank) { min-height: 22px; }
 </style>

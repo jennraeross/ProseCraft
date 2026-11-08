@@ -26,6 +26,22 @@ function cleanNode(node: Node): Node | null {
     return normalizedRichPlaceholder(node);
   }
 
+  if (node.tagName === "DIV" && node.classList.contains("scene-break")) {
+    // Chapter dividers persist as structural markers with their glyph, so
+    // undo restores and tiles render identically to the live editor.
+    const clean = document.createElement("div");
+    clean.className = ["scene-break"]
+      .concat(node.classList.contains("scene-break-line") ? ["scene-break-line"] : [])
+      .concat(node.classList.contains("scene-break-blank") ? ["scene-break-blank"] : [])
+      .join(" ");
+    clean.setAttribute("contenteditable", "false");
+    for (const child of Array.from(node.childNodes)) {
+      const cleanChild = cleanNode(child);
+      if (cleanChild) clean.append(cleanChild);
+    }
+    return clean;
+  }
+
   if (!safeTags.has(node.tagName)) {
     const fragment = document.createDocumentFragment();
     for (const child of Array.from(node.childNodes)) {
