@@ -54,37 +54,51 @@ server.tool(
 
 server.tool(
   "read_scene",
-  "Read one scene as Markdown with metadata.",
-  { projectId: z.string(), sceneId: z.string() },
-  async ({ projectId, sceneId }) => {
-    const scene = await readScene(resolveRoot(), projectId, sceneId);
+  "Read one scene as Markdown with metadata. Trashed scenes fail unless includeTrashed is set.",
+  {
+    projectId: z.string(),
+    sceneId: z.string(),
+    includeTrashed: z.boolean().optional().describe("Read the scene even if it is in the Trash")
+  },
+  async ({ projectId, sceneId, includeTrashed }) => {
+    const scene = await readScene(resolveRoot(), projectId, sceneId, { includeTrashed });
     return { content: [{ type: "text", text: JSON.stringify(scene, null, 2) }] };
   }
 );
 
 server.tool(
   "write_scene",
-  "Create or update a scene. Omit sceneId to create; pass chapterId when creating.",
+  "Create or update a scene. Omit sceneId to create with a generated id. " +
+    "Only title, chapterId and the body change; every other frontmatter field is preserved. " +
+    "An unknown sceneId fails unless create is true. " +
+    "Pass expectedRevision to fail instead of overwriting a newer edit; the result carries the new revision.",
   {
     projectId: z.string(),
     sceneId: z.string().optional(),
     chapterId: z.string().optional(),
     title: z.string().optional(),
-    markdown: z.string().describe("Scene body in Markdown")
+    markdown: z.string().describe("Scene body in Markdown"),
+    create: z.boolean().optional().describe("Create a new scene when sceneId is unknown"),
+    expectedRevision: z.number().int().nonnegative().optional().describe("Fail unless the stored scene revision equals this")
   },
-  async ({ projectId, sceneId, chapterId, title, markdown }) => {
-    const scene = await writeScene(resolveRoot(), projectId, { sceneId, chapterId, title, markdown });
+  async ({ projectId, sceneId, chapterId, title, markdown, create, expectedRevision }) => {
+    const scene = await writeScene(resolveRoot(), projectId, { sceneId, chapterId, title, markdown, create, expectedRevision });
     return { content: [{ type: "text", text: JSON.stringify(scene, null, 2) }] };
   }
 );
 
 server.tool(
   "trash_scene",
-  "Move a scene to Trash (tombstone + remove file).",
-  { projectId: z.string(), sceneId: z.string() },
-  async ({ projectId, sceneId }) => {
-    await trashScene(resolveRoot(), projectId, sceneId);
-    return { content: [{ type: "text", text: `Trashed scene ${sceneId}.` }] };
+  "Move a scene to Trash (tombstone + remove file). " +
+    "Pass expectedRevision to fail instead of trashing a newer edit; the result carries the new revision.",
+  {
+    projectId: z.string(),
+    sceneId: z.string(),
+    expectedRevision: z.number().int().nonnegative().optional().describe("Fail unless the stored scene revision equals this")
+  },
+  async ({ projectId, sceneId, expectedRevision }) => {
+    const result = await trashScene(resolveRoot(), projectId, sceneId, { expectedRevision });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
 
@@ -100,15 +114,17 @@ server.tool(
 
 server.tool(
   "update_chapter",
-  "Rename a chapter or update its summary.",
+  "Rename a chapter or update its summary. " +
+    "Pass expectedRevision to fail instead of overwriting a newer edit; the result carries the new revision.",
   {
     projectId: z.string(),
     chapterId: z.string(),
     title: z.string().optional(),
-    summary: z.string().optional()
+    summary: z.string().optional(),
+    expectedRevision: z.number().int().nonnegative().optional().describe("Fail unless the stored chapter revision equals this")
   },
-  async ({ projectId, chapterId, title, summary }) => {
-    const chapter = await updateChapter(resolveRoot(), projectId, chapterId, { title, summary });
+  async ({ projectId, chapterId, title, summary, expectedRevision }) => {
+    const chapter = await updateChapter(resolveRoot(), projectId, chapterId, { title, summary, expectedRevision });
     return { content: [{ type: "text", text: JSON.stringify(chapter, null, 2) }] };
   }
 );
