@@ -9289,6 +9289,7 @@
           maxlength="120"
         />
 
+        <div class="editor-tools">
         {#if !markdownEditorMode}
         <div class="toolbar" role="toolbar" aria-label="Text formatting">
           <label class="sr-only" for="block-style">Text style</label>
@@ -9397,6 +9398,7 @@
             <button type="button" class="remove-image-button" onpointerdown={(event) => event.preventDefault()} onclick={removeSelectedImage}>Remove image</button>
           </div>
         {/if}
+        </div>
 
         {#if markdownEditorMode}
           <div
@@ -11709,7 +11711,7 @@
   .tile-grid.split-open:not(.stacked-tiles) > .editor-column { grid-column: 1; grid-row: 1 / -1; }
   .tile-grid.split-open .editor-scroll { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   /* The toolbar sticks to the tile instead of the page; its own surface stays opaque above the text. */
-  .tile-grid.split-open:not(.stacked-tiles) .toolbar { top: 0; }
+  .tile-grid.split-open:not(.stacked-tiles) .editor-tools { top: 0; }
   /* One column stacks the tiles instead of squeezing them, and the page scrolls again. */
   .tile-grid.split-open.stacked-tiles { height: auto; grid-template-rows: none; }
   .tile-grid.split-open.stacked-tiles > .editor-column,
@@ -11723,7 +11725,8 @@
   .markdown-utilities .markdown-mode-toggle { margin-left: 0; }
   .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--writing-font, var(--interface-font)); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
   .title-input::placeholder { color: var(--text-faint); }
-  .toolbar { position: sticky; top: 58px; z-index: 1; display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
+  .editor-tools { position: sticky; top: 58px; z-index: 1; display: flex; flex-direction: column; gap: 6px; }
+  .toolbar { display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
   .style-select { width: 112px; height: 28px; padding: 0 6px; border: 0; outline: 0; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
@@ -11736,7 +11739,7 @@
   .markdown-mode-toggle:hover { border-color: var(--accent); color: var(--text-heading); }
   .image-tool-button { font-size: 17px; }
   .image-insert-error { margin: 8px 0 0; color: var(--danger, #b42318); font-size: 11px; }
-  .image-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 8px 0 12px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
+  .image-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 0; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
   .image-edit-label { margin: 0 4px; color: var(--text-muted); font-size: 10px; }
   .image-edit-toolbar button { min-height: 25px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
   .image-edit-toolbar button:hover { border-color: var(--accent); color: var(--text-heading); }
@@ -12371,7 +12374,7 @@
       margin-bottom: 14px;
       padding-top: calc(12px + env(safe-area-inset-top));
     }
-    .toolbar { top: calc(8px + env(safe-area-inset-top)); }
+    .editor-tools { top: calc(8px + env(safe-area-inset-top)); }
     .panel-toggles { margin-left: auto; }
     .panel-toggle span { display: none; }
     .storage-banner { align-items: flex-start; flex-direction: column; gap: 8px; }
@@ -12518,7 +12521,7 @@
   .app-shell.zen-hidden .workspace-controls,
   .app-shell.zen-hidden .sidebar,
   .app-shell.zen-hidden .title-input,
-  .app-shell.zen-hidden .toolbar,
+  .app-shell.zen-hidden .editor-tools,
   .app-shell.zen-hidden .markdown-utilities,
   .app-shell.zen-hidden .image-edit-toolbar,
   .app-shell.zen-hidden .image-insert-error,
