@@ -156,6 +156,8 @@
               data-undo-key={`timeline-title:${node.id}`}
               aria-label="Title for timeline moment {index + 1}"
               placeholder="What happens here?"
+              autocapitalize="sentences"
+              enterkeyhint="done"
               maxlength={TIMELINE_TITLE_LIMIT}
               value={node.title}
               oninput={(event) => onUpdate(node.id, { title: (event.currentTarget as HTMLInputElement).value })}
@@ -287,6 +289,8 @@
     .timeline-drag, .timeline-action, .timeline-remove { width: 36px; height: 36px; }
     .timeline-description { font-size: 16px; }
     .timeline-when { grid-template-columns: 1fr; }
+    /* iOS zooms the page when a focused control is smaller than 16px. */
+    .timeline-field input { font-size: 16px; }
   }
 
   @media (max-width: 440px) {

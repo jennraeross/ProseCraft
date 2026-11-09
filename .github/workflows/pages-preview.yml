@@ -48,9 +48,15 @@ jobs:
 
       - name: Assemble the site
         run: |
+          rm -rf _site
           mkdir -p _site/app
           cp -r site/. _site/
           cp -r build/. _site/app/
+          # Guarantee Jekyll stays disabled so the _app/ bundle is served.
+          touch _site/.nojekyll
+          test -f _site/.nojekyll
+          test -f _site/index.html
+          test -f _site/app/index.html
 
       - name: Upload test site
         uses: actions/upload-artifact@v4

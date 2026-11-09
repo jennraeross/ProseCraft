@@ -437,7 +437,8 @@ function manuscriptCss(
       border: 1px solid var(--page-border);
       background: var(--page-bg);
       box-shadow: var(--page-shadow);
-      zoom: var(--preview-scale, 1);
+      transform: scale(var(--preview-scale, 1));
+      transform-origin: top center;
     }
     .scene a { pointer-events: none; }
     .book > .cover-page {
@@ -458,7 +459,8 @@ function manuscriptCss(
       width: max-content;
       margin: 0 auto;
       padding-bottom: 8px;
-      zoom: var(--preview-scale, 1);
+      transform: scale(var(--preview-scale, 1));
+      transform-origin: top center;
     }
     .page {
       position: relative;
