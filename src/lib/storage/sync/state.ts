@@ -4,6 +4,8 @@ export const SYNC_STATE_KEY = "prosecraft-sync-state";
 
 export type SyncProviderType = "folder" | "googledrive";
 
+export type GoogleDriveClientKind = "web" | "desktop";
+
 export type PersistedSyncState = {
   provider: SyncProviderType;
   folder: string;
@@ -12,6 +14,8 @@ export type PersistedSyncState = {
   googleDriveRefreshToken: string;
   googleDriveTokenExpiry: number;
   googleDriveEmail: string;
+  /** Which OAuth client issued the tokens — refresh must use the same one. */
+  googleDriveClientKind: GoogleDriveClientKind;
   lastSynced: Record<string, SyncStamp>;
 };
 
@@ -44,6 +48,10 @@ export function loadSyncState(): PersistedSyncState | null {
     const googleDriveRefreshToken = readString(parsed.googleDriveRefreshToken);
     const googleDriveTokenExpiry = readNumber(parsed.googleDriveTokenExpiry);
     const googleDriveEmail = readString(parsed.googleDriveEmail);
+    // Refresh tokens are bound to the client that issued them. State written
+    // before the web flow existed only ever used the desktop client.
+    const googleDriveClientKind: GoogleDriveClientKind =
+      parsed.googleDriveClientKind === "web" ? "web" : "desktop";
 
     if (provider === "folder" && !folder) return null;
     // A connection without either token cannot be used, so treat it as
@@ -83,6 +91,7 @@ export function loadSyncState(): PersistedSyncState | null {
       googleDriveRefreshToken,
       googleDriveTokenExpiry,
       googleDriveEmail,
+      googleDriveClientKind,
       lastSynced
     };
   } catch {

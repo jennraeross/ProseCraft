@@ -174,6 +174,7 @@ describe("PWA web authorization flow", () => {
 
   it("redirects desktop browsers to the app URL too", async () => {
     vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "test-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_SECRET", "test-web-secret");
     // Default jsdom user agent is a desktop browser: no popup is opened and
     // the flow returns pending with a same-tab redirect, just like mobile.
     const started = await authenticateGoogleDrive();
@@ -183,6 +184,8 @@ describe("PWA web authorization flow", () => {
 
   it("completes a mobile redirect without copy/paste", async () => {
     vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "test-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_SECRET", "test-web-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_ID", "web-client-id");
     vi.stubGlobal("navigator", { userAgent: "iPhone" });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       if (String(input).includes("oauth2.googleapis.com/token")) {
@@ -212,9 +215,110 @@ describe("PWA web authorization flow", () => {
     expect(result?.success).toBe(true);
     expect(result?.tokens?.accessToken).toBe("access");
     expect(result?.tokens?.refreshToken).toBe("refresh");
+    expect(result?.usedWebClient).toBe(true);
     // The code is single-use; the URL is cleaned so a reload does not retry.
     expect(window.location.search).toBe("");
     // The pending flow is consumed.
     expect(localStorage.getItem("prosecraft-oauth-code-verifier")).toBeNull();
+  });
+
+  it("pairs the web client ID with the web secret, never the desktop secret", async () => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "desktop-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_SECRET", "web-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_ID", "web-client-id");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({
+        access_token: "access",
+        refresh_token: "refresh",
+        expires_in: 3600
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await exchangeCodeForToken(
+      "code",
+      "verifier",
+      "https://app.example/"
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.usedWebClient).toBe(true);
+    const body = fetchMock.mock.calls[0]?.[1]?.body as URLSearchParams;
+    expect(body.get("client_id")).toBe("web-client-id");
+    expect(body.get("client_secret")).toBe("web-secret");
+    expect(body.get("redirect_uri")).toBe("https://app.example/");
+  });
+
+  it("names the web secret variable when it is missing", async () => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "desktop-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_SECRET", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await exchangeCodeForToken("code", "verifier", "https://app.example/");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("VITE_GOOGLE_WEB_CLIENT_SECRET");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the stored web redirect for a manually pasted code", async () => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "desktop-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_SECRET", "web-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_ID", "web-client-id");
+    vi.stubGlobal("navigator", { userAgent: "iPhone" });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (String(input).includes("oauth2.googleapis.com/token")) {
+        return new Response(JSON.stringify({
+          access_token: "access",
+          refresh_token: "refresh",
+          expires_in: 3600
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("", { status: 401 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authenticateGoogleDrive();
+    const state = localStorage.getItem("prosecraft-oauth-state");
+    expect(state).toBeTruthy();
+
+    // No explicit redirect URI: the stored web redirect must be used, with
+    // the web client credentials.
+    const result = await exchangeCodeForToken(`code=pasted-code&state=${state}`);
+
+    expect(result.success).toBe(true);
+    expect(result.usedWebClient).toBe(true);
+    const body = fetchMock.mock.calls[0]?.[1]?.body as URLSearchParams;
+    expect(body.get("client_id")).toBe("web-client-id");
+    expect(body.get("client_secret")).toBe("web-secret");
+    expect(body.get("redirect_uri")).toBe("http://localhost:3000/");
+  });
+
+  it("refreshes web-issued tokens with the web credentials", async () => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "desktop-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_SECRET", "web-secret");
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_ID", "web-client-id");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ access_token: "access", expires_in: 3600 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await refreshAccessToken("refresh-token", true);
+
+    expect(result.success).toBe(true);
+    expect(result.usedWebClient).toBe(true);
+    const body = fetchMock.mock.calls[0]?.[1]?.body as URLSearchParams;
+    expect(body.get("client_id")).toBe("web-client-id");
+    expect(body.get("client_secret")).toBe("web-secret");
   });
 });

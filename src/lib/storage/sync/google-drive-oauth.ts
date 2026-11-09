@@ -71,12 +71,60 @@ export function getGoogleClientSecret(): string {
   return import.meta.env.VITE_GOOGLE_CLIENT_SECRET ?? "";
 }
 
-function missingClientSecret(): AuthResult | null {
-  if (getGoogleClientSecret()) return null;
+/**
+ * Client secret for the Web application client used by the PWA. Each Google
+ * OAuth client has its own secret: the web secret is different from the
+ * desktop secret and they cannot be mixed — sending one client's ID with the
+ * other's secret fails with `invalid_client`. Strictly separate from the
+ * desktop fallback above: falling back silently is exactly what produces
+ * "the provided client secret is invalid".
+ */
+export function getGoogleWebClientSecret(): string {
+  return import.meta.env.VITE_GOOGLE_WEB_CLIENT_SECRET ?? "";
+}
+
+/** Loopback addresses belong to the desktop flow; anything else is a web redirect. */
+function isWebRedirectUri(uri: string): boolean {
+  return !uri.startsWith("http://127.0.0.1");
+}
+
+type OAuthClientCredentials = {
+  clientId: string;
+  clientSecret: string;
+  /** Env var shown in the configuration error when the secret is missing. */
+  varName: string;
+};
+
+/** The token endpoint requires the ID + secret of the client that started the flow. */
+function credentialsForRedirectUri(uri: string): OAuthClientCredentials {
+  if (isWebRedirectUri(uri)) {
+    return {
+      clientId: getGoogleWebClientId(),
+      clientSecret: getGoogleWebClientSecret(),
+      varName: "VITE_GOOGLE_WEB_CLIENT_SECRET"
+    };
+  }
+  return {
+    clientId: GOOGLE_CLIENT_ID,
+    clientSecret: getGoogleClientSecret(),
+    varName: "VITE_GOOGLE_CLIENT_SECRET"
+  };
+}
+
+function missingSecretError(varName: string): AuthResult {
   return {
     success: false,
     error:
-      "Google Drive sync is not configured. Set VITE_GOOGLE_CLIENT_SECRET in .env.local (see .env.example)."
+      `Google Drive sync is not configured. Set ${varName} (see .env.example).`
+  };
+}
+
+function missingClientSecret(): AuthResult | null {
+  if (getGoogleClientSecret() || getGoogleWebClientSecret()) return null;
+  return {
+    success: false,
+    error:
+      "Google Drive sync is not configured. Set VITE_GOOGLE_CLIENT_SECRET (desktop) or VITE_GOOGLE_WEB_CLIENT_SECRET (PWA) — see .env.example."
   };
 }
 
@@ -107,6 +155,8 @@ export type AuthResult = {
   cancelled?: boolean;
   /** Authorization URL to open manually when a popup was blocked. */
   authorizationUrl?: string;
+  /** True when the token endpoint was called with the Web client credentials. */
+  usedWebClient?: boolean;
 };
 
 /** Receives progress messages while the browser authorization is running. */
@@ -391,6 +441,15 @@ export async function authenticateGoogleDrive(
     rememberPendingFlow(codeVerifier, state, redirectUri);
     const authUrl = buildAuthUrl(codeChallenge, state, redirectUri, clientId);
 
+    // The token exchange later needs the secret matching this flow's client.
+    // Check before leaving the app so a missing secret shows a clear message
+    // instead of a Google error page.
+    const flowCredentials = credentialsForRedirectUri(redirectUri);
+    if (!flowCredentials.clientSecret) {
+      clearPendingFlow();
+      return missingSecretError(flowCredentials.varName);
+    }
+
     if (useWebRedirect) {
       try {
         window.location.href = authUrl.toString();
@@ -588,18 +647,16 @@ export function parseAuthorizationInput(input: string): { code: string; state?: 
 /**
  * Exchange an authorization code for an access token and refresh token.
  * `codeVerifier` is optional because the verifier from `authenticateGoogleDrive`
- * is already kept in session storage. `redirectUri` must match the URI used to
- * start the flow; the loopback flow passes its ephemeral port here.
+ * is already kept in storage; when `redirectUri` is omitted the stored one is
+ * used. The ID + secret posted are always those of the client that started
+ * the flow — mixing clients fails with `invalid_client`.
  */
 export async function exchangeCodeForToken(
   input: string,
   codeVerifier?: string,
-  redirectUri: string = GOOGLE_REDIRECT_URI
+  redirectUri?: string
 ): Promise<AuthResult> {
   try {
-    const configurationError = missingClientSecret();
-    if (configurationError) return configurationError;
-
     const { code, state } = parseAuthorizationInput(input);
     if (!code) {
       return { success: false, error: "No authorization code was provided." };
@@ -620,17 +677,21 @@ export async function exchangeCodeForToken(
       };
     }
 
+    const effectiveRedirectUri = redirectUri || pending.redirectUri || GOOGLE_REDIRECT_URI;
+    const credentials = credentialsForRedirectUri(effectiveRedirectUri);
+    if (!credentials.clientSecret) return missingSecretError(credentials.varName);
+
     const response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded"
       },
       body: new URLSearchParams({
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: getGoogleClientSecret(),
+        client_id: credentials.clientId,
+        client_secret: credentials.clientSecret,
         code,
         code_verifier: verifier,
-        redirect_uri: redirectUri,
+        redirect_uri: effectiveRedirectUri,
         grant_type: "authorization_code"
       })
     });
@@ -655,7 +716,7 @@ export async function exchangeCodeForToken(
     }
 
     clearPendingFlow();
-    return { success: true, tokens };
+    return { success: true, tokens, usedWebClient: isWebRedirectUri(effectiveRedirectUri) };
   } catch (error) {
     return {
       success: false,
@@ -671,10 +732,23 @@ export function isTokenExpired(tokens: GoogleDriveTokens, bufferMs: number = 60_
 }
 
 /** Refresh an access token using a stored refresh token. */
-export async function refreshAccessToken(refreshToken: string): Promise<AuthResult> {
+export async function refreshAccessToken(
+  refreshToken: string,
+  useWebClient = false
+): Promise<AuthResult> {
   try {
-    const configurationError = missingClientSecret();
-    if (configurationError) return configurationError;
+    const credentials = useWebClient
+      ? {
+          clientId: getGoogleWebClientId(),
+          clientSecret: getGoogleWebClientSecret(),
+          varName: "VITE_GOOGLE_WEB_CLIENT_SECRET"
+        }
+      : {
+          clientId: GOOGLE_CLIENT_ID,
+          clientSecret: getGoogleClientSecret(),
+          varName: "VITE_GOOGLE_CLIENT_SECRET"
+        };
+    if (!credentials.clientSecret) return missingSecretError(credentials.varName);
 
     const response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -682,8 +756,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<AuthResu
         "Content-Type": "application/x-www-form-urlencoded"
       },
       body: new URLSearchParams({
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: getGoogleClientSecret(),
+        client_id: credentials.clientId,
+        client_secret: credentials.clientSecret,
         refresh_token: refreshToken,
         grant_type: "refresh_token"
       })
@@ -702,7 +776,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<AuthResu
         refreshToken: data.refresh_token || refreshToken,
         expiry: Date.now() + (data.expires_in * 1000),
         email: null
-      }
+      },
+      usedWebClient: useWebClient
     };
   } catch (error) {
     return {

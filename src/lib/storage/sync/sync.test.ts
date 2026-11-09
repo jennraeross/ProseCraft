@@ -348,6 +348,7 @@ describe("sync state", () => {
       googleDriveRefreshToken: "",
       googleDriveTokenExpiry: 0,
       googleDriveEmail: "",
+      googleDriveClientKind: "desktop",
       lastSynced: {}
     });
   });
@@ -361,6 +362,7 @@ describe("sync state", () => {
       googleDriveRefreshToken: "",
       googleDriveTokenExpiry: 0,
       googleDriveEmail: "",
+      googleDriveClientKind: "desktop",
       lastSynced: {}
     });
     expect(loadSyncState()?.mode).toBe("open-folder");
@@ -375,6 +377,7 @@ describe("sync state", () => {
       googleDriveRefreshToken: "refresh-token",
       googleDriveTokenExpiry: 1_234,
       googleDriveEmail: "writer@example.com",
+      googleDriveClientKind: "web",
       lastSynced: {}
     });
     expect(loadSyncState()).toMatchObject({
@@ -383,7 +386,8 @@ describe("sync state", () => {
       googleDriveAccessToken: "access-token",
       googleDriveRefreshToken: "refresh-token",
       googleDriveTokenExpiry: 1_234,
-      googleDriveEmail: "writer@example.com"
+      googleDriveEmail: "writer@example.com",
+      googleDriveClientKind: "web"
     });
   });
 

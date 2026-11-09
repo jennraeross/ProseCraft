@@ -35,6 +35,7 @@ jobs:
         env:
           PAGES_BASE: /ProseCraft/app
           VITE_GOOGLE_WEB_CLIENT_ID: ${{ secrets.VITE_GOOGLE_WEB_CLIENT_ID }}
+          VITE_GOOGLE_WEB_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_WEB_CLIENT_SECRET }}
           VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
 
       - name: Verify PWA output

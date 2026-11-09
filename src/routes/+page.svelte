@@ -494,6 +494,7 @@
   let googleDriveRefreshToken = $state("");
   let googleDriveTokenExpiry = $state(0);
   let googleDriveEmail = $state("");
+  let googleDriveClientKind = $state<"web" | "desktop">("desktop");
   let googleDriveAuthenticated = $state(false);
   let googleDriveAuthCode = $state("");
   let googleDriveCodeVerifier = $state("");
@@ -2806,6 +2807,7 @@
       googleDriveRefreshToken,
       googleDriveTokenExpiry,
       googleDriveEmail,
+      googleDriveClientKind,
       lastSynced
     };
   }
@@ -2849,7 +2851,7 @@
       throw new Error("Google Drive session expired. Please reconnect.");
     }
 
-    const result = await refreshAccessToken(tokens.refreshToken);
+    const result = await refreshAccessToken(tokens.refreshToken, state.googleDriveClientKind === "web");
     if (!result.success || !result.tokens) {
       throw new Error(result.error ?? "Could not refresh the Google Drive session.");
     }
@@ -2997,11 +2999,12 @@
     }
   }
 
-  function applyGoogleDriveTokens(tokens: GoogleDriveTokens) {
+  function applyGoogleDriveTokens(tokens: GoogleDriveTokens, clientKind: "web" | "desktop") {
     googleDriveAccessToken = tokens.accessToken;
     googleDriveRefreshToken = tokens.refreshToken ?? "";
     googleDriveTokenExpiry = tokens.expiry;
     googleDriveEmail = tokens.email ?? "";
+    googleDriveClientKind = clientKind;
     googleDriveAuthenticated = true;
     googleDriveAuthCode = "";
     googleDriveCodeVerifier = "";
@@ -3023,7 +3026,7 @@
         syncStatus = message;
       });
       if (result.success && result.tokens) {
-        applyGoogleDriveTokens(result.tokens);
+        applyGoogleDriveTokens(result.tokens, result.usedWebClient ? "web" : "desktop");
         syncStatus = googleDriveReadyMessage();
       } else if (result.cancelled) {
         googleDriveCodeVerifier = "";
@@ -3054,7 +3057,7 @@
     try {
       const result = await exchangeCodeForToken(googleDriveAuthCode);
       if (result.success && result.tokens) {
-        applyGoogleDriveTokens(result.tokens);
+        applyGoogleDriveTokens(result.tokens, result.usedWebClient ? "web" : "desktop");
         syncStatus = googleDriveReadyMessage();
       } else {
         syncStatus = result.error ?? "Failed to exchange authorization code.";
@@ -3088,6 +3091,7 @@
       googleDriveRefreshToken = "";
       googleDriveTokenExpiry = 0;
       googleDriveEmail = "";
+      googleDriveClientKind = "desktop";
       googleDriveAuthenticated = false;
       googleDriveAuthCode = "";
       googleDriveCodeVerifier = "";
@@ -3116,6 +3120,7 @@
     googleDriveRefreshToken = "";
     googleDriveTokenExpiry = 0;
     googleDriveEmail = "";
+    googleDriveClientKind = "desktop";
     googleDriveAuthenticated = false;
     googleDriveAuthCode = "";
     googleDriveCodeVerifier = "";
@@ -8338,6 +8343,7 @@
       googleDriveRefreshToken = savedSync.googleDriveRefreshToken;
       googleDriveTokenExpiry = savedSync.googleDriveTokenExpiry;
       googleDriveEmail = savedSync.googleDriveEmail;
+      googleDriveClientKind = savedSync.googleDriveClientKind;
       googleDriveAuthenticated = Boolean(googleDriveAccessToken) && !isTokenExpired({
         accessToken: googleDriveAccessToken,
         refreshToken: googleDriveRefreshToken,
@@ -8376,7 +8382,7 @@
         const result = await completeWebRedirectIfPresent();
         if (!result) return;
         if (result.success && result.tokens) {
-          applyGoogleDriveTokens(result.tokens);
+          applyGoogleDriveTokens(result.tokens, "web");
           syncStatus = googleDriveReadyMessage();
         } else if (result.error) {
           syncStatus = result.error;
