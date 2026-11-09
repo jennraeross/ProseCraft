@@ -1276,7 +1276,7 @@
   .preview-nav-steps button:hover:not(:disabled) { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
   .preview-nav-steps button:disabled { cursor: default; opacity: .35; }
   .preview-nav-steps > span { min-width: 29px; color: var(--text-muted); font-size: 7px; font-variant-numeric: tabular-nums; text-align: center; }
-  .preview-nav-groups { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 5px 7px; }
+  .preview-nav-groups { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 4px 5px 7px; }
   .preview-nav-group { padding: 6px 1px 1px; }
   .preview-nav-group + .preview-nav-group { margin-top: 4px; border-top: 1px solid var(--border-soft); }
   .preview-nav-group h3 { margin: 0 4px 4px; color: var(--eyebrow); font-size: 7px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }

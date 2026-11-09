@@ -99,6 +99,8 @@
     bind:this={titleInput}
     aria-label="Title"
     placeholder="Untitled"
+    autocapitalize="sentences"
+    enterkeyhint="done"
     value={titleValue}
     maxlength="120"
     oninput={(event) => {
@@ -124,8 +126,12 @@
 <style>
   .tile-editor { display: flex; min-width: 0; flex-direction: column; }
   .tile-title { width: 100%; margin: 0 0 10px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: inherit; font-size: 15px; font-weight: 700; line-height: 1.3; }
+  @media (pointer: coarse) {
+    /* iOS zooms the page when a focused control is smaller than 16px. */
+    .tile-title { font-size: 16px; }
+  }
   .tile-title::placeholder { color: var(--text-faint); }
-  .tile-body { min-height: 120px; outline: none; color: var(--text-body); font-family: var(--writing-font, var(--interface-font)); font-size: calc(16px * var(--editor-scale)); line-height: 1.85; overflow-wrap: anywhere; }
+  .tile-body { min-height: 120px; outline: none; color: var(--text-body); font-family: var(--writing-font, var(--interface-font)); font-size: max(16px, calc(16px * var(--editor-scale))); line-height: 1.85; overflow-wrap: anywhere; }
   .tile-body :global(p) { margin: 0 0 18px; }
   .tile-body :global(h1) { color: var(--text-heading); font-size: calc(30px * var(--editor-scale)); font-weight: 500; line-height: 1.35; }
   .tile-body :global(h2) { margin: 0 0 19px; color: var(--text-heading); font-size: calc(24px * var(--editor-scale)); font-weight: 500; letter-spacing: -.5px; line-height: 1.4; }

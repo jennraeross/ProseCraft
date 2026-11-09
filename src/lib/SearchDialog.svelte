@@ -218,6 +218,9 @@
             placeholder="Search titles and text"
             spellcheck="false"
             autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            enterkeyhint="search"
             bind:value={query}
             oninput={() => { pendingReplace = null; replaceStatus = ""; }}
           />
@@ -237,6 +240,9 @@
           placeholder="Replace with…"
           spellcheck="false"
           autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          enterkeyhint="done"
           bind:value={replacement}
           oninput={() => { pendingReplace = null; replaceStatus = ""; }}
           onfocus={ensureReplaceSource}
@@ -317,7 +323,7 @@
 </dialog>
 
 <style>
-  .search-dialog { width: min(720px, calc(100vw - 32px)); max-height: min(80vh, calc(100vh - 32px)); padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-dialog); }
+  .search-dialog { width: min(720px, calc(100vw - 32px)); max-height: min(80vh, calc(100vh - 32px)); max-height: min(80dvh, calc(100dvh - 32px)); padding: 0; overflow: hidden; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-dialog); }
   .search-dialog[open] { display: flex; flex-direction: column; }
   .search-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
   .settings-header { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 21px 25px 16px; border-bottom: 1px solid var(--border-soft); }
@@ -348,7 +354,7 @@
   .search-select-link:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
   .search-skip-note { margin: 5px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
   .search-results-section { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; padding: 10px 0 14px; }
-  .search-results { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; margin: 0; padding: 0; overflow-y: auto; list-style: none; scrollbar-color: var(--scrollbar) transparent; }
+  .search-results { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; list-style: none; scrollbar-color: var(--scrollbar) transparent; }
   .search-hit-row { display: flex; align-items: flex-start; gap: 9px; padding: 0 9px 0 8px; border-radius: 7px; }
   .search-hit-row:hover { background: var(--control-hover); }
   .search-hit-row.active { background: var(--selected-bg); box-shadow: inset 2px 0 0 var(--accent); }
@@ -387,5 +393,7 @@
     .settings-footer { padding: 11px 16px; }
     .search-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }
     .search-results-section { padding: 8px 0 12px; }
+    /* iOS zooms the page when a focused control is smaller than 16px. */
+    .search-input { font-size: 16px; }
   }
 </style>

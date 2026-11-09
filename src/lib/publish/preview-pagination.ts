@@ -441,4 +441,13 @@ export function fitPreviewFrame(frame: HTMLIFrameElement): void {
     ? Math.min(1, availableWidth / pageWidth, availableHeight / pageHeight)
     : Math.min(1, availableWidth / pageWidth);
   doc.documentElement.style.setProperty("--preview-scale", scale.toFixed(4));
+  // Transforms do not reflow, so the scaled wrapper gets an explicit height.
+  // Measure first: a stale explicit height would inflate scrollHeight.
+  const scaled = paginated
+    ? doc.getElementById("preview-pages")
+    : doc.querySelector(".book");
+  if (scaled instanceof HTMLElement) {
+    scaled.style.height = "";
+    scaled.style.height = `${Math.max(0, scaled.scrollHeight * scale)}px`;
+  }
 }

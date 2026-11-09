@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { APP_NAME, APP_LICENSE, APP_AUTHOR, APP_REPOSITORY_URL, APP_VERSION } from "./about";
+import pkg from "../../package.json";
 import type { DiagnosticsInput } from "./about";
 import { buildDiagnosticsReport, summarizeUserAgent } from "./about";
 
@@ -22,7 +23,7 @@ describe("about module", () => {
     });
 
     it("has version from package.json", () => {
-      expect(APP_VERSION).toBe("0.5.0");
+      expect(APP_VERSION).toBe(pkg.version);
     });
   });
 

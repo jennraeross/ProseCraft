@@ -1441,6 +1441,8 @@
       if (workspaceView !== "writing") writingSidebarState.right = false;
     }
     compactProgressLayout = compactProgress;
+    // The storyboard tab hides on phone layouts; never strand the user there.
+    if (compactChapter && workspaceView === "storyboard") setWorkspaceView("writing");
   }
 
   function rememberDrawerTrigger() {
@@ -1500,6 +1502,58 @@
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = previous;
+    };
+  });
+
+  type EdgeSwipe = { id: number; startX: number; startY: number } | null;
+  let edgeSwipe: EdgeSwipe = null;
+
+  /**
+   * Touch edge-swipe for the sidebar drawers (hover-peek is mouse-only).
+   * A mostly-horizontal swipe from a screen edge opens that side; swiping
+   * back toward the edge from inside an open drawer dismisses it.
+   */
+  function handleEdgeTouchStart(event: TouchEvent) {
+    if (event.touches.length !== 1) {
+      edgeSwipe = null;
+      return;
+    }
+    const touch = event.touches[0];
+    const target = touch.target;
+    if (target instanceof Element && target.closest(
+      ".storyboard-viewport, .ctx-menu, dialog, input, textarea, select, [contenteditable='true']"
+    )) {
+      edgeSwipe = null;
+      return;
+    }
+    edgeSwipe = { id: touch.identifier, startX: touch.clientX, startY: touch.clientY };
+  }
+
+  function handleEdgeTouchEnd(event: TouchEvent) {
+    const swipe = edgeSwipe;
+    edgeSwipe = null;
+    if (!swipe) return;
+    const touch = event.changedTouches[0];
+    if (!touch || touch.identifier !== swipe.id) return;
+    const dx = touch.clientX - swipe.startX;
+    const dy = touch.clientY - swipe.startY;
+    if (Math.abs(dx) < 60 || Math.abs(dy) > 40) return;
+    const width = window.innerWidth;
+    if (dx > 0) {
+      if (swipe.startX <= 24 && !leftSidebarVisible) toggleLeftSidebar();
+      else if (swipe.startX > width - Math.min(360, width * 0.8) && rightSidebarVisible) closeSidebarDrawers();
+    } else {
+      if (swipe.startX >= width - 24 && !rightSidebarVisible) toggleRightSidebar();
+      else if (swipe.startX < Math.min(360, width * 0.8) && leftSidebarVisible) closeSidebarDrawers();
+    }
+  }
+
+  onMount(() => {
+    window.addEventListener("touchstart", handleEdgeTouchStart, { passive: true });
+    window.addEventListener("touchend", handleEdgeTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", handleEdgeTouchStart);
+      window.removeEventListener("touchend", handleEdgeTouchEnd);
     };
   });
 
@@ -5559,7 +5613,8 @@
   }
 
   function startStoryboardDrawing(event: PointerEvent) {
-    if (event.pointerType === "touch") return;
+    if (event.pointerType === "touch"
+      && (activeDrawingTool === "select" || activeDrawingTool === "pan")) return;
     if (event.button !== 0 || boardSpacePan) return;
     const target = event.target;
     if (target instanceof Element
@@ -5615,7 +5670,8 @@
   }
 
   function startStoryboardCanvasInteraction(event: PointerEvent) {
-    if (event.pointerType === "touch") return;
+    if (event.pointerType === "touch"
+      && (activeDrawingTool === "select" || activeDrawingTool === "pan")) return;
     if (activeDrawingTool === "pan") {
       const target = event.target;
       if (target instanceof Element && target.closest("button, input, textarea, select")) return;
@@ -6015,6 +6071,32 @@
       item.folderId === folder.id ? { ...item, folderId: parentId } : item
     );
     if (parentId) expandResearchFolderPath(parentId);
+    persist();
+  }
+
+  /** Reorders a folder among its siblings for touch users (drag is mouse-only). */
+  function moveWikiFolder(id: string, offset: number) {
+    const folder = researchFolders.find((entry) => entry.id === id);
+    if (!folder) return;
+    const siblings = researchFolders.filter((entry) => entry.parentId === folder.parentId);
+    const index = siblings.findIndex((entry) => entry.id === id);
+    const targetIndex = index + offset;
+    if (index < 0 || targetIndex < 0 || targetIndex >= siblings.length) return;
+    const next = [...researchFolders];
+    const from = next.findIndex((entry) => entry.id === siblings[index].id);
+    const to = next.findIndex((entry) => entry.id === siblings[targetIndex].id);
+    [next[from], next[to]] = [next[to], next[from]];
+    researchFolders = next;
+    persist();
+  }
+
+  function moveWikiFolderToTop(id: string) {
+    const folder = researchFolders.find((entry) => entry.id === id);
+    if (!folder || folder.parentId === null) return;
+    researchFolders = [
+      ...researchFolders.filter((entry) => entry.id !== id),
+      { ...folder, parentId: null }
+    ];
     persist();
   }
 
@@ -7997,11 +8079,17 @@
     const menu = contextMenuElement;
     if (!menu || !contextMenu) return;
     const margin = 8;
+    // visualViewport shrinks when the touch keyboard opens; fall back to the
+    // layout viewport where it is unsupported.
+    const viewport = window.visualViewport;
+    const viewWidth = viewport?.width ?? window.innerWidth;
+    const viewHeight = viewport?.height ?? window.innerHeight;
     const rect = menu.getBoundingClientRect();
     let x = contextMenu.x;
     let y = contextMenu.y;
-    if (x + rect.width > window.innerWidth - margin) x = Math.max(margin, window.innerWidth - rect.width - margin);
-    if (y + rect.height > window.innerHeight - margin) y = Math.max(margin, window.innerHeight - rect.height - margin);
+    if (x + rect.width > viewWidth - margin) x = Math.max(margin, viewWidth - rect.width - margin);
+    if (y + rect.height > viewHeight - margin) y = Math.max(margin, viewHeight - rect.height - margin);
+    menu.style.maxHeight = `${Math.max(160, viewHeight - y - margin)}px`;
     if (x !== contextMenu.x || y !== contextMenu.y) contextMenu = { ...contextMenu, x, y };
   }
 
@@ -8634,6 +8722,8 @@
                     bind:this={chapterNameInput}
                     class="chapter-name-input"
                     aria-label="Rename {chapterLabel(chapter)}"
+                    autocapitalize="sentences"
+                    enterkeyhint="done"
                     bind:value={chapterNameDraft}
                     maxlength="60"
                     onblur={() => saveChapterRename(chapter.id)}
@@ -8700,6 +8790,8 @@
                         bind:this={sceneNameInput}
                         class="chapter-name-input"
                         aria-label="Rename {doc.title || 'Untitled scene'}"
+                        autocapitalize="sentences"
+                        enterkeyhint="done"
                         bind:value={sceneTitleDraft}
                         maxlength="120"
                         onblur={() => saveSceneRename(doc.id)}
@@ -8796,6 +8888,8 @@
                       bind:this={researchFolderInput}
                       class="chapter-name-input note-folder-name-input"
                       aria-label="Rename folder {item.folder.title}"
+                      autocapitalize="sentences"
+                      enterkeyhint="done"
                       bind:value={researchFolderNameDraft}
                       maxlength="60"
                       onblur={() => saveResearchFolderRename(item.folder.id)}
@@ -9053,12 +9147,17 @@
           <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(); closeContextMenu(); }}>Add file</button>
           <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(); closeContextMenu(); }}>Add web link</button>
         {:else if ctx.kind === "wiki-folder" && ctxFolder}
+          {@const folderSiblings = researchFolders.filter((entry) => entry.parentId === ctxFolder.parentId)}
+          {@const folderIndex = folderSiblings.findIndex((entry) => entry.id === ctxFolder.id)}
           <button type="button" role="menuitem" onclick={() => { createSpaceDocument("Wiki", ctxFolder.id); closeContextMenu(); }}>Add page</button>
           <button type="button" role="menuitem" onclick={() => { createResearchFolder(ctxFolder.id); closeContextMenu(); }}>Add subfolder</button>
           <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(ctxFolder.id); closeContextMenu(); }}>Add file</button>
           <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(ctxFolder.id); closeContextMenu(); }}>Add web link</button>
           <div class="ctx-divider"></div>
           <button type="button" role="menuitem" onclick={() => { startResearchFolderRename(ctxFolder); closeContextMenu(); }}>Rename folder</button>
+          <button type="button" role="menuitem" disabled={folderIndex <= 0} onclick={() => { moveWikiFolder(ctxFolder.id, -1); closeContextMenu(); }}>Move up</button>
+          <button type="button" role="menuitem" disabled={folderIndex < 0 || folderIndex >= folderSiblings.length - 1} onclick={() => { moveWikiFolder(ctxFolder.id, 1); closeContextMenu(); }}>Move down</button>
+          <button type="button" role="menuitem" disabled={ctxFolder.parentId === null} onclick={() => { moveWikiFolderToTop(ctxFolder.id); closeContextMenu(); }}>Move to top level</button>
           <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchFolder(ctxFolder); closeContextMenu(); }}>Remove folder</button>
         {:else if ctx.kind === "wiki-doc" && ctxDoc}
           <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxDoc.id); closeContextMenu(); }}>Open page</button>
@@ -9166,7 +9265,9 @@
         <div class="workspace-modes" role="tablist" aria-label="Workspace view">
           <button class="workspace-mode" class:active={workspaceView === "outline"} role="tab" aria-selected={workspaceView === "outline"} onclick={openOutlineView}>Outline</button>
           <button class="workspace-mode" class:active={workspaceView === "writing"} role="tab" aria-selected={workspaceView === "writing"} onclick={() => setWorkspaceView("writing")}>Write</button>
+          {#if !compactChapterLayout}
           <button class="workspace-mode" class:active={workspaceView === "storyboard"} role="tab" aria-selected={workspaceView === "storyboard"} onclick={() => setWorkspaceView("storyboard")}>Storyboard</button>
+          {/if}
           {#if timelineEnabled}
           <button class="workspace-mode" class:active={workspaceView === "timeline"} role="tab" aria-selected={workspaceView === "timeline"} onclick={() => setWorkspaceView("timeline")}>Timeline</button>
           {/if}
@@ -9234,7 +9335,7 @@
             <span>Progress</span>
           </button>
           {/if}
-          <button class="panel-toggle" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (Ctrl/Cmd+/)" aria-pressed={shortcutsOpen} onclick={toggleShortcuts}>
+          <button class="panel-toggle shortcuts-toggle" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (Ctrl/Cmd+/)" aria-pressed={shortcutsOpen} onclick={toggleShortcuts}>
             <Keyboard size={15} aria-hidden="true" />
             <span>Shortcuts</span>
           </button>
@@ -9284,6 +9385,8 @@
           data-undo-key={inChapterMode && activeChapter ? `title:chapter:${activeChapter.id}` : `title:${activeDocumentId}`}
           aria-label={inChapterMode ? "Chapter title" : "Document title"}
           placeholder="Untitled"
+          autocapitalize="sentences"
+          enterkeyhint="done"
           bind:value={title}
           oninput={persist}
           maxlength="120"
@@ -9795,7 +9898,7 @@
                       <span class="card-kind">{card.kind === "blank" ? "blank" : card.kind}</span>
                       <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}><X size={14} aria-hidden="true" /></button>
                     </div>
-                    <input class="board-card-title" data-undo-key={`card-title:${card.id}`} aria-label="Storyboard card title" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
+                    <input class="board-card-title" data-undo-key={`card-title:${card.id}`} aria-label="Storyboard card title" autocapitalize="sentences" enterkeyhint="done" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
                     <textarea
                       class="board-card-note"
                       data-undo-key={card.kind === "chapter" ? `chapter-summary:${card.sourceId}` : `card-note:${card.id}`}
@@ -10018,7 +10121,7 @@
         <div class="section-title"><strong>Save this version</strong></div>
         <p class="section-subtitle">Keeps a copy of “{title || "Untitled"}” as it is now. Up to ten are kept per scene.</p>
         <form class="snapshot-form side-form" onsubmit={takeSnapshot}>
-          <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" bind:value={snapshotNote} aria-label="Snapshot note" />
+          <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" autocapitalize="sentences" bind:value={snapshotNote} aria-label="Snapshot note" />
           <button class="data-button" type="submit">Take snapshot</button>
         </form>
       </section>
@@ -10575,7 +10678,7 @@
       <h3 class="settings-pane-title">About</h3>
     <div class="about-row">
       <button type="button" class="about-row-button" onclick={openAbout}>About {APP_NAME} · version {APP_VERSION}</button>
-      <button type="button" class="about-row-button" onclick={showShortcutsFromSettings}>Keyboard shortcuts</button>
+      <button type="button" class="about-row-button about-shortcuts-button" onclick={showShortcutsFromSettings}>Keyboard shortcuts</button>
     </div>
     </div>
     </div>
@@ -10971,7 +11074,7 @@
     <section class="preference-section">
       <div class="preference-heading"><strong>Save this version</strong><span>Keeps a copy of “{title || "Untitled"}” as it is now. Up to ten are kept per scene.</span></div>
       <form class="snapshot-form" onsubmit={takeSnapshot}>
-        <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" bind:value={snapshotNote} aria-label="Snapshot note" />
+        <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" autocapitalize="sentences" bind:value={snapshotNote} aria-label="Snapshot note" />
         <button class="data-button" type="submit">Take snapshot</button>
       </form>
     </section>
@@ -11072,6 +11175,9 @@
           type="text"
           inputmode="url"
           placeholder="https://example.com"
+          autocapitalize="off"
+          autocorrect="off"
+          enterkeyhint="done"
           bind:value={researchLinkUrl}
           required
         />
@@ -11400,7 +11506,12 @@
   :global(button), :global(input), :global(select) { font: inherit; }
   :global(button) { color: inherit; }
   :global(button), :global(a) { -webkit-tap-highlight-color: transparent; }
-  :global(button) { touch-action: manipulation; }
+  :global(button), :global(a) { touch-action: manipulation; }
+  :global(html), :global(body) { overscroll-behavior-y: none; }
+  /* Long-press menus own these rows: never let iOS text selection or the
+     system callout fight them. Editor text stays selectable. */
+  .tree-name, .chapter-drag, .scene-mark, .label-dot, .chevron, .folder-icon,
+  .space-icon, .note-folder-icon { -webkit-touch-callout: none; user-select: none; }
 
   .drawer-backdrop {
     position: fixed;
@@ -11442,7 +11553,7 @@
   .author-name { overflow: hidden; max-width: 100%; color: var(--text-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .project-identity .author-name { grid-column: 1; grid-row: 2; padding-top: 2px; }
   .nav-label { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
-  .sidebar-tree { min-height: 0; flex: 1; overflow-y: auto; margin-top: 28px; padding: 0 1px; scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; }
+  .sidebar-tree { min-height: 0; flex: 1; overflow-y: auto; margin-top: 28px; padding: 0 1px; scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; overscroll-behavior: contain; }
   .tree-heading, .space-heading, .chapter-row { display: flex; min-width: 0; align-items: center; }
   .tree-heading { justify-content: space-between; padding: 0 7px 7px; }
   .tree-add, .row-add, .row-action { display: grid; width: 23px; height: 23px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; line-height: 1; }
@@ -11480,7 +11591,7 @@
   .row-add.research-add { opacity: .55; }
   .row-add.research-add:focus-visible { opacity: 1; }
   .row-add:disabled { opacity: .18; cursor: default; }
-  .ctx-menu { position: fixed; z-index: 80; display: flex; min-width: 210px; max-width: min(280px, calc(100vw - 16px)); max-height: min(70vh, 480px); flex-direction: column; gap: 1px; overflow-y: auto; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+  .ctx-menu { position: fixed; z-index: 80; display: flex; min-width: 210px; max-width: min(280px, calc(100vw - 16px)); max-height: min(70vh, 480px); flex-direction: column; gap: 1px; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid var(--border-control); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
   .ctx-menu button { display: flex; width: 100%; min-height: 38px; align-items: center; gap: 8px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text-primary); cursor: pointer; font-size: 12px; text-align: left; }
   .ctx-menu button:hover:not(:disabled), .ctx-menu button:focus-visible { background: var(--hover-bg); color: var(--text-heading); outline: none; }
   .ctx-menu button:disabled { opacity: .4; cursor: default; }
@@ -11575,7 +11686,7 @@
   .version-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .sync-dot, .save-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
-  .progress-sidebar { position: fixed; inset: 0 0 0 auto; z-index: 2; display: flex; width: 286px; flex-direction: column; overflow-y: auto; padding: 27px 19px 22px; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; transition: transform .18s ease, opacity .18s ease; }
+  .progress-sidebar { position: fixed; inset: 0 0 0 auto; z-index: 2; display: flex; width: 286px; flex-direction: column; overflow-y: auto; padding: 27px 19px 22px; border-left: 1px solid var(--border); background: var(--sidebar-bg); scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; overscroll-behavior: contain; transition: transform .18s ease, opacity .18s ease; }
   .progress-sidebar.peek { transform: translateX(100%); pointer-events: none; }
   .progress-sidebar.peek.peek-open { transform: translateX(0); pointer-events: auto; box-shadow: var(--shadow-panel-left); }
   .progress-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 0 3px 19px; }
@@ -11749,6 +11860,9 @@
   .image-custom-width { display: inline-flex; align-items: center; gap: 2px; color: var(--text-muted); font-size: 10px; }
   .image-custom-width input { width: 46px; min-height: 25px; padding: 0 4px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-secondary); font-size: 10px; }
   .image-resize-handle { position: absolute; z-index: 5; width: 15px; height: 15px; transform: translate(-50%, -50%); border: 2px solid var(--surface-raised); border-radius: 50%; background: var(--accent); box-shadow: 0 1px 3px rgb(0 0 0 / 30%); cursor: nwse-resize; touch-action: none; }
+  @media (pointer: coarse) {
+    .image-resize-handle { width: 24px; height: 24px; }
+  }
   .image-resize-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .markdown-source-editor { width: 100%; min-height: 430px; margin-top: 0; }
   .markdown-source-editor :global(.cm-editor) { min-height: 430px; background: transparent; color: var(--text-body); font-size: calc(13px * var(--editor-scale)); }
@@ -11825,7 +11939,7 @@
   .editor-content :global(.rich-render-error) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; white-space: pre-wrap; }
   .editor-content :global(pre) { overflow-x: auto; padding: 12px 14px; border-radius: 5px; background: var(--surface-raised); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; line-height: 1.55; }
   .editor-content :global(code) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
-  .editor-content :global(table) { width: 100%; border-collapse: collapse; font-size: .9em; }
+  .editor-content :global(table) { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .9em; }
   .editor-content :global(th), .editor-content :global(td) { padding: 5px 8px; border: 1px solid var(--border); text-align: left; }
   .editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 15px; border-top: 1px solid var(--border-soft); color: var(--text-faint); font-size: 10px; }
   .footer-actions { display: flex; align-items: center; gap: 12px; }
@@ -11903,7 +12017,7 @@
   }
   .main-panel:has(.storyboard-active) .app-banner,
   .main-panel:has(.storyboard-active) .storage-banner { position: relative; z-index: 6; }
-  .storyboard-sources { min-height: 0; overflow: auto; padding: 16px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); scrollbar-width: thin; }
+  .storyboard-sources { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); scrollbar-width: thin; }
   .board-sources-heading { padding: 0 3px 14px; border-bottom: 1px solid var(--border-soft); }
   .board-eyebrow { color: var(--eyebrow); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; }
   .board-sources-heading h2 { margin: 6px 0 5px; color: var(--text-heading); font-family: var(--interface-font); font-size: 18px; font-weight: 500; }
@@ -11974,8 +12088,8 @@
   .storyboard-empty-hint { position: absolute; top: 50%; left: 50%; width: min(300px, calc(100% - 32px)); margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; text-align: center; transform: translate(-50%, -50%); pointer-events: none; }
   .storyboard-pan-hint { margin: 8px 0 0; color: var(--text-muted); font-size: 8px; text-align: right; }
 
-  .settings-dialog { width: min(440px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 32px)); padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-dialog); }
-  .research-markdown-dialog { width: min(820px, calc(100vw - 32px)); max-height: min(860px, calc(100vh - 32px)); }
+  .settings-dialog { width: min(440px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 32px)); max-height: min(680px, calc(100dvh - 32px)); padding: 0; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-dialog); }
+  .research-markdown-dialog { width: min(820px, calc(100vw - 32px)); max-height: min(860px, calc(100vh - 32px)); max-height: min(860px, calc(100dvh - 32px)); }
   .research-markdown-content { overflow: auto; padding: 24px 32px 36px; color: var(--text-body); font-family: var(--writing-font, Georgia, serif); font-size: 15px; line-height: 1.8; overflow-wrap: anywhere; }
   .research-markdown-content :global(h1), .research-markdown-content :global(h2), .research-markdown-content :global(h3) { margin: 1.5em 0 .55em; color: var(--text-heading); font-family: var(--interface-font); line-height: 1.25; }
   .research-markdown-content :global(h1) { margin-top: 0; font-size: 1.8em; }
@@ -11993,10 +12107,10 @@
   .research-link-dialog form { margin: 0; }
   .starter-dialog form { margin: 0; }
   .starter-options { display: grid; gap: 6px; }
-  .starter-option { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-control); border-radius: 6px; cursor: pointer; }
+  .starter-option { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 8px 10px; border: 1px solid var(--border-control); border-radius: 6px; cursor: pointer; }
   .starter-option.selected { border-color: var(--accent); background: var(--control-bg); }
-  .starter-option input { margin: 2px 0 0; accent-color: var(--accent); }
-  .starter-copy { display: grid; gap: 2px; }
+  .starter-option input { margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--accent); }
+  .starter-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
   .starter-copy strong { color: var(--text-heading); font-size: 11px; font-weight: 600; }
   .starter-copy span { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
   .starter-dialog-actions { display: flex; align-items: center; gap: 8px; }
@@ -12007,23 +12121,23 @@
   .starter-dialog[open] { display: flex; flex-direction: column; }
   .starter-dialog form { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; max-height: inherit; }
   .starter-dialog .settings-body { min-height: 0; flex: 1 1 auto; overflow: hidden; }
-  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 20px; }
-  .starter-presets, .starter-customise { min-height: 0; overflow-y: auto; padding: 17px 0; }
+  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 20px; min-width: 0; }
+  .starter-presets, .starter-customise { min-width: 0; min-height: 0; overflow-y: auto; padding: 17px 0; }
   .starter-subheading { margin-top: 16px; }
   .starter-template { display: flex; align-items: center; gap: 6px; }
   .starter-template .starter-option { flex: 1; min-width: 0; }
   .starter-icon { display: grid; width: 22px; height: 22px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
   .starter-icon:hover { background: var(--hover-bg); color: var(--text-heading); }
-  .starter-modules { display: grid; gap: 7px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
-  .starter-modules-head { display: flex; align-items: baseline; gap: 7px; }
+  .starter-modules { display: grid; gap: 7px; min-width: 0; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
+  .starter-modules-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 7px; }
   .starter-modules-head strong { color: var(--text-heading); font-size: 11px; font-weight: 600; }
   .starter-modules-count { color: var(--text-muted); font-size: 10px; }
   .starter-clear { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; text-decoration: underline; text-underline-offset: 2px; }
   .starter-clear:hover { color: var(--text-heading); }
   .starter-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .starter-modules-hint { margin: 0; color: var(--text-muted); font-size: 10px; }
-  .starter-module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
-  .starter-module { display: grid; gap: 3px; padding: 8px 9px; border: 1px solid var(--border-control); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+  .starter-module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 6px; min-width: 0; }
+  .starter-module { display: grid; gap: 3px; min-width: 0; padding: 8px 9px; border: 1px solid var(--border-control); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
   .starter-module:hover { border-color: var(--accent); background: var(--hover-bg); }
   .starter-module.active { border-color: var(--accent); background: var(--selected-bg); }
   .starter-module:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -12043,7 +12157,7 @@
   .close-settings { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 20px; }
   .close-settings:hover { background: var(--hover-bg); color: var(--text-primary); }
   .settings-body { padding: 7px 25px 10px; }
-  .main-settings-dialog { width: min(860px, calc(100vw - 32px)); height: min(620px, calc(100vh - 32px)); max-height: calc(100vh - 32px); overflow: hidden; }
+  .main-settings-dialog { width: min(860px, calc(100vw - 32px)); height: min(620px, calc(100vh - 32px)); height: min(620px, calc(100dvh - 32px)); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow: hidden; }
   .main-settings-dialog[open] { display: flex; flex-direction: column; }
   .main-settings-dialog .settings-header, .main-settings-dialog .settings-footer { flex: 0 0 auto; }
   .settings-layout { display: flex; min-height: 0; flex: 1 1 auto; }
@@ -12377,6 +12491,8 @@
     .editor-tools { top: calc(8px + env(safe-area-inset-top)); }
     .panel-toggles { margin-left: auto; }
     .panel-toggle span { display: none; }
+    /* Split view and keyboard shortcuts need a keyboard and wide screen, so hide those options on phones. */
+    .split-toggle, .shortcuts-toggle, .shortcuts-button, .about-shortcuts-button { display: none; }
     .storage-banner { align-items: flex-start; flex-direction: column; gap: 8px; }
     .storage-banner-actions { width: 100%; }
     .storage-banner .data-button { flex: 1; }
@@ -12412,13 +12528,20 @@
     .settings-dialog[open] { display: flex; flex-direction: column; }
     .settings-dialog > form { display: flex; min-height: 0; flex: 1; flex-direction: column; }
     .settings-header { padding: calc(16px + env(safe-area-inset-top)) 18px 14px; }
-    .settings-body { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 18px 12px; }
-    .settings-footer { padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); }
-    .starter-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; gap: 0; }
-    .starter-dialog .settings-body { overflow-y: auto; }
-    .starter-presets, .starter-customise { overflow: visible; }
+    .settings-body { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 18px 12px; }
+    .settings-footer { flex-wrap: wrap; padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); }
+    .starter-body { display: flex; flex-direction: column; gap: 0; align-items: stretch; min-width: 0; min-height: 0; }
+    .starter-dialog .settings-body { overflow-y: auto; overflow-x: hidden; }
+    .starter-presets, .starter-customise { flex: 0 0 auto; width: 100%; max-width: 100%; min-width: 0; min-height: 0; overflow: visible; }
     .starter-presets { padding-bottom: 0; }
     .starter-customise { padding-top: 12px; }
+    .starter-module-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
+    .starter-save { flex-wrap: wrap; }
+    .starter-save input[type="text"] { min-height: 40px; height: 40px; flex: 1 1 160px; }
+    .starter-add-button { min-height: 40px; height: 40px; }
+    .starter-cancel { min-height: 40px; }
+    .starter-dialog .settings-footer { gap: 8px; }
+    .starter-dialog-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
     .close-settings { width: 40px; height: 40px; }
     .research-markdown-dialog { width: 100vw; max-width: 100vw; }
     .research-markdown-dialog .research-markdown-content { min-height: 0; flex: 1; }
@@ -12431,7 +12554,10 @@
     .chapter-name-input,
     .note-folder-name-input,
     .goal-input,
-    .chapter-goal-input input { font-size: 16px; }
+    .chapter-goal-input input,
+    .label-filter-select,
+    .style-select,
+    .image-custom-width input { font-size: 16px; }
 
     .editor-content { font-size: calc(17px * var(--editor-scale)); line-height: 1.75; }
     .title-input { font-size: clamp(calc(30px * var(--editor-scale)), 9vw, calc(40px * var(--editor-scale))); }
@@ -12466,6 +12592,12 @@
     .editor-content { padding-top: 30px; }
     .toolbar { padding-right: 4px; padding-left: 4px; }
     .toolbar-divider { margin: 0 1px; }
+    .starter-module-grid { grid-template-columns: minmax(0, 1fr); }
+    .starter-save { flex-direction: column; align-items: stretch; }
+    .starter-save input[type="text"], .starter-add-button { width: 100%; flex: none; }
+    .starter-dialog .settings-footer > span { flex: 1 1 100%; }
+    .starter-dialog-actions { width: 100%; margin-left: 0; }
+    .starter-dialog-actions .starter-cancel, .starter-dialog-actions .done-button { flex: 1; min-height: 44px; }
   }
   /* Comfortable touch targets without changing the desktop visual density. */
   @media (pointer: coarse) {
@@ -12495,8 +12627,10 @@
     .source-drag-handle, .source-add { width: 36px; height: 36px; }
     .drawing-tool, .drawing-delete { min-height: 40px; font-size: 11px; }
     .drawing-move-handle { width: 36px; height: 32px; }
-    .drawing-resize-handle { width: 18px; height: 18px; }
+    .drawing-resize-handle { width: 24px; height: 24px; }
     .storyboard-card { width: 250px; }
+    /* iOS zooms the page when a focused control is smaller than 16px. */
+    .markdown-source-editor :global(.cm-editor) { font-size: max(16px, calc(13px * var(--editor-scale))); }
   }
   @media (prefers-reduced-motion: reduce) {
     .sidebar, .progress-sidebar { transition: none; }
