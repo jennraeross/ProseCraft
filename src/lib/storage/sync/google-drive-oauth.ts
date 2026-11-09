@@ -20,9 +20,11 @@
  *
  * Desktop apps cannot receive a normal HTTPS redirect. In the Tauri app the
  * browser is sent to a temporary `http://127.0.0.1:{port}` listener, which
- * completes the flow automatically. If that listener is unavailable (web or an
- * older desktop build), the user copies the `code` parameter from the browser
- * address bar back into the app instead.
+ * completes the flow automatically. Browsers (desktop and mobile, including
+ * the installed PWA) redirect back to the app's own HTTPS URL instead, which
+ * the app completes automatically on return. Only an older desktop build
+ * without the listener still needs the user to copy the `code` parameter
+ * from the browser address bar back into the app.
  */
 
 export const GOOGLE_CLIENT_ID = "716095902309-r0r2jr5st4adjup28a2278jmslpiteug.apps.googleusercontent.com";
@@ -260,39 +262,9 @@ function isMobileBrowser(): boolean {
 }
 
 /**
- * Open an empty tab while the click is still being handled. Mobile Safari and
- * Chrome reject window.open calls that happen after an await, so the window is
- * created first and navigated to Google once the PKCE values are ready.
- * `noopener` cannot be used because it would return null instead of a handle;
- * the opener is severed manually before the navigation.
+ * Open the OAuth authorization URL in the system browser (Tauri without a
+ * loopback listener). Browsers always use the same-tab redirect instead.
  */
-function openAuthWindowSync(): Window | null {
-  if (typeof window === "undefined") return null;
-  let popup: Window | null = null;
-  try {
-    popup = window.open("", "_blank");
-  } catch {
-    popup = null;
-  }
-  if (!popup) return null;
-  try {
-    popup.opener = null;
-  } catch {
-    // Some embedded webviews do not expose opener.
-  }
-  try {
-    popup.document.title = "ProseCraft — Google Drive";
-    popup.document.body.style.fontFamily = "system-ui, sans-serif";
-    popup.document.body.style.padding = "24px";
-    popup.document.body.textContent = "Opening Google Drive…";
-  } catch {
-    // A blank window may not be scriptable in every browser.
-  }
-  pendingAuthWindow = popup;
-  return popup;
-}
-
-/** Open the OAuth authorization URL in the system browser or the pending tab. */
 async function openAuthUrl(url: string, popup: Window | null): Promise<boolean> {
   if (await isTauriRuntime()) {
     try {
@@ -332,8 +304,8 @@ async function openAuthUrl(url: string, popup: Window | null): Promise<boolean> 
 async function startLoopback(): Promise<{ port: number } | null> {
   if (!(await isTauriRuntime())) return null;
   // A mobile browser cannot reach a listener inside the app, so those builds
-  // keep using the copy/paste fallback.
-  if (typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+  // keep using the web redirect flow.
+  if (isMobileBrowser()) {
     return null;
   }
   try {
@@ -386,9 +358,11 @@ function buildAuthUrl(
 }
 
 /**
- * Start the OAuth flow. On desktop the browser is sent to a temporary loopback
- * listener and the tokens come back automatically. Elsewhere the flow returns
- * a pending result and the UI asks the user to paste the authorization code.
+ * Start the OAuth flow. On desktop Tauri the browser is sent to a temporary
+ * loopback listener and the tokens come back automatically. Everywhere else
+ * the app navigates the current tab to Google and the app boots again on
+ * return, where completeWebRedirectIfPresent() finishes the exchange — no
+ * copy/paste needed.
  */
 export async function authenticateGoogleDrive(
   onProgress?: GoogleDriveAuthProgress
@@ -396,22 +370,18 @@ export async function authenticateGoogleDrive(
   const configurationError = missingClientSecret();
   if (configurationError) return configurationError;
 
-  // Create the window here, before any await, while the click gesture is
-  // still active. Desktop Tauri builds use the system browser instead, and
-  // mobile browsers use a same-tab redirect (a popup would land the
-  // authorization response in a tab that cannot reach this one).
-  const mobileWeb = !isTauriRuntimeSync() && isMobileBrowser();
-  let authWindow = isTauriRuntimeSync() || mobileWeb ? null : openAuthWindowSync();
-
   try {
     const codeVerifier = generateCodeVerifier();
     const codeChallenge = await generateCodeChallenge(codeVerifier);
     const state = generateState();
 
     const loopback = await startLoopback();
-    // loopback is only ever non-null on desktop Tauri builds; everywhere else
-    // the redirect URI below is what Google sends the user back to.
-    const useWebRedirect = !loopback && mobileWeb;
+    // loopback is only ever non-null on desktop Tauri builds. Tauri without
+    // a loopback listener keeps the old system-browser + copy/paste path,
+    // because navigating the app webview itself to Google would strand it.
+    // Everywhere else (desktop and mobile browsers, installed PWA) the
+    // same-tab redirect below returns to the app automatically.
+    const useWebRedirect = !loopback && !isTauriRuntimeSync();
     const redirectUri = loopback
       ? `http://127.0.0.1:${loopback.port}`
       : useWebRedirect
@@ -422,13 +392,11 @@ export async function authenticateGoogleDrive(
     const authUrl = buildAuthUrl(codeChallenge, state, redirectUri, clientId);
 
     if (useWebRedirect) {
-      // Same-tab navigation: the app boots again on return and
-      // completeWebRedirectIfPresent() finishes the exchange.
       try {
         window.location.href = authUrl.toString();
       } catch {
-        // Test environments without navigation; the pending result below
-        // still lets callers drive the flow manually.
+        // Non-browser environment; the pending result below still lets
+        // callers drive the flow manually.
       }
       return {
         success: false,
@@ -438,9 +406,8 @@ export async function authenticateGoogleDrive(
       };
     }
 
-    const opened = await openAuthUrl(authUrl.toString(), authWindow);
+    const opened = await openAuthUrl(authUrl.toString(), null);
     if (!opened) {
-      authWindow = null;
       pendingAuthWindow = null;
     }
 
@@ -488,7 +455,7 @@ export async function authenticateGoogleDrive(
     clearPendingFlow();
     void cancelLoopback();
     try {
-      (authWindow ?? pendingAuthWindow)?.close();
+      pendingAuthWindow?.close();
     } catch {
       // The tab may already have been closed by the user.
     }

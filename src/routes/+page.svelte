@@ -10546,13 +10546,13 @@
                   : "Google Drive is connected. The access token will be refreshed when you sync."}
               </p>
             {:else if googleDriveCodeVerifier}
-              <p class="data-help">Google will redirect to a local address that may show a “can’t open the page” error. That is expected. Copy the entire address bar, or just the <code>code=</code> value, and paste it below.</p>
+              <p class="data-help">Complete the approval in the browser — you will return here automatically. If a code is shown instead (older desktop builds), copy the entire address bar, or just the <code>code=</code> value, and paste it below.</p>
               {#if googleDriveAuthUrl}
                 <div class="data-actions">
                   <a class="data-button data-link" href={googleDriveAuthUrl} target="_blank" rel="noreferrer">Open authorization page</a>
                 </div>
               {/if}
-              <p class="data-help">On a phone, switch back to ProseCraft after approving access. If the code expired, choose Cancel and start again.</p>
+              <p class="data-help">If the code expired, choose Cancel and start again.</p>
               <input
                 class="preference-select"
                 type="text"

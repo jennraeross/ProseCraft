@@ -172,6 +172,15 @@ describe("PWA web authorization flow", () => {
     expect(window.location.search).toBe("");
   });
 
+  it("redirects desktop browsers to the app URL too", async () => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "test-secret");
+    // Default jsdom user agent is a desktop browser: no popup is opened and
+    // the flow returns pending with a same-tab redirect, just like mobile.
+    const started = await authenticateGoogleDrive();
+    expect(started.pending).toBe(true);
+    expect(started.authorizationUrl).toContain(encodeURIComponent("http://localhost:3000/"));
+  });
+
   it("completes a mobile redirect without copy/paste", async () => {
     vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "test-secret");
     vi.stubGlobal("navigator", { userAgent: "iPhone" });
