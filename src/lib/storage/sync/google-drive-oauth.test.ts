@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  authenticateGoogleDrive,
+  completeWebRedirectIfPresent,
   exchangeCodeForToken,
+  getGoogleWebClientId,
+  getWebRedirectUri,
+  GOOGLE_CLIENT_ID,
   isTokenExpired,
   parseAuthorizationInput,
   refreshAccessToken
@@ -9,6 +14,21 @@ import {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  try {
+    sessionStorage.clear();
+  } catch {
+    // Storage may be unavailable; nothing to clean.
+  }
+  try {
+    localStorage.clear();
+  } catch {
+    // Storage may be unavailable; nothing to clean.
+  }
+  try {
+    window.history.replaceState(null, "", window.location.pathname);
+  } catch {
+    // jsdom only; ignore.
+  }
 });
 
 describe("Google Drive OAuth helpers", () => {
@@ -125,5 +145,67 @@ describe("Google Drive token requests", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("VITE_GOOGLE_CLIENT_SECRET");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("PWA web authorization flow", () => {
+  it("falls back to the desktop client until a web client is configured", () => {
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_ID", "");
+    expect(getGoogleWebClientId()).toBe(GOOGLE_CLIENT_ID);
+    vi.stubEnv("VITE_GOOGLE_WEB_CLIENT_ID", "web-client-id");
+    expect(getGoogleWebClientId()).toBe("web-client-id");
+  });
+
+  it("derives the redirect URI from the app URL with a trailing slash", () => {
+    expect(getWebRedirectUri()).toBe("http://localhost:3000/");
+  });
+
+  it("ignores startup URLs without an authorization response", async () => {
+    const result = await completeWebRedirectIfPresent();
+    expect(result).toBeNull();
+  });
+
+  it("ignores an authorization code with no matching pending flow", async () => {
+    window.history.replaceState(null, "", "/?code=stray-code&state=stray-state");
+    const result = await completeWebRedirectIfPresent();
+    expect(result).toBeNull();
+    expect(window.location.search).toBe("");
+  });
+
+  it("completes a mobile redirect without copy/paste", async () => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_SECRET", "test-secret");
+    vi.stubGlobal("navigator", { userAgent: "iPhone" });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (String(input).includes("oauth2.googleapis.com/token")) {
+        return new Response(JSON.stringify({
+          access_token: "access",
+          refresh_token: "refresh",
+          expires_in: 3600
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new Response("", { status: 401 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const started = await authenticateGoogleDrive();
+    expect(started.pending).toBe(true);
+    expect(started.authorizationUrl).toContain(encodeURIComponent("http://localhost:3000/"));
+
+    // The same-tab redirect lands back on the app URL with the code.
+    const state = localStorage.getItem("prosecraft-oauth-state");
+    expect(state).toBeTruthy();
+    window.history.replaceState(null, "", `/?code=test-code&state=${state}`);
+
+    const result = await completeWebRedirectIfPresent();
+    expect(result?.success).toBe(true);
+    expect(result?.tokens?.accessToken).toBe("access");
+    expect(result?.tokens?.refreshToken).toBe("refresh");
+    // The code is single-use; the URL is cleaned so a reload does not retry.
+    expect(window.location.search).toBe("");
+    // The pending flow is consumed.
+    expect(localStorage.getItem("prosecraft-oauth-code-verifier")).toBeNull();
   });
 });

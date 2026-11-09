@@ -293,6 +293,7 @@
   import {
     authenticateGoogleDrive,
     cancelGoogleDriveAuthorization,
+    completeWebRedirectIfPresent,
     exchangeCodeForToken,
     isTokenExpired,
     refreshAccessToken,
@@ -8367,6 +8368,23 @@
         desktopRuntime = false;
         syncProviderType = "googledrive";
       });
+    // Complete a Google Drive web authorization that redirected back to the
+    // app (PWA flow). No-op unless the URL carries a response for a flow this
+    // device started.
+    void (async () => {
+      try {
+        const result = await completeWebRedirectIfPresent();
+        if (!result) return;
+        if (result.success && result.tokens) {
+          applyGoogleDriveTokens(result.tokens);
+          syncStatus = googleDriveReadyMessage();
+        } else if (result.error) {
+          syncStatus = result.error;
+        }
+      } catch (error) {
+        console.error("Could not complete Google Drive authorization.", error);
+      }
+    })();
   });
 
   onMount(() => {

@@ -29,6 +29,37 @@ export const GOOGLE_CLIENT_ID = "716095902309-r0r2jr5st4adjup28a2278jmslpiteug.a
 export const GOOGLE_REDIRECT_URI = "http://127.0.0.1";
 
 /**
+ * OAuth client of type "Web application" used by the PWA. Unlike the desktop
+ * client above, Google allows it to redirect back to the app's own HTTPS URL
+ * so authorization completes without copy/paste. Falls back to the desktop
+ * client until the web client is configured (see `.env.example`).
+ */
+export function getGoogleWebClientId(): string {
+  const configured = (import.meta.env.VITE_GOOGLE_WEB_CLIENT_ID as string | undefined) || "";
+  return configured || GOOGLE_CLIENT_ID;
+}
+
+/**
+ * The redirect URI for browser/PWA authorization: the app's own URL. It must
+ * be registered exactly (including the trailing slash) under Authorized
+ * redirect URIs in the Google Cloud console.
+ */
+export function getWebRedirectUri(): string {
+  if (typeof window === "undefined") return GOOGLE_REDIRECT_URI;
+  try {
+    const url = new URL(window.location.href);
+    let path = url.pathname.replace(/index\.html$/, "");
+    if (!path.endsWith("/")) path += "/";
+    url.pathname = path;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return GOOGLE_REDIRECT_URI;
+  }
+}
+
+/**
  * Google requires a client secret for desktop app clients even when PKCE is
  * used. The value comes from a local, gitignored `.env` file so it is not
  * committed. Desktop client secrets are not truly confidential: anyone with
@@ -55,6 +86,7 @@ const DRIVE_SCOPE = [
 
 const STATE_KEY = "prosecraft-oauth-state";
 const VERIFIER_KEY = "prosecraft-oauth-code-verifier";
+const REDIRECT_KEY = "prosecraft-oauth-redirect-uri";
 
 export type GoogleDriveTokens = {
   accessToken: string;
@@ -88,6 +120,7 @@ type LoopbackCallback = {
 /** Fallbacks for environments without sessionStorage (tests and SSR). */
 let pendingVerifier = "";
 let pendingState = "";
+let pendingRedirectUri = "";
 /** The popup opened during the user gesture, if the browser allowed one. */
 let pendingAuthWindow: Window | null = null;
 
@@ -116,25 +149,70 @@ function removeSession(key: string): void {
   }
 }
 
-function rememberPendingFlow(verifier: string, state: string): void {
+function readLocal(key: string): string {
+  try {
+    return typeof localStorage === "undefined" ? "" : (localStorage.getItem(key) ?? "");
+  } catch {
+    return "";
+  }
+}
+
+function writeLocal(key: string, value: string): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(key, value);
+  } catch {
+    // Storage can be unavailable in private browsing; the session copy or the
+    // module fallback is still enough for the current authorization attempt.
+  }
+}
+
+function removeLocal(key: string): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(key);
+  } catch {
+    // Ignore.
+  }
+}
+
+function readFirst(key: string, memory: string): string {
+  return readSession(key) || readLocal(key) || memory;
+}
+
+function rememberPendingFlow(verifier: string, state: string, redirectUri?: string): void {
   pendingVerifier = verifier;
   pendingState = state;
   writeSession(VERIFIER_KEY, verifier);
   writeSession(STATE_KEY, state);
+  // Mirror to localStorage: on mobile the Google page opens in a different
+  // tab with its own sessionStorage, so the tab that completes the redirect
+  // would otherwise lose the verifier.
+  writeLocal(VERIFIER_KEY, verifier);
+  writeLocal(STATE_KEY, state);
+  if (redirectUri !== undefined) {
+    pendingRedirectUri = redirectUri;
+    writeSession(REDIRECT_KEY, redirectUri);
+    writeLocal(REDIRECT_KEY, redirectUri);
+  }
 }
 
-function readPendingFlow(): { verifier: string; state: string } {
+function readPendingFlow(): { verifier: string; state: string; redirectUri: string } {
   return {
-    verifier: readSession(VERIFIER_KEY) || pendingVerifier,
-    state: readSession(STATE_KEY) || pendingState
+    verifier: readFirst(VERIFIER_KEY, pendingVerifier),
+    state: readFirst(STATE_KEY, pendingState),
+    redirectUri: readFirst(REDIRECT_KEY, pendingRedirectUri)
   };
 }
 
 function clearPendingFlow(): void {
   pendingVerifier = "";
   pendingState = "";
+  pendingRedirectUri = "";
   removeSession(VERIFIER_KEY);
   removeSession(STATE_KEY);
+  removeSession(REDIRECT_KEY);
+  removeLocal(VERIFIER_KEY);
+  removeLocal(STATE_KEY);
+  removeLocal(REDIRECT_KEY);
 }
 
 /** Generate a random PKCE code verifier. */
@@ -174,6 +252,11 @@ async function isTauriRuntime(): Promise<boolean> {
 function isTauriRuntimeSync(): boolean {
   return typeof globalThis !== "undefined"
     && Boolean((globalThis as { isTauri?: boolean }).isTauri);
+}
+
+function isMobileBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
 /**
@@ -283,10 +366,11 @@ async function cancelLoopback(): Promise<void> {
 function buildAuthUrl(
   codeChallenge: string,
   state: string,
-  redirectUri: string
+  redirectUri: string,
+  clientId: string = GOOGLE_CLIENT_ID
 ): URL {
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+  authUrl.searchParams.set("client_id", clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("scope", DRIVE_SCOPE);
@@ -313,20 +397,46 @@ export async function authenticateGoogleDrive(
   if (configurationError) return configurationError;
 
   // Create the window here, before any await, while the click gesture is
-  // still active. Desktop Tauri builds use the system browser instead.
-  let authWindow = isTauriRuntimeSync() ? null : openAuthWindowSync();
+  // still active. Desktop Tauri builds use the system browser instead, and
+  // mobile browsers use a same-tab redirect (a popup would land the
+  // authorization response in a tab that cannot reach this one).
+  const mobileWeb = !isTauriRuntimeSync() && isMobileBrowser();
+  let authWindow = isTauriRuntimeSync() || mobileWeb ? null : openAuthWindowSync();
 
   try {
     const codeVerifier = generateCodeVerifier();
     const codeChallenge = await generateCodeChallenge(codeVerifier);
     const state = generateState();
-    rememberPendingFlow(codeVerifier, state);
 
     const loopback = await startLoopback();
+    // loopback is only ever non-null on desktop Tauri builds; everywhere else
+    // the redirect URI below is what Google sends the user back to.
+    const useWebRedirect = !loopback && mobileWeb;
     const redirectUri = loopback
       ? `http://127.0.0.1:${loopback.port}`
-      : GOOGLE_REDIRECT_URI;
-    const authUrl = buildAuthUrl(codeChallenge, state, redirectUri);
+      : useWebRedirect
+        ? getWebRedirectUri()
+        : GOOGLE_REDIRECT_URI;
+    const clientId = useWebRedirect ? getGoogleWebClientId() : GOOGLE_CLIENT_ID;
+    rememberPendingFlow(codeVerifier, state, redirectUri);
+    const authUrl = buildAuthUrl(codeChallenge, state, redirectUri, clientId);
+
+    if (useWebRedirect) {
+      // Same-tab navigation: the app boots again on return and
+      // completeWebRedirectIfPresent() finishes the exchange.
+      try {
+        window.location.href = authUrl.toString();
+      } catch {
+        // Test environments without navigation; the pending result below
+        // still lets callers drive the flow manually.
+      }
+      return {
+        success: false,
+        pending: true,
+        authorizationUrl: authUrl.toString(),
+        error: "Opening Google authorization…"
+      };
+    }
 
     const opened = await openAuthUrl(authUrl.toString(), authWindow);
     if (!opened) {
@@ -400,6 +510,87 @@ export function cancelGoogleDriveAuthorization(): void {
     // The tab may already have been closed by the user.
   }
   pendingAuthWindow = null;
+}
+
+function normalizeRedirectPath(path: string): string {
+  return path.endsWith("/") && path.length > 1 ? path.slice(0, -1) : path;
+}
+
+/**
+ * True when the stored redirect URI points at this page. Desktop flows store
+ * a loopback address, so a stray `?code=` here never belongs to them.
+ */
+function redirectMatchesCurrentPage(redirectUri: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const expected = new URL(redirectUri);
+    return expected.origin === window.location.origin
+      && normalizeRedirectPath(expected.pathname) === normalizeRedirectPath(window.location.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/** Remove OAuth response parameters so a reload does not reprocess them. */
+function stripOAuthParams(): void {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("code");
+    url.searchParams.delete("state");
+    url.searchParams.delete("scope");
+    url.searchParams.delete("error");
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // Non-browser environment; nothing to clean up.
+  }
+}
+
+/**
+ * Complete a web authorization that redirected back to the app (PWA flow).
+ * Returns null when the current URL carries no authorization response for a
+ * flow this device started, so callers can safely run it on every startup.
+ */
+export async function completeWebRedirectIfPresent(): Promise<AuthResult | null> {
+  if (typeof window === "undefined") return null;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(window.location.search);
+  } catch {
+    return null;
+  }
+  if (params.get("error")) {
+    const pending = readPendingFlow();
+    if (!pending.verifier) return null;
+    clearPendingFlow();
+    stripOAuthParams();
+    return {
+      success: false,
+      error: `Google Drive authorization failed: ${params.get("error") ?? "access denied"}`
+    };
+  }
+  const code = params.get("code");
+  if (!code) return null;
+  const state = params.get("state");
+  const pending = readPendingFlow();
+  if (!pending.verifier) {
+    stripOAuthParams();
+    return null;
+  }
+  if (pending.redirectUri && !redirectMatchesCurrentPage(pending.redirectUri)) {
+    // A different flow (e.g. the desktop copy/paste fallback) owns this code.
+    return null;
+  }
+  if (state && pending.state && state !== pending.state) {
+    clearPendingFlow();
+    stripOAuthParams();
+    return {
+      success: false,
+      error: "The authorization response did not match this request. Start the connection again."
+    };
+  }
+  const result = await exchangeCodeForToken(code, pending.verifier, pending.redirectUri || getWebRedirectUri());
+  if (result.success) stripOAuthParams();
+  return result;
 }
 
 /**

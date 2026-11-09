@@ -42,6 +42,7 @@ jobs:
         run: npm run build
         env:
           PAGES_BASE: /ProseCraft/app
+          VITE_GOOGLE_WEB_CLIENT_ID: ${{ secrets.VITE_GOOGLE_WEB_CLIENT_ID }}
           # Optional: set VITE_GOOGLE_CLIENT_SECRET in repo Actions secrets so
           # hardware QA can test Google Drive sync. Local .env.local is never
           # committed; an empty secret still builds, Drive just reports config error.
