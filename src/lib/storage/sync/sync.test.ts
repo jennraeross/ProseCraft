@@ -10,6 +10,7 @@ import { loadSyncState, saveSyncState, SYNC_STATE_KEY } from "./state";
 import { WebDavFileSystem } from "./webdav-provider";
 
 const PASSPHRASE = "correct horse battery";
+const IMAGE_SRC = "data:image/png;base64,AA==";
 
 function projectFixture(id = "project-1", name = "Test Novel"): ProjectData {
   return {
@@ -217,6 +218,28 @@ describe("open-folder sync", () => {
     expect(second.projects[0].project.documents[0].content).toBe(
       first.projects[0].project.documents[0].content
     );
+  });
+
+  it("round-trips image layout through the Markdown documents", async () => {
+    const fs = new MemoryFileSystem();
+    const fixture = projectFixture();
+    const image = `<img src="${IMAGE_SRC}" alt="Chart" data-size="small" data-align="right">`;
+    const withImage: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((document) => document.id === "doc-1"
+        ? { ...document, content: `<p>Before</p><p>${image}</p><p>After</p>` }
+        : document)
+    };
+    await new OpenFolderSyncProvider(fs)
+      .sync("", [createStoredProject(withImage, "device-a", 1_000)], {}, 1_000, "device-a");
+
+    const markdown = await fs.readText("projects/project-1/documents/doc-1.md");
+    expect(markdown).toContain(image);
+
+    const connection = await new OpenFolderSyncProvider(fs).connect("");
+    const document = connection.projects[0].project.documents.find((doc) => doc.id === "doc-1");
+    expect(document?.markdownSource).toContain(image);
+    expect(document?.content).toContain(image);
   });
 
   it("applies external Markdown edits", async () => {

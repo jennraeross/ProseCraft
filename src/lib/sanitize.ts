@@ -1,3 +1,4 @@
+import { applyImageLayout, readImageLayout } from "./image-layout";
 import { normalizedRichPlaceholder, richKindOf } from "./rich/model";
 
 const safeTags = new Set([
@@ -81,6 +82,9 @@ function cleanNode(node: Node): Node | null {
         clean.setAttribute(dimension, String(value));
       }
     }
+    // Layout survives as validated data attributes; unknown or hostile values
+    // read as the defaults and are therefore dropped.
+    applyImageLayout(clean, readImageLayout(node));
   }
   for (const child of Array.from(node.childNodes)) {
     const cleanChild = cleanNode(child);

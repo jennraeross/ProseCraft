@@ -1,6 +1,12 @@
 import TurndownService from "turndown";
 import { marked, type Token } from "marked";
 import {
+  DEFAULT_IMAGE_LAYOUT,
+  MAX_IMAGE_WIDTH,
+  readImageLayout,
+  type ImageLayout
+} from "../image-layout";
+import {
   CALC_CLASS,
   DIAGRAM_CLASS,
   MATH_BLOCK_CLASS,
@@ -28,6 +34,38 @@ function escapeAttribute(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** The validated layout attributes `applyImageLayout` would write. */
+function layoutAttributes(layout: ImageLayout): string[] {
+  const attributes: string[] = [];
+  if (layout.size !== DEFAULT_IMAGE_LAYOUT.size) {
+    attributes.push(`data-size="${escapeAttribute(layout.size)}"`);
+  }
+  if (layout.size === "custom") {
+    attributes.push(`data-width="${layout.width ?? MAX_IMAGE_WIDTH}"`);
+  }
+  if (layout.align !== DEFAULT_IMAGE_LAYOUT.align) {
+    attributes.push(`data-align="${escapeAttribute(layout.align)}"`);
+  }
+  if (layout.wrap !== DEFAULT_IMAGE_LAYOUT.wrap) {
+    attributes.push(`data-wrap="${escapeAttribute(layout.wrap)}"`);
+  }
+  return attributes;
+}
+
+function hasImageLayout(node: HTMLElement): boolean {
+  return layoutAttributes(readImageLayout(node)).length > 0;
+}
+
+/** Markdown has no syntax for image layout, so such images stay raw HTML. */
+function imageLayoutTag(node: HTMLElement, src: string): string {
+  const attributes = [
+    `src="${escapeAttribute(src)}"`,
+    `alt="${escapeAttribute(node.getAttribute("alt") ?? "")}"`,
+    ...layoutAttributes(readImageLayout(node))
+  ];
+  return `<img ${attributes.join(" ")}>`;
+}
+
 function richSource(node: HTMLElement, attribute: string): string {
   return node.getAttribute(attribute) ?? "";
 }
@@ -44,6 +82,13 @@ function markdownService(): TurndownService {
   service.addRule("eyebrow", {
     filter: (node) => node.nodeName === "P" && node.classList.contains("eyebrow"),
     replacement: (content) => `**${content.trim()}**\n\n`
+  });
+  service.addRule("imageLayout", {
+    filter: (node) => node.nodeName === "IMG" && hasImageLayout(node),
+    replacement: (_content, node) => {
+      const src = node.getAttribute("src");
+      return src ? imageLayoutTag(node, src) : "";
+    }
   });
   service.addRule("mathInline", {
     filter: (node) => node.nodeName === "SPAN" && node.classList.contains(MATH_INLINE_CLASS),

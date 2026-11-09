@@ -22,7 +22,7 @@ describe("about module", () => {
     });
 
     it("has version from package.json", () => {
-      expect(APP_VERSION).toBe("0.4.6");
+      expect(APP_VERSION).toBe("0.5.0");
     });
   });
 

@@ -134,6 +134,21 @@
   .tile-body :global(ul), .tile-body :global(ol) { padding-left: 24px; }
   .tile-body :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
   .tile-body :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
+  .tile-body :global(img[data-size="small"]) { width: 25%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="medium"]) { width: 50%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="large"]) { width: 75%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="full"]) { width: 100%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="custom"]) { max-width: 100%; }
+  .tile-body :global(img[data-align="left"]) { margin-right: auto; }
+  .tile-body :global(img[data-align="center"]) { margin-right: auto; margin-left: auto; }
+  .tile-body :global(img[data-align="right"]) { margin-left: auto; }
+  .tile-body :global(img[data-wrap="wrap-left"]) { float: left; width: 50%; max-width: 50%; margin: 4px 18px 14px 0; }
+  .tile-body :global(img[data-wrap="wrap-right"]) { float: right; width: 50%; max-width: 50%; margin: 4px 0 14px 18px; }
+  .tile-body :global(img[data-wrap="wrap-left"][data-size="small"]),
+  .tile-body :global(img[data-wrap="wrap-right"][data-size="small"]) { width: 25%; max-width: 25%; }
+  .tile-body :global(h1), .tile-body :global(h2), .tile-body :global(h3),
+  .tile-body :global(blockquote), .tile-body :global(pre),
+  .tile-body :global(table), .tile-body :global(.scene-break) { clear: both; }
   .tile-body :global(pre) { overflow-x: auto; padding: 12px 14px; border-radius: 5px; background: var(--surface-raised); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; line-height: 1.55; }
   .tile-body :global(code) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
   .tile-body :global(table) { width: 100%; border-collapse: collapse; font-size: .9em; }

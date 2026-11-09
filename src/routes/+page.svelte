@@ -68,6 +68,18 @@
   import { APP_AUTHOR, APP_LICENSE, APP_NAME, APP_REPOSITORY_URL, APP_VERSION, buildDiagnosticsReport } from "$lib/about";
   import { autoResize } from "$lib/auto-resize";
   import { confirmDestructiveAction } from "$lib/confirm";
+  import {
+    applyImageLayout,
+    clampImageWidth,
+    DEFAULT_IMAGE_LAYOUT,
+    MAX_IMAGE_WIDTH,
+    MIN_IMAGE_WIDTH,
+    readImageLayout,
+    type ImageLayout,
+    type ImageLayoutAlign,
+    type ImageLayoutSize,
+    type ImageLayoutWrap
+  } from "$lib/image-layout";
   import { centerCaretInViewport, scrollContainerOf } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
@@ -542,6 +554,11 @@
   let richTextFadeActiveBlocks: HTMLElement[] = [];
   const writingBlockSelector = "p, h1, h2, h3, blockquote, pre, li, td, th, div";
   let selectedEditorImage = $state<HTMLImageElement | null>(null);
+  let selectedImageLayout = $state<ImageLayout>({ ...DEFAULT_IMAGE_LAYOUT });
+  let customImageWidthEditing = $state(false);
+  let customImageWidthDraft = $state<string | null>(null);
+  let imageResizeHandle = $state<{ left: number; top: number } | null>(null);
+  let imageResizeStart: { x: number; percent: number; columnWidth: number } | null = null;
   let imageFileInput = $state<HTMLInputElement>();
   let imageDropActive = $state(false);
   let imageInsertError = $state("");
@@ -3411,10 +3428,160 @@
     handleInput();
   }
 
+  const IMAGE_SIZE_OPTIONS: { size: Exclude<ImageLayoutSize, "custom">; label: string; ariaLabel: string }[] = [
+    { size: "small", label: "Small", ariaLabel: "Small image size" },
+    { size: "medium", label: "Medium", ariaLabel: "Medium image size" },
+    { size: "large", label: "Large", ariaLabel: "Large image size" },
+    { size: "full", label: "Full", ariaLabel: "Full width" }
+  ];
+  const IMAGE_ALIGN_OPTIONS: { align: ImageLayoutAlign; label: string }[] = [
+    { align: "left", label: "Left" },
+    { align: "center", label: "Center" },
+    { align: "right", label: "Right" }
+  ];
+
+  function selectedImageWidthPercent(): number {
+    const image = selectedEditorImage;
+    if (!image) return MAX_IMAGE_WIDTH;
+    const layout = readImageLayout(image);
+    if (layout.size === "custom") return layout.width ?? MAX_IMAGE_WIDTH;
+    const columnWidth = editor?.clientWidth ?? 0;
+    return columnWidth > 0
+      ? clampImageWidth(image.getBoundingClientRect().width / columnWidth * 100)
+      : MAX_IMAGE_WIDTH;
+  }
+
+  function paintCustomImageWidth(image: HTMLImageElement) {
+    const layout = readImageLayout(image);
+    if (layout.size === "custom") {
+      image.style.width = `${layout.width ?? MAX_IMAGE_WIDTH}%`;
+    } else {
+      image.style.removeProperty("width");
+    }
+  }
+
+  function paintEditorImageWidths() {
+    if (!editor) return;
+    for (const image of editor.querySelectorAll<HTMLImageElement>("img")) {
+      paintCustomImageWidth(image);
+    }
+  }
+
+  function applySelectedImageLayout(patch: Partial<ImageLayout>) {
+    const image = selectedEditorImage;
+    if (!image || !editor.contains(image)) {
+      selectEditorImage(null);
+      return;
+    }
+    applyImageLayout(image, { ...readImageLayout(image), ...patch });
+    paintCustomImageWidth(image);
+    selectedImageLayout = readImageLayout(image);
+    void tick().then(positionImageResizeHandle);
+    handleInput();
+  }
+
+  function setSelectedImageSize(size: Exclude<ImageLayoutSize, "custom">) {
+    customImageWidthEditing = false;
+    customImageWidthDraft = null;
+    applySelectedImageLayout({ size });
+  }
+
+  function useCustomImageWidth() {
+    customImageWidthEditing = true;
+    customImageWidthDraft = null;
+    applySelectedImageLayout({ size: "custom", width: selectedImageWidthPercent() });
+  }
+
+  function handleImageWidthInput(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    customImageWidthDraft = input.value;
+    const width = Number.parseFloat(input.value);
+    if (!Number.isFinite(width)) return;
+    applySelectedImageLayout({ size: "custom", width: clampImageWidth(width) });
+  }
+
+  function setSelectedImageAlign(align: ImageLayoutAlign) {
+    applySelectedImageLayout({ align });
+  }
+
+  function setSelectedImageWrap(wrap: ImageLayoutWrap) {
+    if (wrap === "block") {
+      applySelectedImageLayout({ wrap });
+    } else {
+      applySelectedImageLayout({ wrap, align: wrap === "wrap-left" ? "left" : "right" });
+    }
+  }
+
+  function positionImageResizeHandle() {
+    const image = selectedEditorImage;
+    if (!image || !editorColumn || !editor.contains(image)) {
+      imageResizeHandle = null;
+      return;
+    }
+    const column = editorColumn.getBoundingClientRect();
+    const rect = image.getBoundingClientRect();
+    imageResizeHandle = { left: rect.right - column.left, top: rect.bottom - column.top };
+  }
+
+  function startImageResize(event: PointerEvent) {
+    const image = selectedEditorImage;
+    if (!image || !editor.contains(image) || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    customImageWidthDraft = null;
+    imageResizeStart = { x: event.clientX, percent: selectedImageWidthPercent(), columnWidth: editor.clientWidth };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function moveImageResize(event: PointerEvent) {
+    const start = imageResizeStart;
+    const image = selectedEditorImage;
+    if (!start || !image) return;
+    const width = clampImageWidth(start.percent + (event.clientX - start.x) / Math.max(1, start.columnWidth) * 100);
+    customImageWidthEditing = true;
+    applyImageLayout(image, { ...readImageLayout(image), size: "custom", width });
+    paintCustomImageWidth(image);
+    selectedImageLayout = readImageLayout(image);
+    positionImageResizeHandle();
+  }
+
+  function endImageResize(event: PointerEvent) {
+    if (!imageResizeStart) return;
+    imageResizeStart = null;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    handleInput();
+  }
+
+  function handleImageResizeKeydown(event: KeyboardEvent) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    customImageWidthEditing = true;
+    customImageWidthDraft = null;
+    const step = event.key === "ArrowRight" ? 5 : -5;
+    applySelectedImageLayout({ size: "custom", width: clampImageWidth(selectedImageWidthPercent() + step) });
+  }
+
+  onMount(() => {
+    const reposition = () => positionImageResizeHandle();
+    paintEditorImageWidths();
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  });
+
   function selectEditorImage(image: HTMLImageElement | null) {
     selectedEditorImage?.classList.remove("selected-writing-image");
     selectedEditorImage = image && editor.contains(image) ? image : null;
     selectedEditorImage?.classList.add("selected-writing-image");
+    selectedImageLayout = selectedEditorImage ? readImageLayout(selectedEditorImage) : { ...DEFAULT_IMAGE_LAYOUT };
+    customImageWidthEditing = false;
+    customImageWidthDraft = null;
+    imageResizeStart = null;
+    if (selectedEditorImage) paintCustomImageWidth(selectedEditorImage);
+    void tick().then(positionImageResizeHandle);
   }
 
   function handleEditorClick(event: MouseEvent) {
@@ -3505,6 +3672,9 @@
       image.setAttribute("width", String(width));
       image.setAttribute("height", String(Math.round(width * ratio)));
     }
+    applyImageLayout(image, { ...readImageLayout(image), size: "large" });
+    selectedImageLayout = readImageLayout(image);
+    paintCustomImageWidth(image);
     handleInput();
   }
 
@@ -3683,6 +3853,8 @@
     if (!editor) return;
     editor.innerHTML = html;
     ensureParagraphsAroundRichBlocks(editor);
+    selectEditorImage(null);
+    paintEditorImageWidths();
     if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
@@ -9153,12 +9325,75 @@
         {/if}
 
         {#if selectedEditorImage && !markdownEditorMode}
-          <div class="image-edit-toolbar" role="toolbar" aria-label="Selected image tools">
+          <div
+            class="image-edit-toolbar"
+            role="toolbar"
+            tabindex="0"
+            aria-label="Selected image tools"
+            onkeydown={(event) => {
+              if (event.key !== "Escape") return;
+              selectEditorImage(null);
+              editor.focus();
+            }}
+          >
             <span class="image-edit-label">Image size</span>
             <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(50)}>50%</button>
             <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(75)}>75%</button>
             <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(100)}>Fit width</button>
             <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(null)}>Original size</button>
+            <span class="toolbar-divider" aria-hidden="true"></span>
+            <span class="image-edit-label">Column width</span>
+            <div class="image-layout-group" role="group" aria-label="Image column width">
+              {#each IMAGE_SIZE_OPTIONS as option (option.size)}
+                <button
+                  type="button"
+                  aria-label={option.ariaLabel}
+                  aria-pressed={selectedImageLayout.size === option.size}
+                  onpointerdown={(event) => event.preventDefault()}
+                  onclick={() => setSelectedImageSize(option.size)}
+                >{option.label}</button>
+              {/each}
+              <button
+                type="button"
+                aria-pressed={selectedImageLayout.size === "custom"}
+                onpointerdown={(event) => event.preventDefault()}
+                onclick={useCustomImageWidth}
+              >Custom</button>
+              {#if selectedImageLayout.size === "custom" || customImageWidthEditing}
+                <label class="image-custom-width">
+                  <input
+                    type="number"
+                    min={MIN_IMAGE_WIDTH}
+                    max={MAX_IMAGE_WIDTH}
+                    step="5"
+                    aria-label="Custom image width in percent"
+                    value={customImageWidthDraft ?? String(selectedImageLayout.width ?? MAX_IMAGE_WIDTH)}
+                    oninput={handleImageWidthInput}
+                    onblur={() => { customImageWidthDraft = null; }}
+                    onkeydown={(event) => { if (event.key === "Enter") (event.currentTarget as HTMLInputElement).blur(); }}
+                  />
+                  <span aria-hidden="true">%</span>
+                </label>
+              {/if}
+            </div>
+            <span class="image-edit-label">Align</span>
+            <div class="image-layout-group" role="group" aria-label="Image alignment">
+              {#each IMAGE_ALIGN_OPTIONS as option (option.align)}
+                <button
+                  type="button"
+                  aria-label={`Align image ${option.label.toLowerCase()}`}
+                  aria-pressed={selectedImageLayout.align === option.align}
+                  onpointerdown={(event) => event.preventDefault()}
+                  onclick={() => setSelectedImageAlign(option.align)}
+                >{option.label}</button>
+              {/each}
+            </div>
+            <span class="image-edit-label">Text flow</span>
+            <div class="image-layout-group" role="group" aria-label="Text flow around image">
+              <button type="button" aria-label="Image on its own line" aria-pressed={selectedImageLayout.wrap === "block"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("block")}>Own line</button>
+              <button type="button" aria-label="Wrap text beside left-aligned image" aria-pressed={selectedImageLayout.wrap === "wrap-left"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("wrap-left")}>Wrap left</button>
+              <button type="button" aria-label="Wrap text beside right-aligned image" aria-pressed={selectedImageLayout.wrap === "wrap-right"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("wrap-right")}>Wrap right</button>
+            </div>
             <button type="button" class="remove-image-button" onpointerdown={(event) => event.preventDefault()} onclick={removeSelectedImage}>Remove image</button>
           </div>
         {/if}
@@ -9209,6 +9444,24 @@
             hideHarperPopover();
           }}
         >{@html starterContent}</div>
+
+        {#if selectedEditorImage && !markdownEditorMode && imageResizeHandle}
+          <div
+            class="image-resize-handle"
+            role="slider"
+            tabindex="0"
+            aria-label="Image width"
+            aria-valuemin={MIN_IMAGE_WIDTH}
+            aria-valuemax={MAX_IMAGE_WIDTH}
+            aria-valuenow={Math.round(selectedImageWidthPercent())}
+            style={`left: ${imageResizeHandle.left}px; top: ${imageResizeHandle.top}px`}
+            onpointerdown={startImageResize}
+            onpointermove={moveImageResize}
+            onpointerup={endImageResize}
+            onpointercancel={endImageResize}
+            onkeydown={handleImageResizeKeydown}
+          ></div>
+        {/if}
 
         {#if wikiMentionPreview}
           <aside
@@ -11488,6 +11741,12 @@
   .image-edit-toolbar button { min-height: 25px; padding: 0 8px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
   .image-edit-toolbar button:hover { border-color: var(--accent); color: var(--text-heading); }
   .image-edit-toolbar .remove-image-button { margin-left: auto; color: var(--danger, #b42318); }
+  .image-edit-toolbar button[aria-pressed="true"] { border-color: var(--accent); background: var(--selected-bg); color: var(--selected-text); }
+  .image-layout-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .image-custom-width { display: inline-flex; align-items: center; gap: 2px; color: var(--text-muted); font-size: 10px; }
+  .image-custom-width input { width: 46px; min-height: 25px; padding: 0 4px; border: 1px solid var(--border-control); border-radius: 4px; background: var(--surface); color: var(--text-secondary); font-size: 10px; }
+  .image-resize-handle { position: absolute; z-index: 5; width: 15px; height: 15px; transform: translate(-50%, -50%); border: 2px solid var(--surface-raised); border-radius: 50%; background: var(--accent); box-shadow: 0 1px 3px rgb(0 0 0 / 30%); cursor: nwse-resize; touch-action: none; }
+  .image-resize-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .markdown-source-editor { width: 100%; min-height: 430px; margin-top: 0; }
   .markdown-source-editor :global(.cm-editor) { min-height: 430px; background: transparent; color: var(--text-body); font-size: calc(13px * var(--editor-scale)); }
   .markdown-source-editor :global(.cm-scroller) { overflow: visible !important; font-family: var(--markdown-editor-font); line-height: 1.85; }
@@ -11538,6 +11797,24 @@
   .editor-content :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
   .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
+  .editor-content :global(img[data-size="small"]) { width: 25%; height: auto; max-width: 100%; }
+  .editor-content :global(img[data-size="medium"]) { width: 50%; height: auto; max-width: 100%; }
+  .editor-content :global(img[data-size="large"]) { width: 75%; height: auto; max-width: 100%; }
+  .editor-content :global(img[data-size="full"]) { width: 100%; height: auto; max-width: 100%; }
+  .editor-content :global(img[data-size="custom"]) { max-width: 100%; }
+  .editor-content :global(img[data-align="left"]) { margin-right: auto; }
+  .editor-content :global(img[data-align="center"]) { margin-right: auto; margin-left: auto; }
+  .editor-content :global(img[data-align="right"]) { margin-left: auto; }
+  .editor-content :global(img[data-wrap="wrap-left"]) { float: left; width: 50%; max-width: 50%; margin: 4px 18px 14px 0; }
+  .editor-content :global(img[data-wrap="wrap-right"]) { float: right; width: 50%; max-width: 50%; margin: 4px 0 14px 18px; }
+  .editor-content :global(img[data-wrap="wrap-left"][data-size="small"]),
+  .editor-content :global(img[data-wrap="wrap-right"][data-size="small"]) { width: 25%; max-width: 25%; }
+  /* Headings and dividers must start below a floated image. */
+  .editor-content :global(h1), .editor-content :global(h2), .editor-content :global(h3),
+  .editor-content :global(blockquote), .editor-content :global(pre),
+  .editor-content :global(table), .editor-content :global(.scene-break),
+  .editor-content :global(.math-block), .editor-content :global(.mermaid-diagram),
+  .editor-content :global(.calc-worksheet) { clear: both; }
   .editor-content :global(.math-inline) { display: inline; white-space: nowrap; }
   .editor-content :global(.math-inline svg) { display: inline-block; max-width: 100%; max-height: 1.6em; width: auto; height: auto; vertical-align: middle; }
   .editor-content :global(.math-block), .editor-content :global(.mermaid-diagram), .editor-content :global(.calc-worksheet) { display: block; max-width: 100%; margin: .85em auto; text-align: center; }
