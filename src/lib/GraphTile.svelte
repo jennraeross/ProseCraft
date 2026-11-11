@@ -3,9 +3,11 @@
   import type { ChapterData, DocumentData, ResearchFolder } from "./publish/types";
   import { graphTileModel } from "./graph-tile";
   import { layoutGraph, type GraphPoint } from "./graph-layout";
+  import GraphNodeCard from "./GraphNodeCard.svelte";
   import RelationGraph from "./RelationGraph.svelte";
   import { buildRelationGraph } from "./relation-graph-model";
-  import { appearances } from "./relations";
+  import { appearances, relationActiveAt, relationsOf, reverseView, type AppearanceMode } from "./relations";
+  import type { RelationType } from "./story-meta";
 
   let {
     documents,
@@ -14,7 +16,8 @@
     sceneId = null,
     pageId = null,
     onConfirm,
-    onOpenPage
+    onOpenPage,
+    onOpenPageInEditor
   }: {
     documents: DocumentData[];
     chapters: ChapterData[];
@@ -23,6 +26,7 @@
     pageId?: string | null;
     onConfirm: (pageId: string) => void;
     onOpenPage: (id: string) => void;
+    onOpenPageInEditor: (id: string) => void;
   } = $props();
 
   const tile = $derived(graphTileModel({ documents, chapters, folders, sceneId, pageId }));
@@ -52,6 +56,54 @@
   let positions = $state<Record<string, GraphPoint>>({});
   let lastLayoutKey = "";
   let selectedId = $state<string | null>(null);
+
+  type CardRelation = {
+    id: string;
+    type: RelationType;
+    label: string;
+    otherTitle: string;
+    direction: "out" | "in";
+  };
+
+  const selectedNode = $derived(
+    selectedId ? graph.nodes.find((node) => node.id === selectedId) ?? null : null
+  );
+  const selectedAppearance = $derived(selectedNode ? pageAppearances.get(selectedNode.id) : undefined);
+  const selectedSceneMode = $derived.by<AppearanceMode | null>(() => {
+    if (!selectedNode || !tile.sceneId) return null;
+    return selectedAppearance?.scenes.find((scene) => scene.sceneId === tile.sceneId)?.mode ?? null;
+  });
+  const pageTitles = $derived(
+    new Map(
+      documents
+        .filter((doc) => doc.space === "Wiki" && !doc.trashed)
+        .map((doc) => [doc.id, doc.title] as const)
+    )
+  );
+  const selectedRelations = $derived.by(() => {
+    const node = selectedNode;
+    if (!node) return [] as CardRelation[];
+    const stored = relationsOf(documents);
+    const seen = new Set<string>();
+    const result: CardRelation[] = [];
+    for (const entry of [...stored, ...reverseView(stored)]) {
+      if (entry.source !== node.id) continue;
+      const otherTitle = pageTitles.get(entry.relation.to);
+      if (!otherTitle) continue;
+      const base = entry.relation.id.startsWith("reverse:") ? entry.relation.id.slice("reverse:".length) : entry.relation.id;
+      if (seen.has(base)) continue;
+      if (tile.chapterId && !relationActiveAt(entry.relation, tile.chapterId, chapters)) continue;
+      seen.add(base);
+      result.push({
+        id: base,
+        type: entry.relation.type,
+        label: entry.relation.label ?? "",
+        otherTitle,
+        direction: entry.relation.id.startsWith("reverse:") ? "in" : "out"
+      });
+    }
+    return result;
+  });
 
   $effect(() => {
     const key = structureKey;
@@ -87,6 +139,18 @@
         onMoveNode={moveNode}
         {onOpenPage}
       />
+      {#if selectedNode}
+        <GraphNodeCard
+          node={selectedNode}
+          appearanceCount={selectedAppearance?.sceneCount ?? 0}
+          sceneMode={selectedSceneMode}
+          hasScene={tile.sceneId !== null}
+          relations={selectedRelations}
+          onOpenPage={() => onOpenPageInEditor(selectedNode.id)}
+          onOpenBeside={() => onOpenPage(selectedNode.id)}
+          onClose={() => (selectedId = null)}
+        />
+      {/if}
     </div>
   {:else}
     <p class="graph-tile-empty">{emptyText}</p>
@@ -106,7 +170,7 @@
 <style>
   .graph-tile { display: flex; height: 100%; min-height: 0; flex-direction: column; }
   .graph-tile-title { margin: 0; padding: 10px 14px 8px; color: var(--text-heading); font-size: 13px; }
-  .graph-area { min-height: 0; flex: 1; }
+  .graph-area { position: relative; min-height: 0; flex: 1; }
   .graph-tile-empty { margin: 0; padding: 8px 14px 14px; color: var(--text-muted); font-size: 12px; }
   .graph-suggestions { display: flex; max-height: 40%; flex: 0 0 auto; flex-direction: column; gap: 6px; margin: 0; padding: 8px 14px 12px; overflow: auto; list-style: none; border-top: 1px solid var(--border-soft); }
   .graph-suggestions li { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--surface-raised); }

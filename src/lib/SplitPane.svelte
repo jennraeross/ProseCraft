@@ -41,6 +41,7 @@
     onEditContent,
     onConfirmCharacter,
     onOpenPage,
+    onOpenPageInEditor,
     onClose
   }: {
     target: string;
@@ -71,6 +72,7 @@
     onEditContent: (id: string, html: string) => void;
     onConfirmCharacter: (sceneId: string, pageId: string) => void;
     onOpenPage: (id: string) => void;
+    onOpenPageInEditor: (id: string) => void;
     onClose: () => void;
   } = $props();
 
@@ -206,6 +208,7 @@
         pageId={parsed.mode === "page" ? parsed.id : null}
         onConfirm={(pageId) => onConfirmCharacter(activeDocumentId, pageId)}
         {onOpenPage}
+        {onOpenPageInEditor}
       />
     {:else if document}
       {#if isActiveDocument}

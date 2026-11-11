@@ -4,13 +4,15 @@
   import NetworkCards from "./NetworkCards.svelte";
   import NetworkMatrix from "./NetworkMatrix.svelte";
   import NetworkSuggestions from "./NetworkSuggestions.svelte";
+  import NodeSummaryPanel from "./NodeSummaryPanel.svelte";
   import RelationDetailPanel from "./RelationDetailPanel.svelte";
   import RelationGraph from "./RelationGraph.svelte";
   import { layoutGraph, type GraphPoint } from "./graph-layout";
   import { relationBoundaryIndexes } from "./network-timeline";
   import type { ChapterData, DocumentData, ResearchFolder } from "./publish/types";
   import { buildRelationGraph } from "./relation-graph-model";
-  import { appearances, characterPages, pageKind, relationsOf, suggestRelations, type PagePair } from "./relations";
+  import { appearances, addRelation, characterPages, pageKind, relationsOf, suggestRelations, type PagePair } from "./relations";
+  import { relationFromSuggestion, type SuggestionChoice } from "./suggestion-accept";
   import { PAGE_KINDS, RELATION_TYPES, type PageKind, type RelationType } from "./story-meta";
 
   type Props = {
@@ -70,7 +72,6 @@
   let selectedEdgeId = $state<string | null>(null);
   let addingRelation = $state(false);
   let showSuggestions = $state(false);
-  let suggestionTargetId = $state<string | null>(null);
   let positions = $state<Record<string, GraphPoint>>({});
   let seed = $state(1);
   let lastLayoutKey = "";
@@ -154,6 +155,42 @@
   });
   const showRelationPanel = $derived(addingRelation || selectedRelation !== null);
 
+  const selectedPage = $derived(
+    selectedId ? (wikiPages.find((page) => page.id === selectedId) ?? null) : null
+  );
+  const selectedRelationList = $derived.by(() => {
+    if (!selectedId) return [];
+    const id = selectedId;
+    const list: {
+      id: string;
+      type: RelationType;
+      label: string;
+      otherTitle: string;
+      direction: "out" | "in";
+    }[] = [];
+    for (const item of sourcedRelations) {
+      if (item.source === id) {
+        list.push({
+          id: item.relation.id,
+          type: item.relation.type,
+          label: item.relation.label ?? "",
+          otherTitle: pageTitles.get(item.relation.to) ?? "Untitled page",
+          direction: "out"
+        });
+      } else if (item.relation.to === id) {
+        list.push({
+          id: item.relation.id,
+          type: item.relation.type,
+          label: item.relation.label ?? "",
+          otherTitle: pageTitles.get(item.source) ?? "Untitled page",
+          direction: "in"
+        });
+      }
+    }
+    return list;
+  });
+  const showNodePanel = $derived(selectedPage !== null && !showRelationPanel);
+
   $effect(() => {
     const key = structureKey;
     if (key === lastLayoutKey) return;
@@ -180,36 +217,37 @@
     positions = { ...positions, [id]: position };
   }
 
+  // The graph reports "select X, then clear the other kind" (for example onSelectNode(id) followed by
+  // onSelectEdge(null)), so clearing one kind must never undo a selection of the other.
   function selectNode(id: string | null): void {
     selectedId = id;
-    selectedEdgeId = null;
+    if (id !== null) selectedEdgeId = null;
     addingRelation = false;
   }
 
   function selectEdge(id: string | null): void {
     selectedEdgeId = id;
-    selectedId = null;
+    if (id !== null) selectedId = null;
     addingRelation = false;
   }
 
   function startAddingRelation(): void {
     selectedEdgeId = null;
-    suggestionTargetId = null;
     addingRelation = true;
   }
 
-  /** Prefills relation creation for a suggested pair; the user still confirms the type. */
-  function acceptSuggestion(pair: PagePair): void {
-    selectedId = pair.a;
-    startAddingRelation();
-    suggestionTargetId = pair.b;
+  /** Creates the relation chosen in a suggestion's inline form and selects it. */
+  function acceptSuggestion(pair: PagePair, choice: SuggestionChoice): void {
+    const { sourceId, relation } = relationFromSuggestion(pair, choice);
+    const relationId = crypto.randomUUID();
+    onChange(addRelation(documents, sourceId, relation, () => relationId));
     showSuggestions = false;
+    selectCreatedRelation(sourceId, relationId);
   }
 
   function closeRelationPanel(): void {
     addingRelation = false;
     selectedEdgeId = null;
-    suggestionTargetId = null;
   }
 
   function toggleSuggestions(): void {
@@ -331,7 +369,7 @@
       {onOpenPage}
     />
   {:else}
-    <div class="network-body" class:with-panel={showRelationPanel}>
+    <div class="network-body" class:with-panel={showRelationPanel || showNodePanel}>
       <div class="network-graph">
         {#key allChapters}
           <RelationGraph
@@ -341,6 +379,7 @@
             {selectedId}
             {selectedEdgeId}
             mode={allChapters ? "all" : "chapter"}
+            dimOthers={true}
             onSelectNode={selectNode}
             onSelectEdge={selectEdge}
             onMoveNode={moveNode}
@@ -358,6 +397,19 @@
         {/if}
       </div>
 
+      {#if showNodePanel && selectedPage}
+        <NodeSummaryPanel
+          title={selectedPage.title}
+          kind={pageKind(selectedPage, folders)}
+          aliases={selectedPage.meta?.aliases ?? []}
+          appearanceCount={pageAppearances.get(selectedPage.id)?.sceneCount ?? 0}
+          relations={selectedRelationList}
+          onOpenPage={() => onOpenPage(selectedPage.id)}
+          onAddRelation={startAddingRelation}
+          onClose={() => selectNode(null)}
+        />
+      {/if}
+
       {#if showRelationPanel}
         <RelationDetailPanel
           {documents}
@@ -366,7 +418,6 @@
           selection={selectedRelation}
           adding={addingRelation}
           defaultSourceId={selectedId}
-          defaultTargetId={suggestionTargetId}
           {onChange}
           {onOpenPage}
           onCreated={selectCreatedRelation}

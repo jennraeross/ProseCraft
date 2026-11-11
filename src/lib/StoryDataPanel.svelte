@@ -21,7 +21,29 @@
     onchange: (meta: DocumentMeta | undefined) => void;
   } = $props();
 
-  let open = $state(false);
+  const openStorageKey = "prosecraft-story-data-open";
+
+  /** The open state is remembered for the session, so every scene shares it. */
+  function storedOpen(): boolean {
+    if (typeof sessionStorage === "undefined") return false;
+    try {
+      return sessionStorage.getItem(openStorageKey) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function toggleOpen(): void {
+    open = !open;
+    if (typeof sessionStorage === "undefined") return;
+    try {
+      sessionStorage.setItem(openStorageKey, String(open));
+    } catch {
+      // Storage can be unavailable; the panel still toggles for this mount.
+    }
+  }
+
+  let open = $state(storedOpen());
   let yamlOpen = $state(false);
   let yamlText = $state("");
   let yamlError = $state("");
@@ -55,14 +77,19 @@
     return ids;
   });
 
-  const summary = $derived(
-    [
-      confirmedIds.length ? `${confirmedIds.length} confirmed` : "",
-      detectedIds.length ? `${detectedIds.length} suggested` : ""
-    ]
-      .filter(Boolean)
-      .join(" · ")
+  const placeLabel = $derived(
+    meta?.place ? (pageById.get(meta.place)?.title ?? meta.place) : ""
   );
+
+  const summary = $derived.by(() => {
+    const parts: string[] = [];
+    if (meta?.storyDate) parts.push(meta.storyDate);
+    if (placeLabel) parts.push(placeLabel);
+    if (confirmedIds.length > 0) {
+      parts.push(`${confirmedIds.length} character${confirmedIds.length === 1 ? "" : "s"}`);
+    }
+    return parts.length > 0 ? parts.join(" · ") : "Add story date, place and characters";
+  });
 
   function titleOf(id: string): string {
     return pageById.get(id)?.title ?? id;
@@ -137,12 +164,13 @@
   <button
     type="button"
     class="story-data-toggle"
+    data-testid="story-data-toggle"
     aria-expanded={open}
-    onclick={() => (open = !open)}
+    onclick={toggleOpen}
   >
+    <span class="chevron lead" class:open><ChevronDown size={14} /></span>
     <span class="story-data-title">Story data</span>
-    {#if summary}<span class="story-data-summary">{summary}</span>{/if}
-    <span class="chevron" class:open><ChevronDown size={14} /></span>
+    <span class="story-data-summary">{summary}</span>
   </button>
 
   {#if open}
@@ -278,8 +306,9 @@
   .story-data-toggle { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px 10px; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: 11px; cursor: pointer; text-align: left; }
   .story-data-toggle:hover { color: var(--text-heading); }
   .story-data-title { font-weight: 600; letter-spacing: .3px; }
-  .story-data-summary { color: var(--text-faint); font-size: 10px; }
+  .story-data-summary { min-width: 0; overflow: hidden; color: var(--text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
   .chevron { display: inline-flex; align-items: center; margin-left: auto; transition: transform .12s ease; }
+  .chevron.lead { margin-left: 0; }
   .chevron.open { transform: rotate(180deg); }
   .story-data-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 10px 10px; border-top: 1px solid var(--border-soft); }
   .story-data-row { display: flex; align-items: center; gap: 10px; padding-top: 8px; }

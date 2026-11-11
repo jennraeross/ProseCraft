@@ -84,6 +84,7 @@
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
   import StoryDataPanel from "$lib/StoryDataPanel.svelte";
+  import { shouldShowStoryData } from "$lib/story-data-visibility";
   import CharacterSheet from "$lib/CharacterSheet.svelte";
   import SearchDialog from "$lib/SearchDialog.svelte";
   import type { ReplaceResult } from "$lib/replace";
@@ -9439,7 +9440,7 @@
           maxlength="120"
         />
 
-        {#if activeDocument && activeDocument.space !== "Wiki"}
+        {#if shouldShowStoryData(activeDocument)}
           <StoryDataPanel
             meta={activeDocument.meta}
             content={activeDocument.content}
@@ -9788,6 +9789,7 @@
             onEditContent={(id, html) => updateTileDocument(id, { content: html })}
             onConfirmCharacter={(sceneId, pageId) => confirmSceneCharacter(sceneId, pageId)}
             onOpenPage={(id) => openBesideTarget(docTarget(id))}
+            onOpenPageInEditor={openSidebarDocument}
             onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
           />
         </div>

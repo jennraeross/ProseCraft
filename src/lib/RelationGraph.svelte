@@ -312,6 +312,15 @@
   const pointers = new Map<number, GraphPoint>();
   let gesture: Gesture | null = null;
   let pinch: Pinch | null = null;
+  /** What the current press landed on; pointer capture retargets the following click to the canvas. */
+  let press: {
+    nodeId: string | null;
+    edgeId: string | null;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    at: number;
+  } | null = null;
 
   function pointerPoint(event: PointerEvent): GraphPoint {
     const rect = canvasElement?.getBoundingClientRect();
@@ -358,8 +367,13 @@
     if (!canvasElement) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
     pointers.set(event.pointerId, pointerPoint(event));
-    if (!canvasElement.hasPointerCapture(event.pointerId)) {
-      canvasElement.setPointerCapture(event.pointerId);
+    press = null;
+    try {
+      if (!canvasElement.hasPointerCapture(event.pointerId)) {
+        canvasElement.setPointerCapture(event.pointerId);
+      }
+    } catch {
+      // Pointer capture is unavailable in some environments; click handling below selects instead.
     }
 
     if (pointers.size === 2) {
@@ -384,18 +398,32 @@
         origin: positions[id] ?? { x: 0, y: 0 },
         moved: false
       };
+      press = {
+        nodeId: id,
+        edgeId: null,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        at: Date.now()
+      };
       onSelectNode(id);
       onSelectEdge(null);
     } else {
       const edgeElement = target?.closest("[data-graph-edge]");
-      if (edgeElement) {
-        const id = edgeElement.getAttribute("data-graph-edge");
-        if (id) {
-          onSelectEdge(id);
-          onSelectNode(null);
-          fromEdge = true;
-        }
+      const edgeId = edgeElement?.getAttribute("data-graph-edge") ?? null;
+      if (edgeId) {
+        onSelectEdge(edgeId);
+        onSelectNode(null);
+        fromEdge = true;
       }
+      press = {
+        nodeId: null,
+        edgeId,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        at: Date.now()
+      };
       gesture = {
         kind: "pan",
         pointerId: event.pointerId,
@@ -423,6 +451,7 @@
     const dx = event.clientX - gesture.startX;
     const dy = event.clientY - gesture.startY;
     if (!gesture.moved && Math.hypot(dx, dy) > 3) gesture.moved = true;
+    if (press && !press.moved && Math.hypot(dx, dy) > 4) press.moved = true;
 
     if (gesture.kind === "node") {
       onMoveNode(gesture.id, {
@@ -455,6 +484,48 @@
       }
       gesture = null;
     }
+  }
+
+  /**
+   * Click fallback for environments where pointer capture retargets (or never delivers) the
+   * selection done in onPointerDown. A press that dragged is not a click.
+   */
+  function onGraphClick(event: MouseEvent) {
+    const target = event.target instanceof Element ? event.target : null;
+    const nodeId = target?.closest("[data-graph-node]")?.getAttribute("data-graph-node") ?? null;
+    const edgeId = target?.closest("[data-graph-edge]")?.getAttribute("data-graph-edge") ?? null;
+    const fallback = !nodeId && !edgeId ? press : null;
+    if (fallback?.moved) return;
+
+    const hitNode = nodeId ?? fallback?.nodeId ?? null;
+    const hitEdge = hitNode ? null : (edgeId ?? fallback?.edgeId ?? null);
+
+    if (hitNode) {
+      if (hitNode === selectedId && selectedEdgeId === null) return;
+      onSelectNode(hitNode);
+      onSelectEdge(null);
+      return;
+    }
+    if (hitEdge) {
+      if (hitEdge === selectedEdgeId && selectedId === null) return;
+      onSelectEdge(hitEdge);
+      onSelectNode(null);
+      return;
+    }
+    if (selectedId === null && selectedEdgeId === null) return;
+    onSelectNode(null);
+    onSelectEdge(null);
+  }
+
+  function onGraphDoubleClick(event: MouseEvent) {
+    const target = event.target instanceof Element ? event.target : null;
+    const nodeId =
+      target?.closest("[data-graph-node]")?.getAttribute("data-graph-node") ??
+      press?.nodeId ??
+      null;
+    if (!nodeId) return;
+    event.preventDefault();
+    onOpenPage(nodeId);
   }
 
   function clearSearch() {
@@ -607,6 +678,8 @@
     onpointermove={onPointerMove}
     onpointerup={endPointer}
     onpointercancel={endPointer}
+    onclick={onGraphClick}
+    ondblclick={onGraphDoubleClick}
     onkeydown={onGraphKeydown}
   >
     <svg
@@ -714,7 +787,6 @@
               node.degree === 1 ? "link" : "links"
             }`}
             style={`--node-color: ${kindColors[node.kind]}`}
-            ondblclick={() => onOpenPage(node.id)}
           >
             <title>{node.label}</title>
             <circle class="node-focus" r={NODE_RADIUS + 5} />
@@ -987,7 +1059,7 @@
 
   .edge-hit {
     stroke: transparent;
-    stroke-width: 14;
+    stroke-width: 12;
     fill: none;
     pointer-events: stroke;
     cursor: pointer;
@@ -1004,7 +1076,8 @@
     stroke: var(--surface);
     stroke-width: 2.4px;
     stroke-linejoin: round;
-    pointer-events: none;
+    pointer-events: auto;
+    cursor: pointer;
   }
 
   .edge-badge rect {

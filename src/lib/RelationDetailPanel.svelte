@@ -207,7 +207,7 @@
     {/if}
   </section>
 {:else if selection}
-  <section class="relation-panel" aria-label="Relation details">
+  <section class="relation-panel" aria-label="Relation details" data-testid="relation-detail">
     <header class="relation-head">
       <div>
         <p class="relation-eyebrow">Selected relation</p>
