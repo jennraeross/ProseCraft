@@ -83,6 +83,10 @@
   import { centerCaretInViewport, scrollContainerOf } from "$lib/typewriter";
   import EditorFontPicker from "$lib/EditorFontPicker.svelte";
   import OutlineView from "$lib/OutlineView.svelte";
+  import StoryDataPanel from "$lib/StoryDataPanel.svelte";
+  import { shouldShowStoryData } from "$lib/story-data-visibility";
+  import { showCardInEditor } from "$lib/character-card-visibility";
+  import CharacterSheet from "$lib/CharacterSheet.svelte";
   import SearchDialog from "$lib/SearchDialog.svelte";
   import type { ReplaceResult } from "$lib/replace";
   import { findFirstMatch } from "$lib/search";
@@ -114,6 +118,7 @@
     canAddSplitPane,
     docTarget,
     fileTarget,
+    graphTarget,
     moveSplitPane,
     parseSplitTarget,
     openBeside,
@@ -147,6 +152,7 @@
     type ImportFolder,
     type MarkdownFile
   } from "$lib/import/markdown-folder";
+  import NetworkView from "$lib/NetworkView.svelte";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -266,6 +272,7 @@
   } from "$lib/starters";
   import { migrateLegacyDocument, migrateProjectToWiki } from "$lib/wiki-migration";
   import { createWikiMentionMatcher } from "$lib/wiki-mentions";
+  import type { DocumentMeta, SheetTemplate } from "$lib/story-meta";
   import {
     createBundleText,
     createEncryptedBundleText,
@@ -401,7 +408,7 @@
     | { kind: "document"; document: DocumentData; depth: number }
     | { kind: "file"; item: ResearchFile; depth: number }
     | { kind: "link"; item: ResearchLink; depth: number };
-  type WorkspaceView = "outline" | "writing" | "storyboard" | "timeline" | "publish";
+  type WorkspaceView = "outline" | "writing" | "storyboard" | "timeline" | "network" | "publish";
 
   let editor: HTMLDivElement;
   type WikiMention = {
@@ -728,6 +735,7 @@
   let storyboardRows = $state<StoryboardRow[]>([]);
   let timelineNodes = $state<TimelineNode[]>([]);
   let workspaceView = $state<WorkspaceView>("writing");
+  let openCardFor = $state<string | null>(null);
   let writingSidebarState = {
     left: initialViewportWidth > 760,
     right: initialViewportWidth > 1050
@@ -743,6 +751,8 @@
   let chapters = $state<ChapterData[]>([]);
   let liveChapters = $derived(chapters.filter((chapter) => !chapter.trashed));
   let projectLabelList = $state<LabelDef[]>(DEFAULT_LABELS.map((label) => ({ ...label })));
+  let projectSheetTemplates = $state<SheetTemplate[]>([]);
+  let dismissedSuggestions = $state<string[]>([]);
   let labelFilter = $state("");
   let filterLabelDef = $derived(labelFilter ? labelById(projectLabelList, labelFilter) : undefined);
   let visibleChapters = $derived.by(() => {
@@ -1173,6 +1183,8 @@
       name: projectName,
       author: authorName,
       labels: projectLabelList,
+      sheetTemplates: projectSheetTemplates,
+      dismissedSuggestions,
       documents,
       chapters,
       activeDocumentId,
@@ -1199,6 +1211,13 @@
    */
   function saveProjectSnapshot(activeId = activeProjectId) {
     saveVault($state.snapshot(projects), activeId);
+  }
+
+  /** Remembers a dismissed pair so the suggestion does not come back. */
+  function dismissRelationSuggestion(key: string) {
+    if (!activeProjectId || dismissedSuggestions.includes(key)) return;
+    dismissedSuggestions = [...dismissedSuggestions, key];
+    persistProjectCollection();
   }
 
   function persistProjectCollection() {
@@ -1290,6 +1309,8 @@
     projectName = project.name;
     authorName = project.author;
     projectLabelList = projectLabels(project);
+    projectSheetTemplates = [...(project.sheetTemplates ?? [])];
+    dismissedSuggestions = [...(project.dismissedSuggestions ?? [])];
     labelFilter = "";
     researchFolders = normalizeBinderFolders(project.researchFolders);
     researchFolderName = normalizeResearchFolderName(project.researchFolderName);
@@ -4363,6 +4384,29 @@
     saveTimer = setTimeout(persistNow, 350);
   }
 
+  function updateSceneMeta(id: string, meta: DocumentMeta | undefined) {
+    documents = documents.map((doc) => {
+      if (doc.id !== id) return doc;
+      const next = { ...doc };
+      if (meta && Object.keys(meta).length > 0) {
+        next.meta = meta;
+      } else {
+        delete next.meta;
+      }
+      return next;
+    });
+    persist();
+  }
+
+  /** Confirms a detected character for a scene, which is what the graph tile's suggestion chips do. */
+  function confirmSceneCharacter(sceneId: string, pageId: string) {
+    const doc = documents.find((entry) => entry.id === sceneId);
+    if (!doc) return;
+    const characters = doc.meta?.characters ?? [];
+    if (characters.includes(pageId)) return;
+    updateSceneMeta(sceneId, { ...doc.meta, characters: [...characters, pageId] });
+  }
+
   const activeComments = $derived.by(() => {
     const pool = showAllComments
       ? comments.filter((comment) => {
@@ -5187,6 +5231,13 @@
     if (compactChapterLayout) {
       void tick().then(() => editor?.focus());
     }
+  }
+
+  /** Opens a wiki page's character card in the network view. */
+  function openCharacterCard(id: string) {
+    closeSidebarDrawers(false);
+    setWorkspaceView("network");
+    openCardFor = id;
   }
 
   /** Opens project search, seeding the query with the current selection when there is one. */
@@ -6409,6 +6460,7 @@
       .filter((doc) => doc.space === "Wiki" && !doc.trashed)
       .map((doc) => ({ value: docTarget(doc.id), label: doc.title || "Untitled" }));
     if (wikiPages.length > 0) groups.push({ label: "Wiki pages", options: wikiPages });
+    groups.push({ label: "Graph", options: [{ value: graphTarget("scene"), label: "Characters graph" }] });
     if (splitFiles.length > 0) {
       groups.push({
         label: "Wiki files",
@@ -6421,6 +6473,10 @@
   // Panes keep showing something that was deleted or trashed in the meantime.
   $effect(() => {
     const valid = new Set(splitGroups.flatMap((group) => group.options.map((option) => option.value)));
+    // Page-centred graph tiles come from the network view and the character sheet, not the picker.
+    for (const doc of documents) {
+      if (doc.space === "Wiki" && !doc.trashed) valid.add(graphTarget("page", doc.id));
+    }
     if (splitPanes.some((pane) => pane.target && !valid.has(pane.target))) {
       splitPanes = pruneSplitTargets(splitPanes, valid);
     }
@@ -9185,6 +9241,7 @@
           <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchFolder(ctxFolder); closeContextMenu(); }}>Remove folder</button>
         {:else if ctx.kind === "wiki-doc" && ctxDoc}
           <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxDoc.id); closeContextMenu(); }}>Open page</button>
+          <button type="button" role="menuitem" onclick={() => { openCharacterCard(ctxDoc.id); closeContextMenu(); }}>Open character card</button>
           <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxDoc.id)); closeContextMenu(); }}>Open beside</button>
           {#if researchFolderChoices.length > 0}
             <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
@@ -9295,6 +9352,7 @@
           {#if timelineEnabled}
           <button class="workspace-mode" class:active={workspaceView === "timeline"} role="tab" aria-selected={workspaceView === "timeline"} onclick={() => setWorkspaceView("timeline")}>Timeline</button>
           {/if}
+          <button class="workspace-mode" class:active={workspaceView === "network"} role="tab" aria-selected={workspaceView === "network"} onclick={() => setWorkspaceView("network")}>Network</button>
           <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
         </div>
         {#if workspaceView === "storyboard"}
@@ -9415,6 +9473,30 @@
           oninput={persist}
           maxlength="120"
         />
+
+        {#if shouldShowStoryData(activeDocument)}
+          <StoryDataPanel
+            meta={activeDocument.meta}
+            content={activeDocument.content}
+            pages={documents}
+            folders={researchFolders}
+            onchange={(meta) => updateSceneMeta(activeDocumentId, meta)}
+          />
+        {/if}
+
+        {#if activeDocument && showCardInEditor(activeDocument)}
+          <CharacterSheet
+            document={activeDocument}
+            pages={documents}
+            folders={researchFolders}
+            chapters={liveChapters}
+            projectTemplates={projectSheetTemplates}
+            onchange={(meta) => updateSceneMeta(activeDocumentId, meta)}
+            onsavetemplates={(next) => (projectSheetTemplates = next)}
+            onOpenScene={(id) => openDocument(id)}
+            onOpenGraphBeside={(id) => openBesideTarget(graphTarget("page", id))}
+          />
+        {/if}
 
         <div class="editor-tools">
         {#if !markdownEditorMode}
@@ -9720,6 +9802,8 @@
             groups={splitGroups}
             {documents}
             {chapters}
+            folders={researchFolders}
+            activeDocumentId={activeDocumentId}
             sceneSeparator={publishOptions.sceneSeparator}
             files={splitFiles}
             isActiveDocument={pane.target === docTarget(activeDocumentId)}
@@ -9737,6 +9821,9 @@
             onEditTitle={(id, value) => updateTileDocument(id, { title: value })}
             onEditChapterTitle={(chapterId, value) => updateTileChapterTitle(chapterId, value)}
             onEditContent={(id, html) => updateTileDocument(id, { content: html })}
+            onConfirmCharacter={(sceneId, pageId) => confirmSceneCharacter(sceneId, pageId)}
+            onOpenPage={(id) => openBesideTarget(docTarget(id))}
+            onOpenPageInEditor={openSidebarDocument}
             onClose={() => { splitPanes = removeSplitPane(splitPanes, pane.id); }}
           />
         </div>
@@ -9954,6 +10041,25 @@
             onRemove={removeTimelineNode}
             onMove={moveTimelineNode}
             onReorder={reorderTimelineNodes}
+          />
+        {/if}
+        {#if workspaceView === "network"}
+          <NetworkView
+            {documents}
+            chapters={liveChapters}
+            folders={researchFolders}
+            onChange={(next) => {
+              documents = next;
+              persistProjectCollection();
+            }}
+            onOpenPage={openSidebarDocument}
+            onOpenGraphBeside={(id) => openBesideTarget(graphTarget("page", id))}
+            projectTemplates={projectSheetTemplates}
+            onsavetemplates={(next) => (projectSheetTemplates = next)}
+            openCardFor={openCardFor}
+            onCardOpened={() => (openCardFor = null)}
+            dismissedSuggestions={dismissedSuggestions}
+            onDismissSuggestion={dismissRelationSuggestion}
           />
         {/if}
         {#if workspaceView === "publish"}

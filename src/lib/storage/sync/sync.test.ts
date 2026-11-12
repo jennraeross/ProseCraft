@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createStoredProject, projectsHaveSameContent, stampProject } from "../schema";
 import type { ProjectData, StoredProject } from "../types";
+import type { DocumentMeta } from "../../story-meta";
 import { BUNDLE_FILE, OPEN_MARKER_FILE, VAULT_FILE } from "./files";
 import { FolderSyncProvider } from "./folder-provider";
 import { EncryptedFileSyncProvider } from "./bundle-provider";
@@ -166,6 +167,36 @@ describe("open-folder sync", () => {
     expect(reopened.projects[0].project.chapters[0].trashed).toBe(true);
     expect(reopened.projects[0].project.documents.find((doc) => doc.id === "doc-1"))
       .toMatchObject({ trashed: true, trashedWithChapterId: "chapter-1" });
+  });
+
+  it("round-trips document meta, sheet templates, and dismissed suggestions", async () => {
+    const fs = new MemoryFileSystem();
+    const project = storedProject();
+    const meta: DocumentMeta = {
+      kind: "character",
+      aliases: ["Mara Voss"],
+      tags: ["crew"],
+      sheet: { secret: "Mutineer" },
+      relations: [{ id: "relation-1", to: "doc-1", type: "friend", tension: 3 }]
+    };
+    project.project.documents = project.project.documents.map((document) =>
+      document.id === "doc-2" ? { ...document, meta } : document
+    );
+    project.project.sheetTemplates = [
+      { id: "template-1", name: "Thriller", fields: [{ id: "secret", label: "Secret", type: "longtext" }] }
+    ];
+    project.project.dismissedSuggestions = ["doc-1:doc-2"];
+
+    await new OpenFolderSyncProvider(fs).sync("", [project], {}, 1_000, "device-a");
+
+    const markdown = await fs.readText("projects/project-1/documents/doc-2.md");
+    expect(markdown).toContain('meta: {"kind":"character"');
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    const stored = reopened.projects[0].project;
+    expect(stored.documents.find((document) => document.id === "doc-2")?.meta).toEqual(meta);
+    expect(stored.sheetTemplates).toEqual(project.project.sheetTemplates);
+    expect(stored.dismissedSuggestions).toEqual(["doc-1:doc-2"]);
   });
 
   it("round-trips projects as Markdown and JSON", async () => {

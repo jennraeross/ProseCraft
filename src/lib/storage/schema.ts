@@ -127,7 +127,9 @@ export function projectContentKey(project: ProjectData): string {
     publishOptions: project.publishOptions ?? null,
     comments: project.comments ?? [],
     snapshots: project.snapshots ?? [],
-    labels: project.labels ?? []
+    labels: project.labels ?? [],
+    sheetTemplates: project.sheetTemplates ?? [],
+    dismissedSuggestions: project.dismissedSuggestions ?? []
   });
 }
 

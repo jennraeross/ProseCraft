@@ -8,6 +8,7 @@ import type {
   SpaceName,
   LabelDef
 } from "../publish/types";
+import type { SheetTemplate } from "../story-meta";
 
 export type ActivityRecord = { edits: number; wordsAdded: number };
 
@@ -125,6 +126,10 @@ export type ProjectData = {
   snapshots?: DocumentSnapshot[];
   /** User-definable labels for scenes and chapters. */
   labels?: LabelDef[];
+  /** Character-sheet templates defined by the author. Built-in ones live in code. */
+  sheetTemplates?: SheetTemplate[];
+  /** Ids of relation suggestions the author dismissed. */
+  dismissedSuggestions?: string[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */
