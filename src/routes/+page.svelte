@@ -85,6 +85,7 @@
   import OutlineView from "$lib/OutlineView.svelte";
   import StoryDataPanel from "$lib/StoryDataPanel.svelte";
   import { shouldShowStoryData } from "$lib/story-data-visibility";
+  import { showCardInEditor } from "$lib/character-card-visibility";
   import CharacterSheet from "$lib/CharacterSheet.svelte";
   import SearchDialog from "$lib/SearchDialog.svelte";
   import type { ReplaceResult } from "$lib/replace";
@@ -732,6 +733,7 @@
   let storyboardRows = $state<StoryboardRow[]>([]);
   let timelineNodes = $state<TimelineNode[]>([]);
   let workspaceView = $state<WorkspaceView>("writing");
+  let openCardFor = $state<string | null>(null);
   let writingSidebarState = {
     left: initialViewportWidth > 760,
     right: initialViewportWidth > 1050
@@ -5225,6 +5227,13 @@
     }
   }
 
+  /** Opens a wiki page's character card in the network view. */
+  function openCharacterCard(id: string) {
+    closeSidebarDrawers(false);
+    setWorkspaceView("network");
+    openCardFor = id;
+  }
+
   /** Opens project search, seeding the query with the current selection when there is one. */
   function openProjectSearch() {
     searchInitialQuery = currentSelectionText().split("\n", 1)[0]?.trim().slice(0, 100) ?? "";
@@ -9208,6 +9217,7 @@
           <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchFolder(ctxFolder); closeContextMenu(); }}>Remove folder</button>
         {:else if ctx.kind === "wiki-doc" && ctxDoc}
           <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxDoc.id); closeContextMenu(); }}>Open page</button>
+          <button type="button" role="menuitem" onclick={() => { openCharacterCard(ctxDoc.id); closeContextMenu(); }}>Open character card</button>
           <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxDoc.id)); closeContextMenu(); }}>Open beside</button>
           {#if researchFolderChoices.length > 0}
             <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
@@ -9450,7 +9460,7 @@
           />
         {/if}
 
-        {#if activeDocument && activeDocument.space === "Wiki"}
+        {#if activeDocument && showCardInEditor(activeDocument)}
           <CharacterSheet
             document={activeDocument}
             pages={documents}
@@ -10020,6 +10030,10 @@
             }}
             onOpenPage={openSidebarDocument}
             onOpenGraphBeside={(id) => openBesideTarget(graphTarget("page", id))}
+            projectTemplates={projectSheetTemplates}
+            onsavetemplates={(next) => (projectSheetTemplates = next)}
+            openCardFor={openCardFor}
+            onCardOpened={() => (openCardFor = null)}
             dismissedSuggestions={dismissedSuggestions}
             onDismissSuggestion={dismissRelationSuggestion}
           />

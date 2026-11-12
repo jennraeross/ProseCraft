@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Lightbulb, Plus, RotateCcw } from "@lucide/svelte";
   import { untrack } from "svelte";
+  import CharacterCardPanel from "./CharacterCardPanel.svelte";
   import NetworkCards from "./NetworkCards.svelte";
   import NetworkMatrix from "./NetworkMatrix.svelte";
   import NetworkSuggestions from "./NetworkSuggestions.svelte";
@@ -13,7 +14,14 @@
   import { buildRelationGraph } from "./relation-graph-model";
   import { appearances, addRelation, characterPages, pageKind, relationsOf, suggestRelations, type PagePair } from "./relations";
   import { relationFromSuggestion, type SuggestionChoice } from "./suggestion-accept";
-  import { PAGE_KINDS, RELATION_TYPES, type PageKind, type RelationType } from "./story-meta";
+  import {
+    PAGE_KINDS,
+    RELATION_TYPES,
+    type DocumentMeta,
+    type PageKind,
+    type RelationType,
+    type SheetTemplate
+  } from "./story-meta";
 
   type Props = {
     documents: readonly DocumentData[];
@@ -22,8 +30,12 @@
     onChange: (documents: DocumentData[]) => void;
     onOpenPage: (id: string) => void;
     onOpenGraphBeside?: (id: string) => void;
+    projectTemplates: readonly SheetTemplate[];
+    onsavetemplates: (templates: SheetTemplate[]) => void;
     dismissedSuggestions?: readonly string[];
     onDismissSuggestion: (key: string) => void;
+    openCardFor?: string | null;
+    onCardOpened?: () => void;
   };
 
   let {
@@ -33,8 +45,12 @@
     onChange,
     onOpenPage,
     onOpenGraphBeside,
+    projectTemplates,
+    onsavetemplates,
     dismissedSuggestions = [],
-    onDismissSuggestion
+    onDismissSuggestion,
+    openCardFor = null,
+    onCardOpened
   }: Props = $props();
 
   type ViewMode = "cards" | "network" | "matrix";
@@ -70,6 +86,7 @@
   let chapterIndex = $state(0);
   let selectedId = $state<string | null>(null);
   let selectedEdgeId = $state<string | null>(null);
+  let cardId = $state<string | null>(null);
   let addingRelation = $state(false);
   let showSuggestions = $state(false);
   let positions = $state<Record<string, GraphPoint>>({});
@@ -158,6 +175,9 @@
   const selectedPage = $derived(
     selectedId ? (wikiPages.find((page) => page.id === selectedId) ?? null) : null
   );
+  const cardPage = $derived(
+    cardId ? (wikiPages.find((page) => page.id === cardId) ?? null) : null
+  );
   const selectedRelationList = $derived.by(() => {
     if (!selectedId) return [];
     const id = selectedId;
@@ -203,6 +223,14 @@
     positions = { ...untrack(() => positions), ...placed };
   });
 
+  // The sidebar asks for a page's card by handing its id to the network view.
+  $effect(() => {
+    if (!openCardFor) return;
+    view = "cards";
+    cardId = openCardFor;
+    onCardOpened?.();
+  });
+
   function relayout(): void {
     seed += 1;
     lastLayoutKey = structureKey;
@@ -215,6 +243,23 @@
 
   function moveNode(id: string, position: GraphPoint): void {
     positions = { ...positions, [id]: position };
+  }
+
+  function updateCardMeta(meta: DocumentMeta | undefined): void {
+    if (!cardPage) return;
+    const id = cardPage.id;
+    onChange(
+      documents.map((doc) => {
+        if (doc.id !== id) return doc;
+        const next = { ...doc };
+        if (meta && Object.keys(meta).length > 0) {
+          next.meta = meta;
+        } else {
+          delete next.meta;
+        }
+        return next;
+      })
+    );
   }
 
   // The graph reports "select X, then clear the other kind" (for example onSelectNode(id) followed by
@@ -366,7 +411,7 @@
       {sourcedRelations}
       titles={pageTitles}
       appearances={pageAppearances}
-      {onOpenPage}
+      onOpenCard={(id) => (cardId = id)}
     />
   {:else}
     <div class="network-body" class:with-panel={showRelationPanel || showNodePanel}>
@@ -405,6 +450,7 @@
           appearanceCount={pageAppearances.get(selectedPage.id)?.sceneCount ?? 0}
           relations={selectedRelationList}
           onOpenPage={() => onOpenPage(selectedPage.id)}
+          onOpenCard={() => (cardId = selectedPage.id)}
           onAddRelation={startAddingRelation}
           onClose={() => selectNode(null)}
         />
@@ -468,11 +514,28 @@
       {#if view !== "matrix"}
         <p class="network-hint">
           {view === "cards"
-            ? "Click a card to open its page."
+            ? "Click a card to open its character card."
             : "Drag to rearrange · scroll to zoom · double-click a page to open it"}
         </p>
       {/if}
     </div>
+  {/if}
+
+  {#if cardPage}
+    {#key cardPage.id}
+      <CharacterCardPanel
+        document={cardPage}
+        pages={documents}
+        {folders}
+        {chapters}
+        {projectTemplates}
+        {onsavetemplates}
+        {onOpenGraphBeside}
+        onOpenScene={onOpenPage}
+        onchange={updateCardMeta}
+        onClose={() => (cardId = null)}
+      />
+    {/key}
   {/if}
 </section>
 

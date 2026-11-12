@@ -8,10 +8,10 @@
     sourcedRelations: readonly SourcedRelation[];
     titles: ReadonlyMap<string, string>;
     appearances: ReadonlyMap<string, PageAppearances>;
-    onOpenPage: (pageId: string) => void;
+    onOpenCard: (pageId: string) => void;
   };
 
-  let { pages, sourcedRelations, titles, appearances, onOpenPage }: Props = $props();
+  let { pages, sourcedRelations, titles, appearances, onOpenCard }: Props = $props();
 
   const RELATION_LABELS: Record<RelationType, string> = {
     family: "Family",
@@ -73,7 +73,7 @@
 {:else}
   <div class="cards-grid">
     {#each cards as card (card.page.id)}
-      <button class="character-card" type="button" onclick={() => onOpenPage(card.page.id)}>
+      <button class="character-card" type="button" onclick={() => onOpenCard(card.page.id)}>
         <span class="card-head">
           <span class="card-initial" aria-hidden="true">{initials(card.page.title)}</span>
           <span class="card-ident">

@@ -17,6 +17,7 @@
     appearanceCount: number;
     relations: readonly SummaryRelation[];
     onOpenPage: () => void;
+    onOpenCard: () => void;
     onAddRelation: () => void;
     onClose: () => void;
   };
@@ -28,6 +29,7 @@
     appearanceCount,
     relations,
     onOpenPage,
+    onOpenCard,
     onAddRelation,
     onClose
   }: Props = $props();
@@ -130,6 +132,9 @@
   <div class="node-summary-actions">
     <button type="button" class="node-summary-primary" onclick={onOpenPage}>
       <FileText size={12} aria-hidden="true" /> Open page
+    </button>
+    <button type="button" class="node-summary-secondary" onclick={onOpenCard}>
+      Open character card
     </button>
     <button type="button" class="node-summary-secondary" onclick={onAddRelation}>
       <Plus size={12} aria-hidden="true" /> Add relation from here
