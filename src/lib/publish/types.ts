@@ -97,6 +97,8 @@ export type DocumentData = {
   markdownSource?: string;
   chapterId?: string;
   space?: SpaceName;
+  /** Writing mode; absent means prose. */
+  format?: "prose" | "screenplay";
   folderId?: string;
   trashed?: boolean;
   trashedWithChapterId?: string;
@@ -111,7 +113,7 @@ export type DocumentData = {
   place?: PlaceSheet;
 };
 
-export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text";
+export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text" | "fountain" | "screenplay-pdf";
 /** Built-in style identifiers. Custom styles use string IDs from `customStyles`. */
 export type StylePreset = BuiltinStyleId;
 export type SceneSeparator = "blank" | "asterisks" | "hash" | "line" | "none";
@@ -252,10 +254,24 @@ export const FORMAT_INFO: Record<ExportFormat, {
     extension: "txt",
     formatName: "Plain text document",
     description: "Clean text with no formatting."
+  },
+  fountain: {
+    label: "Fountain",
+    extension: "fountain",
+    formatName: "Fountain screenplay",
+    description: "Plain-text screenplay format for screenwriting apps."
+  },
+  "screenplay-pdf": {
+    label: "Screenplay PDF",
+    extension: "pdf",
+    formatName: "Screenplay PDF",
+    description: "US Letter pages in industry screenplay format."
   }
 };
 
 export const FORMAT_ORDER: ExportFormat[] = ["pdf", "epub", "docx", "markdown", "html", "text"];
+/** Formats that only make sense for projects with screenplay documents. */
+export const SCREENPLAY_FORMAT_ORDER: ExportFormat[] = ["fountain", "screenplay-pdf"];
 
 export function defaultPublishOptions(): PublishOptions {
   return {
@@ -313,7 +329,7 @@ function normalizeCover(value: unknown, defaults: CoverOptions): CoverOptions {
 export function normalizePublishOptions(value: unknown): PublishOptions {
   const defaults = defaultPublishOptions();
   if (!isRecord(value)) return defaults;
-  const formats = FORMAT_ORDER;
+  const formats = [...FORMAT_ORDER, ...SCREENPLAY_FORMAT_ORDER];
   const customStyles = normalizeCustomStyles(value.customStyles);
   const styleIds = new Set<string>([
     ...BUILTIN_STYLE_IDS,

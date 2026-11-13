@@ -41,3 +41,17 @@ describe("sanitizeHtml image layout", () => {
       .toBe(`<img src="${SRC}" alt="" width="320" height="200" data-size="medium">`);
   });
 });
+
+describe("sanitizeHtml screenplay markers", () => {
+  it("keeps known element types on paragraphs", () => {
+    expect(sanitizeHtml('<p data-sp="dialogue">Hello</p>')).toBe('<p data-sp="dialogue">Hello</p>');
+    expect(sanitizeHtml('<p data-sp="scene-heading">INT. ROOM - DAY</p>'))
+      .toBe('<p data-sp="scene-heading">INT. ROOM - DAY</p>');
+  });
+
+  it("drops unknown markers and markers outside paragraphs", () => {
+    expect(sanitizeHtml('<p data-sp="dialogue;position:fixed">Hello</p>')).toBe("<p>Hello</p>");
+    expect(sanitizeHtml('<p data-sp="">Hello</p>')).toBe("<p>Hello</p>");
+    expect(sanitizeHtml('<div data-sp="action">Hello</div>')).toBe("<div>Hello</div>");
+  });
+});

@@ -6,6 +6,13 @@ const safeTags = new Set([
   "IMG", "LI", "OL", "P", "PRE", "S", "STRIKE", "STRONG", "TABLE", "TBODY", "TD", "TH",
   "THEAD", "TR", "U", "UL"
 ]);
+
+/** Screenplay element types that may mark a paragraph, mirroring the parser. */
+const screenplayTypes = new Set([
+  "scene-heading", "action", "character", "dialogue", "parenthetical", "transition",
+  "centered", "section", "synopsis", "note", "page-break"
+]);
+
 export const MAX_EMBEDDED_IMAGE_BYTES = 1_500_000;
 
 /** Returns true when a data URL is an embedded image within the export limit. */
@@ -57,6 +64,14 @@ function cleanNode(node: Node): Node | null {
   );
   if (node.tagName === "P" && node.classList.contains("eyebrow")) {
     clean.classList.add("eyebrow");
+  }
+  if (node.tagName === "P") {
+    // Screenplay markers survive as validated data attributes; unknown values
+    // are dropped, so a paragraph cannot smuggle in arbitrary state.
+    const screenplayType = node.getAttribute("data-sp");
+    if (screenplayType !== null && screenplayTypes.has(screenplayType)) {
+      clean.setAttribute("data-sp", screenplayType);
+    }
   }
   if (node.tagName === "A") {
     const href = node.getAttribute("href");
