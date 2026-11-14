@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2.js";
+import { normalizeProjectKind } from "$lib/project-kind";
 import { htmlToMarkdown, markdownToHtml } from "$lib/publish/markdown";
 import { sanitizeHtml } from "$lib/sanitize";
 import type { ChapterData, DocumentData } from "$lib/publish/types";
@@ -88,11 +89,15 @@ function normalizeBody(body: string): string {
 /** Makes a document match the Markdown round trip used by the open layout. */
 export function normalizeDocument(document: DocumentData): DocumentData {
   const body = normalizeBody(document.markdownSource ?? htmlToMarkdown(document.content));
-  return {
+  const normalized: DocumentData = {
     ...document,
     content: sanitizeHtml(markdownToHtml(body)),
     markdownSource: body
   };
+  if (normalized.format !== "prose" && normalized.format !== "screenplay") {
+    delete normalized.format;
+  }
+  return normalized;
 }
 
 function formatYamlValue(value: unknown): string {
@@ -165,6 +170,7 @@ function documentPayload(fields: Record<string, unknown>): Record<string, unknow
     title: fields.title,
     chapterId: fields.chapterId,
     space: fields.space,
+    format: fields.format,
     folderId: fields.folderId,
     trashed: fields.trashed,
     trashedWithChapterId: fields.trashedWithChapterId,
@@ -184,6 +190,7 @@ function documentFields(document: DocumentData, meta: EntityMeta): Record<string
     title: document.title,
     chapterId: document.chapterId,
     space: document.space,
+    format: document.format,
     folderId: document.folderId,
     trashed: document.trashed,
     trashedWithChapterId: document.trashedWithChapterId,
@@ -257,6 +264,7 @@ function decodeDocument(
   if (typeof fields.chapterId === "string") record.chapterId = fields.chapterId;
   else if (fields.chapterId === null) delete record.chapterId;
   if (typeof fields.space === "string") record.space = fields.space as DocumentData["space"];
+  if (fields.format === "prose" || fields.format === "screenplay") record.format = fields.format;
   if (typeof fields.folderId === "string") record.folderId = fields.folderId;
   if (fields.trashed === true) record.trashed = true;
   if (typeof fields.trashedWithChapterId === "string") {
@@ -672,6 +680,21 @@ export async function readOpenProject(
     storyboardCards.changedAt
   );
 
+  const normalizedKind = normalizeProjectKind(payload.project.kind);
+  const projectRecord: ProjectData = {
+    ...payload.project,
+    id: payload.id,
+    documents: documents.records,
+    chapters: chapters.records,
+    storyboardRows: storyboardRows.records,
+    storyboardCards: storyboardCards.records
+  };
+  if (normalizedKind) {
+    projectRecord.kind = normalizedKind;
+  } else {
+    delete projectRecord.kind;
+  }
+
   return {
     schemaVersion: typeof payload.schemaVersion === "number" ? payload.schemaVersion : SCHEMA_VERSION,
     id: payload.id,
@@ -680,14 +703,7 @@ export async function readOpenProject(
     revision: external ? payload.revision + 1 : payload.revision,
     updatedBy: external ? "external" : payload.updatedBy,
     deletedAt: payload.deletedAt,
-    project: {
-      ...payload.project,
-      id: payload.id,
-      documents: documents.records,
-      chapters: chapters.records,
-      storyboardRows: storyboardRows.records,
-      storyboardCards: storyboardCards.records
-    },
+    project: projectRecord,
     entities: {
       documents: documents.metas,
       chapters: chapters.metas,
@@ -726,7 +742,8 @@ async function writeIfChanged(
 }
 
 function projectPayload(project: StoredProject): ProjectFilePayload {
-  const { documents, chapters, storyboardRows, storyboardCards, ...rest } = project.project;
+  const { documents, chapters, storyboardRows, storyboardCards, kind, ...rest } = project.project;
+  const normalizedKind = normalizeProjectKind(kind);
   return {
     format: PROJECT_FORMAT,
     version: PROJECT_VERSION,
@@ -739,6 +756,7 @@ function projectPayload(project: StoredProject): ProjectFilePayload {
     deletedAt: project.deletedAt,
     project: {
       ...rest,
+      ...(normalizedKind ? { kind: normalizedKind } : {}),
       documents: [],
       chapters: [],
       storyboardRows: [],

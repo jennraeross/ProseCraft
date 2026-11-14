@@ -99,6 +99,7 @@ export type TimelineNode = {
 export type ProjectData = {
   id: string;
   name: string;
+  kind?: "novel" | "screenplay";
   trashed?: boolean;
   author: string;
   documents: DocumentData[];

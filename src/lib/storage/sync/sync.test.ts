@@ -168,6 +168,29 @@ describe("open-folder sync", () => {
       .toMatchObject({ trashed: true, trashedWithChapterId: "chapter-1" });
   });
 
+  it("round-trips project kind in project.json", async () => {
+    const fs = new MemoryFileSystem();
+    const screenplay = createStoredProject(
+      { ...projectFixture("sp-1", "Screenplay One"), kind: "screenplay" },
+      "device-a",
+      1_000
+    );
+    const novel = createStoredProject(
+      { ...projectFixture("nv-1", "Novel One"), kind: "novel" },
+      "device-a",
+      1_000
+    );
+
+    await new OpenFolderSyncProvider(fs).sync("", [screenplay, novel], {}, 1_000, "device-a");
+
+    const rawScreenplayJson = JSON.parse(await fs.readText("projects/sp-1/project.json"));
+    expect(rawScreenplayJson.project.kind).toBe("screenplay");
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    expect(reopened.projects.find((p) => p.id === "sp-1")?.project.kind).toBe("screenplay");
+    expect(reopened.projects.find((p) => p.id === "nv-1")?.project.kind).toBe("novel");
+  });
+
   it("round-trips projects as Markdown and JSON", async () => {
     const fs = new MemoryFileSystem();
     const provider = new OpenFolderSyncProvider(fs);

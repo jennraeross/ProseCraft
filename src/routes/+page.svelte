@@ -147,6 +147,24 @@
     type ImportFolder,
     type MarkdownFile
   } from "$lib/import/markdown-folder";
+  import { parseFountain } from "$lib/screenplay/fountain";
+  import {
+    elementsToHtml,
+    estimatePages,
+    estimateRuntime,
+    htmlToElements
+  } from "$lib/screenplay/layout";
+  import {
+    EDITOR_ELEMENT_TYPES,
+    autoCase,
+    autoDetectType,
+    nextElementType,
+    type EditorElementType,
+    type EditorKey
+  } from "$lib/screenplay/editor-keys";
+  import { convertDocumentToScreenplay } from "$lib/screenplay/convert";
+  import ScreenplayBar from "$lib/ScreenplayBar.svelte";
+  import { isScreenplayProject, projectKindOf, type ProjectKind } from "$lib/project-kind";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -461,6 +479,7 @@
   let epubImportInput = $state<HTMLInputElement>();
   let epubImportBusy = $state(false);
   let markdownFolderInput = $state<HTMLInputElement>();
+  let fountainImportInput = $state<HTMLInputElement>();
   let markdownImportDialog: HTMLDialogElement;
   let markdownImportFiles = $state<MarkdownFile[]>([]);
   let markdownImportFolders = $state<ImportFolder[]>([]);
@@ -586,8 +605,11 @@
   let projectSettingsSaved = $state(true);
   let projectName = $state("Untitled Project");
   let authorName = $state("");
+  let activeProjectKind = $state<ProjectKind>("novel");
   let projectNameDraft = $state("Untitled Project");
   let authorNameDraft = $state("");
+  let projectKindDraft = $state<ProjectKind>("novel");
+  let projectKind = $state<ProjectKind>("novel");
   let projects = $state<ProjectData[]>([]);
   let liveProjects = $derived(projects.filter((project) => !project.trashed));
   let activeProjectId = $state("");
@@ -814,6 +836,18 @@
   });
   let activeDocumentId = $state("welcome");
   let activeDocument = $derived(documents.find((doc) => doc.id === activeDocumentId));
+  let screenplayActive = $derived(
+    Boolean(
+      activeDocument
+      && !activeDocument.space
+      && (isScreenplayProject({ kind: activeProjectKind }) || activeDocument.format === "screenplay")
+    )
+  );
+  let screenplayElementType = $state<EditorElementType>("action");
+  let screenplayPages = $state(0);
+  let screenplayRuntime = $state(0);
+  let screenplayMetricsTimer: ReturnType<typeof setTimeout> | undefined;
+  let editorComposing = false;
   $effect(() => {
     refreshWikiMentionHighlights(documents, activeDocumentId);
   });
@@ -1171,6 +1205,7 @@
     return {
       id: activeProjectId,
       name: projectName,
+      kind: activeProjectKind,
       author: authorName,
       labels: projectLabelList,
       documents,
@@ -1289,6 +1324,7 @@
     openRowMenu = null;
     projectName = project.name;
     authorName = project.author;
+    activeProjectKind = projectKindOf(project);
     projectLabelList = projectLabels(project);
     labelFilter = "";
     researchFolders = normalizeBinderFolders(project.researchFolders);
@@ -1844,6 +1880,7 @@
     }
 
     syncAnchorToCaret();
+    syncScreenplayElementType();
     updateCommentSelectionPopover();
     if (fadeOtherParagraphs) scheduleRichTextFade();
     // Note: typewriter recentering runs on input (typing), not here, so caret
@@ -2222,6 +2259,7 @@
     showZenInterface();
     projectNameDraft = projectName;
     authorNameDraft = authorName;
+    projectKindDraft = activeProjectKind;
     if (projectSettingsDialog && !projectSettingsDialog.open) projectSettingsDialog.showModal();
   }
 
@@ -2232,6 +2270,7 @@
     try {
       projectName = nextProjectName;
       authorName = authorNameDraft.trim();
+      activeProjectKind = projectKindDraft;
       persistProjectCollection();
       projectSettingsSaved = true;
       projectSettingsDialog.close();
@@ -2254,8 +2293,24 @@
   function createProject() {
     showZenInterface();
     reloadStarterTemplates();
-    selectStarter("blank");
+    selectProjectKind("novel");
     if (starterDialog && !starterDialog.open) starterDialog.showModal();
+  }
+
+  function selectProjectKind(kind: ProjectKind) {
+    projectKind = kind;
+    if (kind === "screenplay") {
+      starterDraft = "blank";
+      starterNotice = "";
+      let blueprint: StarterBlueprint = { folders: [] };
+      for (const moduleId of ["characters", "places", "items"]) {
+        blueprint = addModule(blueprint, moduleId);
+      }
+      starterWorking = blueprint;
+      starterSelectedKeys = [...allBlueprintKeys(blueprint)];
+      return;
+    }
+    selectStarter("blank");
   }
 
   function reloadStarterTemplates() {
@@ -2383,17 +2438,19 @@
     createProjectWithStarter(filterBlueprint(starterWorking, starterSelected));
   }
 
-  function createProjectWithStarter(blueprint: StarterBlueprint) {
+  function createProjectWithStarter(blueprint: StarterBlueprint, kind: ProjectKind = projectKind) {
     showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const number = liveProjects.length + 1;
+    const screenplay = kind === "screenplay";
     const next: ProjectData = {
       id: crypto.randomUUID(),
       name: number === 1 ? "Untitled Project" : `Untitled Project ${number}`,
+      kind,
       author: "",
       documents: [],
-      chapters: [{ id: crypto.randomUUID(), title: "Chapter 1", expanded: true, summary: "" }],
+      chapters: [{ id: crypto.randomUUID(), title: screenplay ? "Act 1" : "Chapter 1", expanded: true, summary: "" }],
       activeDocumentId: "",
       projectGoal: 50000,
       chapterGoals: {},
@@ -2410,8 +2467,9 @@
     const scene: DocumentData = {
       id: crypto.randomUUID(),
       title: "Scene 1",
-      content: "<p><br></p>",
-      chapterId: chapter.id
+      content: screenplay ? '<p data-sp="scene-heading"></p>' : "<p><br></p>",
+      chapterId: chapter.id,
+      ...(screenplay ? { format: "screenplay" as const } : {})
     };
     next.documents = [scene];
     const starterContent = buildFromBlueprint(blueprint, () => crypto.randomUUID());
@@ -2428,6 +2486,7 @@
     }
     projectNameDraft = projectName;
     authorNameDraft = authorName;
+    projectKindDraft = activeProjectKind;
     projectSettingsDialog?.showModal();
   }
 
@@ -2545,6 +2604,32 @@
       await importEpubData(file.name, new Uint8Array(await file.arrayBuffer()));
     } catch (error) {
       dataStatus = error instanceof Error ? error.message : "Could not read that file.";
+    }
+  }
+
+  function triggerFountainImport() {
+    fountainImportInput?.click();
+  }
+
+  async function handleFountainImport(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    try {
+      const { title: titlePage, elements } = parseFountain(await file.text());
+      const fallbackTitle = file.name.replace(/\.(fountain|txt)$/i, "").trim();
+      const scene = createScene(
+        activeDocument?.chapterId ?? liveChapters[0]?.id ?? createChapter({ focusEditor: false }).id,
+        titlePage.Title?.trim() || fallbackTitle || "Screenplay",
+        { content: elementsToHtml(elements), format: "screenplay", focusEditor: false }
+      );
+      settingsDialog?.close();
+      editor?.focus();
+      dataStatus = `Imported “${scene.title}” as a screenplay scene.`;
+    } catch (error) {
+      console.error("Could not import that screenplay.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not import that screenplay.";
     }
   }
 
@@ -3918,6 +4003,8 @@
     if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
+    syncScreenplayElementType();
+    updateScreenplayMetrics();
     hideHarperPopover();
     scheduleHarperLint();
   }
@@ -5027,6 +5114,267 @@
     }
   }
 
+  function isEditorElementType(value: string | null): value is EditorElementType {
+    return value !== null && (EDITOR_ELEMENT_TYPES as readonly string[]).includes(value);
+  }
+
+  function firstTextNode(root: Node): Text | null {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    return (walker.nextNode() as Text | null) ?? null;
+  }
+
+  function ensureScreenplayParagraph(block: HTMLElement): HTMLParagraphElement | null {
+    if (block.tagName === "P") return block as HTMLParagraphElement;
+    if (block.tagName !== "DIV") return null;
+    if (isSceneBreakElement(block)) return null;
+    if (richKindOf(block)) return null;
+    const saved = encodeSelection(block);
+    const paragraph = document.createElement("p");
+    const attr = (block as HTMLElement).getAttribute("data-sp");
+    if (isEditorElementType(attr)) paragraph.setAttribute("data-sp", attr);
+    while ((block as HTMLElement).firstChild) paragraph.append((block as HTMLElement).firstChild as ChildNode);
+    (block as HTMLElement).replaceWith(paragraph);
+    if (saved) restoreSelection(paragraph, saved);
+    return paragraph;
+  }
+
+  function applyAutoCaseToBlock(block: HTMLElement, type: EditorElementType) {
+    const saved = encodeSelection(block);
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let changed = false;
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode as Text;
+      const nextValue = autoCase(type, textNode.data);
+      if (nextValue !== textNode.data) {
+        textNode.data = nextValue;
+        changed = true;
+      }
+    }
+    if (changed && saved) restoreSelection(block, saved);
+  }
+
+  function currentScreenplayParagraph(): HTMLParagraphElement | null {
+    if (!editor) return null;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0 && editor.contains(selection.anchorNode)) {
+      const block = editorTopBlock(selection.anchorNode);
+      if (block && block.tagName === "P" && !isSceneBreakElement(block)) {
+        return block as HTMLParagraphElement;
+      }
+    }
+    return null;
+  }
+
+  function syncScreenplayElementType() {
+    if (!screenplayActive || !editor) {
+      screenplayElementType = "action";
+      return;
+    }
+    const paragraph = currentScreenplayParagraph();
+    const attr = paragraph?.getAttribute("data-sp") ?? null;
+    screenplayElementType = isEditorElementType(attr) ? attr : "action";
+  }
+
+  function updateScreenplayMetrics() {
+    if (!editor || !screenplayActive) {
+      screenplayPages = 0;
+      screenplayRuntime = 0;
+      return;
+    }
+    const estimate = estimatePages(htmlToElements(editor.innerHTML));
+    screenplayPages = estimate.pages;
+    screenplayRuntime = estimateRuntime(estimate.pages);
+  }
+
+  function scheduleScreenplayMetrics() {
+    if (screenplayMetricsTimer) clearTimeout(screenplayMetricsTimer);
+    if (!screenplayActive) {
+      screenplayPages = 0;
+      screenplayRuntime = 0;
+      return;
+    }
+    screenplayMetricsTimer = setTimeout(() => {
+      screenplayMetricsTimer = undefined;
+      updateScreenplayMetrics();
+    }, 400);
+  }
+
+  function setScreenplayElementType(nextType: EditorElementType) {
+    if (!screenplayActive || !editor || markdownEditorMode) return;
+    let paragraph = currentScreenplayParagraph();
+    if (!paragraph) {
+      const selection = window.getSelection();
+      const rawBlock = selection && selection.rangeCount > 0 && editor.contains(selection.anchorNode)
+        ? editorTopBlock(selection.anchorNode)
+        : editor.querySelector("p");
+      if (rawBlock instanceof HTMLElement) {
+        paragraph = ensureScreenplayParagraph(rawBlock);
+      }
+    }
+    if (!paragraph) return;
+    paragraph.setAttribute("data-sp", nextType);
+    applyAutoCaseToBlock(paragraph, nextType);
+    screenplayElementType = nextType;
+    editor.focus();
+    handleInput();
+  }
+
+  function syncScreenplayTyping() {
+    if (!screenplayActive || !editor || markdownEditorMode || editorComposing) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) return;
+    const rawBlock = editorTopBlock(selection.anchorNode);
+    if (!rawBlock || isSceneBreakElement(rawBlock) || richKindOf(rawBlock)) return;
+    const block = ensureScreenplayParagraph(rawBlock);
+    if (!block) return;
+
+    const rawAttr = block.getAttribute("data-sp");
+    let currentType: EditorElementType = isEditorElementType(rawAttr) ? rawAttr : "action";
+    const detected = autoDetectType(block.textContent ?? "");
+    if (
+      detected === "scene-heading"
+      || detected === "transition"
+    ) {
+      if (currentType === "action" || currentType === "character" || detected === "scene-heading" || detected === "transition") {
+        currentType = detected;
+      }
+    }
+    if (block.getAttribute("data-sp") !== currentType) {
+      block.setAttribute("data-sp", currentType);
+    }
+    applyAutoCaseToBlock(block, currentType);
+    screenplayElementType = currentType;
+  }
+
+  function handleScreenplayKey(event: KeyboardEvent): boolean {
+    if (!screenplayActive || !editor || markdownEditorMode || event.isComposing) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    const isTab = event.key === "Tab";
+    const isEnter = event.key === "Enter" && !event.shiftKey;
+    if (!isTab && !isEnter) return false;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) return false;
+    const rawBlock = editorTopBlock(selection.anchorNode);
+    if (!rawBlock || isSceneBreakElement(rawBlock) || richKindOf(rawBlock)) return false;
+    const block = ensureScreenplayParagraph(rawBlock);
+    if (!block) return false;
+
+    const rawAttr = block.getAttribute("data-sp");
+    let currentType: EditorElementType = isEditorElementType(rawAttr) ? rawAttr : "action";
+
+    if (isTab) {
+      event.preventDefault();
+      const key: EditorKey = event.shiftKey ? "ShiftTab" : "Tab";
+      const empty = (block.textContent ?? "").trim() === "";
+      const nextType = nextElementType(currentType, key, { empty });
+      block.setAttribute("data-sp", nextType);
+      applyAutoCaseToBlock(block, nextType);
+      screenplayElementType = nextType;
+      handleInput();
+      updateScreenplayMetrics();
+      return true;
+    }
+
+    event.preventDefault();
+    if (!selection.isCollapsed) selection.deleteFromDocument();
+    const currentRange = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    if (!currentRange || !block.contains(currentRange.endContainer)) return false;
+
+    const textContent = block.textContent ?? "";
+    const empty = textContent.trim() === "";
+    if (currentType === "action" && !empty) {
+      const detected = autoDetectType(textContent);
+      if (detected) {
+        currentType = detected;
+        applyAutoCaseToBlock(block, currentType);
+      }
+    }
+    block.setAttribute("data-sp", currentType);
+
+    const nextType = nextElementType(currentType, "Enter", { empty });
+    if (empty && nextType !== currentType) {
+      block.setAttribute("data-sp", nextType);
+      screenplayElementType = nextType;
+      const range = document.createRange();
+      range.selectNodeContents(block);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      handleInput();
+      updateScreenplayMetrics();
+      return true;
+    }
+
+    const tailRange = document.createRange();
+    tailRange.setStart(currentRange.endContainer, currentRange.endOffset);
+    tailRange.setEnd(block, block.childNodes.length);
+    const tail = tailRange.extractContents();
+    if ((block.textContent ?? "") === "" && !block.querySelector("br, img")) {
+      block.append(document.createElement("br"));
+    }
+
+    const nextParagraph = document.createElement("p");
+    nextParagraph.setAttribute("data-sp", nextType);
+    nextParagraph.append(tail);
+    if ((nextParagraph.textContent ?? "") === "" && !nextParagraph.querySelector("br, img")) {
+      nextParagraph.append(document.createElement("br"));
+    }
+    block.after(nextParagraph);
+
+    const nextRange = document.createRange();
+    const text = firstTextNode(nextParagraph);
+    if (text) nextRange.setStart(text, 0);
+    else nextRange.setStart(nextParagraph, 0);
+    nextRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+
+    screenplayElementType = nextType;
+    handleInput();
+    updateScreenplayMetrics();
+    return true;
+  }
+
+  async function convertToScreenplay(documentId: string = activeDocumentId) {
+    if (!documentId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const latest = documents.find((doc) => doc.id === documentId && !doc.trashed && !doc.space);
+    if (!latest || latest.format === "screenplay") return;
+    const confirmed = await confirmDestructiveAction(
+      `Convert “${latest.title || "Untitled scene"}” to screenplay format? A snapshot of the prose version will be saved first.`,
+      { confirmLabel: "Convert" }
+    );
+    if (!confirmed) return;
+
+    snapshots = addSnapshot(snapshots, createSnapshot(latest, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "before-restore",
+      note: "Before screenplay conversion"
+    }));
+    const converted = convertDocumentToScreenplay(latest);
+    documents = documents.map((doc) => doc.id === converted.id ? converted : doc);
+    if (converted.chapterId && activeChapter?.id === converted.chapterId) {
+      renderChapter(converted.id, true);
+    } else if (converted.id === activeDocumentId) {
+      title = converted.title;
+      setEditorContent(converted.content);
+      setMarkdownSource(htmlToMarkdown(converted.content));
+      refreshCounts();
+      lastEditorWordCount = wordCount;
+    }
+    persistNow();
+  }
+
+  $effect(() => {
+    void activeDocumentId;
+    void screenplayActive;
+    syncScreenplayElementType();
+    updateScreenplayMetrics();
+  });
+
   /**
    * Enter on an empty paragraph starts a new scene: the paragraph becomes a
    * divider and the content after it moves into the new scene. Never leads
@@ -5290,16 +5638,19 @@
   function createScene(
     chapterId: string,
     sceneTitle = "Untitled scene",
-    options: { focusEditor?: boolean } = {}
+    options: { focusEditor?: boolean; content?: string; format?: DocumentData["format"] } = {}
   ) {
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
+    const format = options.format ?? (isScreenplayProject({ kind: activeProjectKind }) ? "screenplay" : undefined);
+    const defaultContent = format === "screenplay" ? '<p data-sp="scene-heading"></p>' : "<p><br></p>";
     const next: DocumentData = {
       id: crypto.randomUUID(),
       title: sceneTitle,
-      content: "<p><br></p>",
+      content: options.content ?? defaultContent,
       chapterId
     };
+    if (format) next.format = format;
     documents = [...documents, next];
     renderChapter(next.id, options.focusEditor !== false);
     persist();
@@ -7449,11 +7800,14 @@
     }
   }
 
-  function handleInput() {
+  function handleInput(event?: Event) {
     if (editor) {
       // Pasted or restored widgets arrive as source only and need rendering.
       ensureParagraphsAroundRichBlocks(editor);
       void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
+      if (event instanceof Event && screenplayActive && !markdownEditorMode) {
+        syncScreenplayTyping();
+      }
     }
     if (!applyingUndoHistory && undoManager.has(bodyUndoKey())) {
       recordFieldEdit(editor, cleanHtml(editor.innerHTML), encodeSelection(editor));
@@ -7472,6 +7826,7 @@
     persist();
     hideHarperPopover();
     scheduleHarperLint();
+    scheduleScreenplayMetrics();
     scheduleRichTextTypewriter();
     if (fadeOtherParagraphs) scheduleRichTextFade();
   }
@@ -8329,6 +8684,7 @@
       document.removeEventListener("selectionchange", handleRichTextSelectionChange);
       window.removeEventListener("scroll", hideCommentSelectionPopover, true);
       window.removeEventListener("scroll", repositionHarperPopover, true);
+      if (screenplayMetricsTimer) clearTimeout(screenplayMetricsTimer);
       keepCommentPreview();
     };
   });
@@ -9148,6 +9504,9 @@
           <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxScene.id); closeContextMenu(); }}>Open scene</button>
           <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxScene.id)); closeContextMenu(); }}>Open beside</button>
           <button type="button" role="menuitem" onclick={() => { const scene = documents.find((doc) => doc.id === ctxScene.id); closeContextMenu(); if (scene) startSceneRename(scene); }}>Rename scene</button>
+          {#if ctxScene.format !== "screenplay"}
+            <button type="button" role="menuitem" onclick={() => { const id = ctxScene.id; closeContextMenu(); void convertToScreenplay(id); }}>Convert this scene to screenplay</button>
+          {/if}
           {@const ctxSceneList = ctxScene.chapterId ? scenesInChapter(ctxScene.chapterId) : []}
           {@const ctxSceneIndex = ctxSceneList.findIndex((entry) => entry.id === ctxScene.id)}
           <button type="button" role="menuitem" disabled={ctxSceneIndex <= 0} onclick={() => { moveScene(ctxScene.id, -1); closeContextMenu(); }}>Move up</button>
@@ -9417,6 +9776,23 @@
         />
 
         <div class="editor-tools">
+        {#if screenplayActive && !markdownEditorMode}
+          <div class="screenplay-bar-row">
+            <ScreenplayBar
+              type={screenplayElementType}
+              pages={screenplayPages}
+              runtimeMinutes={screenplayRuntime}
+              onchange={setScreenplayElementType}
+            />
+            {#if activeDocument && !activeDocument.space && activeDocument.format !== "screenplay"}
+              <button
+                type="button"
+                class="screenplay-convert-button"
+                onclick={() => void convertToScreenplay(activeDocument.id)}
+              >Convert this scene to screenplay</button>
+            {/if}
+          </div>
+        {/if}
         {#if !markdownEditorMode}
         <div class="toolbar" role="toolbar" aria-label="Text formatting">
           <label class="sr-only" for="block-style">Text style</label>
@@ -9541,6 +9917,7 @@
           class="editor-content"
           class:editor-content-hidden={markdownEditorMode}
           class:fade-other-paragraphs={fadeOtherParagraphs}
+          class:screenplay-editor={screenplayActive}
           bind:this={editor}
           contenteditable="true"
           role="textbox"
@@ -9549,6 +9926,11 @@
           aria-multiline="true"
           spellcheck="true"
           onbeforeinput={handleEditorBeforeInput}
+          oncompositionstart={() => { editorComposing = true; }}
+          oncompositionend={() => {
+            editorComposing = false;
+            if (screenplayActive && !markdownEditorMode) handleInput(new Event("input"));
+          }}
           onfocus={() => scheduleRichTextFade(true)}
           onblur={() => {
             clearRichTextFade();
@@ -9561,6 +9943,7 @@
           onpointermove={handleEditorPointerMove}
           onpointerleave={() => { wikiMentionPreview = null; hideCommentPreviewSoon(); }}
           onkeydown={(event) => {
+            if (screenplayActive && handleScreenplayKey(event)) return;
             if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
               if (handleChapterEnter(event)) return;
             }
@@ -10424,9 +10807,15 @@
             onclick={triggerMarkdownFolderImport}
             disabled={markdownImportBusy}
           >Import Markdown folder…</button>
+          <button
+            type="button"
+            class="data-button"
+            onclick={triggerFountainImport}
+          >Import Fountain screenplay…</button>
         </div>
         <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
         <p class="data-help">Creates a new project from a folder of Markdown files (for example an Obsidian vault). You choose which folders are the manuscript and which become wiki pages.</p>
+        <p class="data-help">Adds a Fountain or plain-text screenplay to the open project as a screenplay scene.</p>
       </div>
       <div class="data-group">
         <span class="data-group-label">Device sync</span>
@@ -10664,6 +11053,14 @@
         bind:this={markdownFolderInput}
         onchange={handleMarkdownFolder}
       />
+      <input
+        id="fountain-import-input"
+        class="data-file-input"
+        type="file"
+        accept=".fountain,.txt,text/plain"
+        bind:this={fountainImportInput}
+        onchange={handleFountainImport}
+      />
       {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
     </section>
     {#if !preferencesSaved}
@@ -10818,7 +11215,39 @@
       <div><span class="settings-kicker">PROSECRAFT</span><h2>Start from</h2></div>
       <button class="close-settings" aria-label="Close starter selection" type="button" onclick={() => starterDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
-    <div class="settings-body starter-body">
+    <div class="settings-body starter-body" class:starter-body-screenplay={projectKind === "screenplay"}>
+      <section class="starter-kind" aria-label="What are you writing?">
+        <div class="preference-heading"><strong>What are you writing?</strong><span>Choose the format for new scenes in this project.</span></div>
+        <div class="starter-kind-cards" role="radiogroup" aria-label="What are you writing?">
+          <label class="starter-kind-card" class:selected={projectKind === "novel"}>
+            <input
+              type="radio"
+              name="project-kind"
+              value="novel"
+              checked={projectKind === "novel"}
+              onchange={() => selectProjectKind("novel")}
+            />
+            <span class="starter-copy">
+              <strong>Novel or story</strong>
+              <span>Chapters and prose scenes, with genre templates.</span>
+            </span>
+          </label>
+          <label class="starter-kind-card" class:selected={projectKind === "screenplay"}>
+            <input
+              type="radio"
+              name="project-kind"
+              value="screenplay"
+              checked={projectKind === "screenplay"}
+              onchange={() => selectProjectKind("screenplay")}
+            />
+            <span class="starter-copy">
+              <strong>Screenplay</strong>
+              <span>Acts, industry script formatting, and Fountain/PDF export.</span>
+            </span>
+          </label>
+        </div>
+      </section>
+      {#if projectKind !== "screenplay"}
       <section class="starter-presets" aria-label="Wiki template">
         <div class="preference-heading"><strong>Wiki template</strong><span>Adds starter folders and template pages to the new project.</span></div>
         <div class="starter-options" role="radiogroup" aria-label="Starter">
@@ -10867,6 +11296,7 @@
           </div>
         {/if}
       </section>
+      {/if}
       <section class="starter-customise" aria-label="Customise">
         <div class="preference-heading">
           <strong>Customise</strong>
@@ -10966,6 +11396,12 @@
         <input id="project-name" class="preference-select" type="text" bind:value={projectNameDraft} maxlength="100" required />
         <label class="preference-label project-author-label" for="author-name">Author name</label>
         <input id="author-name" class="preference-select" type="text" bind:value={authorNameDraft} maxlength="100" />
+        <label class="preference-label project-author-label" for="project-kind">Project type</label>
+        <select id="project-kind" class="preference-select" bind:value={projectKindDraft}>
+          <option value="novel">Novel</option>
+          <option value="screenplay">Screenplay</option>
+        </select>
+        <p class="project-kind-note">Existing scenes keep their format; new scenes use the new type.</p>
       </section>
       <section class="preference-section">
         <div class="preference-heading"><strong>Labels</strong><span>Rename, recolour or remove the labels used on scenes and chapters</span></div>
@@ -11933,6 +12369,87 @@
   .editor-content :global(h1) { color: var(--text-heading); font-size: calc(30px * var(--editor-scale)); font-weight: 500; line-height: 1.35; }
   .editor-content :global(h3) { color: var(--text-heading); font-size: calc(19px * var(--editor-scale)); font-weight: 500; }
   .editor-content :global(p) { margin: 0 0 18px; }
+  .screenplay-bar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .screenplay-bar-row :global(.screenplay-bar) { flex: 1 1 220px; }
+  .screenplay-convert-button {
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border-control);
+    border-radius: 7px;
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .screenplay-convert-button:hover { border-color: var(--accent); color: var(--text-heading); }
+  .screenplay-convert-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .editor-content.screenplay-editor {
+    max-width: 38rem;
+    margin: 0 auto;
+    font-family: "Courier Prime", "Courier New", Courier, monospace;
+    font-size: calc(12pt * var(--editor-scale));
+    line-height: 1.35;
+    color: var(--text-body);
+  }
+  .editor-content.screenplay-editor :global(p) {
+    width: 100%;
+    min-height: 1.35em;
+    margin: 0 0 1em;
+    font-family: "Courier Prime", "Courier New", Courier, monospace;
+    font-size: calc(12pt * var(--editor-scale));
+    line-height: 1.35;
+    color: var(--text-body);
+    text-align: left;
+    box-sizing: border-box;
+  }
+  .editor-content :global(p[data-sp]) {
+    min-height: 1.35em;
+    margin: 0 0 1em;
+    font-family: "Courier Prime", "Courier New", Courier, monospace;
+    font-size: calc(12pt * var(--editor-scale));
+    line-height: 1.35;
+    color: var(--text-body);
+    box-sizing: border-box;
+  }
+  .editor-content :global(p[data-sp="scene-heading"]) {
+    margin-top: 1.5em;
+    color: var(--text-heading);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .editor-content :global(p[data-sp="action"]) {
+    width: 100%;
+    margin-left: 0;
+  }
+  .editor-content :global(p[data-sp="character"]) {
+    margin-top: 1em;
+    margin-bottom: 0;
+    margin-left: 37%;
+    width: 63%;
+    color: var(--text-heading);
+    text-transform: uppercase;
+  }
+  .editor-content :global(p[data-sp="dialogue"]) {
+    margin-top: 0;
+    margin-bottom: 1em;
+    margin-left: 25%;
+    width: 55%;
+  }
+  .editor-content :global(p[data-sp="parenthetical"]) {
+    margin-top: 0;
+    margin-bottom: 0;
+    margin-left: 31%;
+    width: 35%;
+  }
+  .editor-content :global(p[data-sp="transition"]) {
+    margin-top: 1em;
+    width: 100%;
+    margin-left: 0;
+    color: var(--text-heading);
+    text-align: right;
+    text-transform: uppercase;
+  }
   .editor-content :global(blockquote) { margin: 26px 0; padding: 2px 0 2px 17px; border-left: 2px solid var(--accent-soft); color: var(--quote); font-style: italic; }
   .editor-content :global(ul), .editor-content :global(ol) { padding-left: 24px; }
   .editor-content :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
@@ -12145,7 +12662,16 @@
   .starter-dialog[open] { display: flex; flex-direction: column; }
   .starter-dialog form { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; max-height: inherit; }
   .starter-dialog .settings-body { min-height: 0; flex: 1 1 auto; overflow: hidden; }
-  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 20px; min-width: 0; }
+  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); align-items: stretch; gap: 0 20px; min-width: 0; }
+  .starter-body.starter-body-screenplay { grid-template-columns: minmax(0, 1fr); }
+  .starter-kind { grid-column: 1 / -1; padding: 14px 0 12px; border-bottom: 1px solid var(--border-soft); }
+  .starter-kind-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .starter-kind-card { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border-control); border-radius: 8px; cursor: pointer; }
+  .starter-kind-card:hover { border-color: var(--accent); background: var(--hover-bg); }
+  .starter-kind-card.selected { border-color: var(--accent); background: var(--selected-bg, var(--control-bg)); }
+  .starter-kind-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .starter-kind-card input { margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--accent); }
+  .project-kind-note { margin: 6px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
   .starter-presets, .starter-customise { min-width: 0; min-height: 0; overflow-y: auto; padding: 17px 0; }
   .starter-subheading { margin-top: 16px; }
   .starter-template { display: flex; align-items: center; gap: 6px; }
@@ -12617,6 +13143,7 @@
     .toolbar { padding-right: 4px; padding-left: 4px; }
     .toolbar-divider { margin: 0 1px; }
     .starter-module-grid { grid-template-columns: minmax(0, 1fr); }
+    .starter-kind-cards { grid-template-columns: minmax(0, 1fr); }
     .starter-save { flex-direction: column; align-items: stretch; }
     .starter-save input[type="text"], .starter-add-button { width: 100%; flex: none; }
     .starter-dialog .settings-footer > span { flex: 1 1 100%; }
