@@ -4,16 +4,19 @@ import {
   DropCapType,
   ExternalHyperlink,
   Footer,
+  FootnoteReferenceRun,
   FrameAnchorType,
   FrameWrap,
   Header,
   HorizontalPositionAlign,
   ImageRun,
   LineRuleType,
+  NoteNumberRestart,
   PageNumber,
   PageBreak,
   Packer,
   Paragraph,
+  SectionType,
   TableOfContents,
   TextRun,
   VerticalAlignSection,
@@ -26,7 +29,8 @@ import {
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens } from "./presets";
 import { decodeEmbeddedImage, type EmbeddedImageAsset } from "./embedded-image";
-import { blocksFromHtml, trimRuns, type Block, type InlineRun } from "./rich-text";
+import { resolveBookFootnotes, type ResolvedFootnote } from "./footnotes";
+import { blocksFromHtml, inlineRunsFromHtml, trimRuns, type Block, type InlineRun } from "./rich-text";
 import {
   FORMAT_INFO,
   slugifyFilename,
@@ -60,32 +64,48 @@ function linesToTextRuns(text: string, textOptions: Omit<IRunOptions, "text" | "
 function inlineToChildren(
   runs: InlineRun[],
   images: Map<string, EmbeddedImageAsset>,
-  bodySizePt: number
+  bodySizePt: number,
+  sceneFootnotes?: ReadonlyMap<string, ResolvedFootnote>
 ): ParagraphChild[] {
-  return runs.map((run) => {
-    if (run.lineBreak) return new TextRun({ break: 1 });
+  const children: ParagraphChild[] = [];
+  for (const run of runs) {
+    if (run.footnoteId) {
+      const note = sceneFootnotes?.get(run.footnoteId);
+      if (note) children.push(new FootnoteReferenceRun(note.index));
+      continue;
+    }
+    if (run.lineBreak) {
+      children.push(new TextRun({ break: 1 }));
+      continue;
+    }
     if (run.image) {
       const image = images.get(run.image.src);
-      if (!image) return new TextRun({ text: run.image.alt || "[image]" });
+      if (!image) {
+        children.push(new TextRun({ text: run.image.alt || "[image]" }));
+        continue;
+      }
       const targetHeight = bodySizePt * 96 / 72 * 1.15;
       const aspect = (run.image.width ?? image.width) / (run.image.height ?? image.height);
       const height = Math.max(1, Math.round(targetHeight));
       const width = Math.max(1, Math.round(height * aspect));
-      return new ImageRun({
+      children.push(new ImageRun({
         data: image.bytes,
         type: image.extension,
         transformation: { width, height },
         altText: { name: run.image.alt || "Equation", description: run.image.alt ?? "" }
-      });
+      }));
+      continue;
     }
     if (run.link) {
-      return new ExternalHyperlink({
+      children.push(new ExternalHyperlink({
         link: run.link,
         children: [new TextRun({ text: run.text, ...runOptions(run) })]
-      });
+      }));
+      continue;
     }
-    return new TextRun({ text: run.text, ...runOptions(run) });
-  });
+    children.push(new TextRun({ text: run.text, ...runOptions(run) }));
+  }
+  return children;
 }
 
 function blockToParagraph(block: Block, options: {
@@ -94,9 +114,10 @@ function blockToParagraph(block: Block, options: {
   bodyStyle: string;
   inlineImages: Map<string, EmbeddedImageAsset>;
   bodySizePt: number;
+  sceneFootnotes?: ReadonlyMap<string, ResolvedFootnote>;
 }): Paragraph[] {
   const children = (runs: InlineRun[]) =>
-    inlineToChildren(runs, options.inlineImages, options.bodySizePt);
+    inlineToChildren(runs, options.inlineImages, options.bodySizePt, options.sceneFootnotes);
   if (block.kind === "image") return [];
   if (block.kind === "heading") {
     return [new Paragraph({
@@ -341,6 +362,11 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
     }
   }
 
+  const bookFootnotes = resolveBookFootnotes(book, options);
+  const splitChapterSections = Boolean(options.footnotesRestartPerChapter)
+    && book.chapters.length > 0
+    && bookFootnotes.all.length > 0;
+  const chapterBodies: Paragraph[][] = [];
   const body: Paragraph[] = [];
   const imageMaxWidth = (tokens.page.widthPt - tokens.page.marginLeftPt - tokens.page.marginRightPt) * 96 / 72;
   const imageMaxHeight = Math.min(
@@ -348,20 +374,21 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
     (tokens.page.heightPt - tokens.page.marginTopPt - tokens.page.marginBottomPt) * 96 / 72
   );
   for (const [chapterIndex, chapter] of book.chapters.entries()) {
-    const pageBreakBefore = chapterIndex > 0 && options.pageBreakBeforeChapters;
+    const target = splitChapterSections ? [] as Paragraph[] : body;
+    const pageBreakBefore = !splitChapterSections && chapterIndex > 0 && options.pageBreakBeforeChapters;
     if (options.includeChapterTitles) {
-      body.push(new Paragraph({
+      target.push(new Paragraph({
         style: "ChapterTitle",
         pageBreakBefore,
         children: [new TextRun({ text: chapter.label })]
       }));
     } else if (pageBreakBefore) {
-      body.push(new Paragraph({ pageBreakBefore, spacing: { before: 0, after: 0 } }));
+      target.push(new Paragraph({ pageBreakBefore, spacing: { before: 0, after: 0 } }));
     }
 
     for (const [sceneIndex, scene] of chapter.scenes.entries()) {
       if (options.includeSceneTitles) {
-        body.push(new Paragraph({
+        target.push(new Paragraph({
           style: "SceneTitle",
           children: [new TextRun({ text: scene.title })]
         }));
@@ -375,47 +402,69 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
           }
         }
       }
+      const sceneFootnotes = bookFootnotes.byScene.get(scene);
       const dropCapIndex = options.dropCaps && tokens.dropCap && sceneIndex === 0
         ? blocks.findIndex((block) => block.kind === "paragraph" && !block.eyebrow)
         : -1;
       for (const [blockIndex, block] of blocks.entries()) {
         if (block.kind === "image") {
-          body.push(await imageToParagraph(block, imageMaxWidth, imageMaxHeight));
+          target.push(await imageToParagraph(block, imageMaxWidth, imageMaxHeight));
           continue;
         }
-        body.push(...blockToParagraph(block, {
+        target.push(...blockToParagraph(block, {
           firstInScene: blockIndex === 0,
           dropCap: blockIndex === dropCapIndex,
           bodyStyle: "BodyText",
           inlineImages,
-          bodySizePt: tokens.bodySizePt
+          bodySizePt: tokens.bodySizePt,
+          sceneFootnotes
         }));
       }
       if (sceneIndex < chapter.scenes.length - 1) {
         const separator = separatorParagraph(options.sceneSeparator);
-        if (separator) body.push(separator);
+        if (separator) target.push(separator);
       }
     }
+    if (splitChapterSections) chapterBodies.push(target);
   }
 
+  const backMatterTarget = splitChapterSections && chapterBodies.length > 0
+    ? chapterBodies[chapterBodies.length - 1]
+    : body;
   for (const page of book.backMatter) {
-    body.push(new Paragraph({ children: [new PageBreak()] }));
+    backMatterTarget.push(new Paragraph({ children: [new PageBreak()] }));
     const paragraphs = matterParagraphs(page.body);
     if (page.title) {
-      body.push(new Paragraph({
+      backMatterTarget.push(new Paragraph({
         style: "MatterTitle",
         children: linesToTextRuns(page.title)
       }));
     }
     for (const paragraph of paragraphs) {
-      body.push(new Paragraph({
+      backMatterTarget.push(new Paragraph({
         style: "MatterBody",
         children: linesToTextRuns(paragraph)
       }));
     }
     if (page.blank && !page.title && paragraphs.length === 0) {
-      body.push(new Paragraph({ children: [] }));
+      backMatterTarget.push(new Paragraph({ children: [] }));
     }
+  }
+
+  const footnotesMap: Record<number, { children: Paragraph[] }> = {};
+  for (const note of bookFootnotes.all) {
+    const fnRuns = inlineRunsFromHtml(note.html);
+    const fnImages = new Map<string, EmbeddedImageAsset>();
+    for (const run of fnRuns) {
+      if (run.image && !fnImages.has(run.image.src)) {
+        fnImages.set(run.image.src, await decodeEmbeddedImage(run.image.src));
+      }
+    }
+    footnotesMap[note.index] = {
+      children: [new Paragraph({
+        children: fnRuns.length > 0 ? inlineToChildren(fnRuns, fnImages, tokens.bodySizePt) : []
+      })]
+    };
   }
 
   const sections: ISectionOptions[] = [];
@@ -435,32 +484,53 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
     });
   }
 
-  sections.push({
-    properties: { page: pageProperties },
-    headers: tokens.runningHeader
-      ? { default: new Header({ children: [new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [new TextRun({
-          text: book.author ? `${book.author} / ${book.title}` : book.title,
-          size: 18,
-          color: "777777",
-          allCaps: true
-        })]
-      })] }) }
-      : undefined,
-    footers: tokens.pageNumbers
-      ? { default: new Footer({ children: [new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [new TextRun({ children: [PageNumber.CURRENT], size: 18, color: "777777" })]
-      })] }) }
-      : undefined,
-    children: body
-  });
+  const bodyHeaders = tokens.runningHeader
+    ? { default: new Header({ children: [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({
+        text: book.author ? `${book.author} / ${book.title}` : book.title,
+        size: 18,
+        color: "777777",
+        allCaps: true
+      })]
+    })] }) }
+    : undefined;
+  const bodyFooters = tokens.pageNumbers
+    ? { default: new Footer({ children: [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({ children: [PageNumber.CURRENT], size: 18, color: "777777" })]
+    })] }) }
+    : undefined;
+
+  if (splitChapterSections) {
+    chapterBodies.forEach((chapterBody, chapterIndex) => {
+      sections.push({
+        properties: {
+          page: pageProperties,
+          type: chapterIndex > 0
+            ? (options.pageBreakBeforeChapters ? SectionType.NEXT_PAGE : SectionType.CONTINUOUS)
+            : undefined,
+          footnoteProperties: { restart: NoteNumberRestart.EACH_SECTION }
+        },
+        headers: bodyHeaders,
+        footers: bodyFooters,
+        children: chapterBody
+      });
+    });
+  } else {
+    sections.push({
+      properties: { page: pageProperties },
+      headers: bodyHeaders,
+      footers: bodyFooters,
+      children: body
+    });
+  }
 
   const doc = new Document({
     title: book.title,
     creator: book.author || undefined,
     description: book.subtitle || undefined,
+    footnotes: bookFootnotes.all.length > 0 ? footnotesMap : undefined,
     styles: {
       default: {
         document: {

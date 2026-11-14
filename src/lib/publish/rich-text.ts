@@ -1,3 +1,5 @@
+import { FOOTNOTE_REF_CLASS, isValidFootnoteId } from "../sanitize";
+
 export type InlineStyle = {
   bold?: boolean;
   italic?: boolean;
@@ -11,6 +13,8 @@ export type InlineRun = InlineStyle & {
   lineBreak?: boolean;
   /** Inline equation/diagram image. Text is empty when this is present. */
   image?: { src: string; alt: string; width?: number; height?: number };
+  /** Inline footnote reference id (`data-footnote-id`). Text is empty when this is present. */
+  footnoteId?: string;
 };
 
 export type BlockKind = "paragraph" | "heading" | "quote" | "list" | "image";
@@ -37,6 +41,14 @@ function collectInline(node: Node, style: InlineStyle, output: InlineRun[]) {
 
   if (node.tagName === "BR") {
     output.push({ text: "", lineBreak: true, ...style });
+    return;
+  }
+
+  if (node.tagName === "SUP" && node.classList.contains(FOOTNOTE_REF_CLASS)) {
+    const id = node.getAttribute("data-footnote-id") ?? "";
+    if (isValidFootnoteId(id)) {
+      output.push({ text: "", ...style, footnoteId: id });
+    }
     return;
   }
 
@@ -73,19 +85,20 @@ function collectInline(node: Node, style: InlineStyle, output: InlineRun[]) {
 }
 
 export function trimRuns(runs: InlineRun[]): InlineRun[] {
-  const visible = (run: InlineRun) => run.lineBreak || Boolean(run.image) || run.text.trim().length > 0;
+  const visible = (run: InlineRun) =>
+    run.lineBreak || Boolean(run.image) || Boolean(run.footnoteId) || run.text.trim().length > 0;
   const result = runs
     .map((run) => ({ ...run }))
-    .filter((run) => run.lineBreak || Boolean(run.image) || run.text.length > 0);
+    .filter((run) => run.lineBreak || Boolean(run.image) || Boolean(run.footnoteId) || run.text.length > 0);
   const first = result.findIndex(visible);
   if (first < 0) return [];
   const last = result.length - 1 - [...result].reverse().findIndex(visible);
   const trimmed = result.slice(first, last + 1);
-  if (trimmed.length > 0 && !trimmed[0].lineBreak && !trimmed[0].image) {
+  if (trimmed.length > 0 && !trimmed[0].lineBreak && !trimmed[0].image && !trimmed[0].footnoteId) {
     trimmed[0].text = trimmed[0].text.trimStart();
   }
   if (trimmed.length > 0 && !trimmed[trimmed.length - 1].lineBreak
-    && !trimmed[trimmed.length - 1].image) {
+    && !trimmed[trimmed.length - 1].image && !trimmed[trimmed.length - 1].footnoteId) {
     trimmed[trimmed.length - 1].text = trimmed[trimmed.length - 1].text.trimEnd();
   }
   return trimmed;
@@ -95,6 +108,13 @@ function blockRuns(node: Node): InlineRun[] {
   const runs: InlineRun[] = [];
   collectInline(node, {}, runs);
   return trimRuns(runs);
+}
+
+/** Parses an inline HTML fragment (such as a footnote body) into styled inline runs. */
+export function inlineRunsFromHtml(html: string): InlineRun[] {
+  if (!html) return [];
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  return blockRuns(parsed.body);
 }
 
 function splitAroundImages(node: Node): Node[] {

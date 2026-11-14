@@ -265,6 +265,56 @@ describe("open-folder sync", () => {
     expect(document?.content).toContain(image);
   });
 
+  it("round-trips footnotes through the open folder layout and applies external edits", async () => {
+    const fs = new MemoryFileSystem();
+    const fixture = projectFixture();
+    const footnotes = [
+      { id: "fn-1", html: `See <em>Source</em> and <a href="https://example.test">notes</a>.` },
+      { id: "fn-2", html: `Second <strong>note</strong>.` }
+    ];
+    const withFootnotes: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((document) => document.id === "doc-1"
+        ? {
+          ...document,
+          content: `<p>First<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup> and second<sup class="footnote-ref" data-footnote-id="fn-2" contenteditable="false"></sup>.</p>`,
+          footnotes
+        }
+        : document)
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync("", [createStoredProject(withFootnotes, "device-a", 1_000)], {}, 1_000, "device-a");
+
+    const mdPath = "projects/project-1/documents/doc-1.md";
+    const markdown = await fs.readText(mdPath);
+    expect(markdown).toContain("First[^fn-1] and second[^fn-2].");
+    expect(markdown).toContain("[^fn-1]: See _Source_ and [notes](https://example.test).");
+    expect(markdown).toContain("[^fn-2]: Second **note**.");
+
+    const connection = await new OpenFolderSyncProvider(fs).connect("");
+    const reopenedDoc = connection.projects[0].project.documents.find((doc) => doc.id === "doc-1");
+    expect(reopenedDoc?.footnotes).toEqual(footnotes);
+    expect(reopenedDoc?.content).toContain(`data-footnote-id="fn-1"`);
+    expect(reopenedDoc?.content).toContain(`data-footnote-id="fn-2"`);
+    expect(projectsHaveSameContent(first.projects[0].project, connection.projects[0].project)).toBe(true);
+
+    const second = await new OpenFolderSyncProvider(fs)
+      .sync("", [first.projects[0]], first.lastSynced, 1_100, "device-a");
+    expect(second.conflicts).toBe(0);
+
+    // External Markdown edit to a footnote definition updates the decoded footnote.
+    const edited = markdown.replace("Second **note**.", "Edited _note_.");
+    await fs.writeText(mdPath, edited);
+    const afterExternal = await new OpenFolderSyncProvider(fs).connect("");
+    expect(afterExternal.projects[0].updatedBy).toBe("external");
+    expect(afterExternal.projects[0].project.documents.find((doc) => doc.id === "doc-1")?.footnotes)
+      .toEqual([
+        footnotes[0],
+        { id: "fn-2", html: "Edited <em>note</em>." }
+      ]);
+  });
+
   it("applies external Markdown edits", async () => {
     const fs = new MemoryFileSystem();
     await new OpenFolderSyncProvider(fs)

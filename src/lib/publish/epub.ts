@@ -1,6 +1,7 @@
 import { strToU8, zipSync, type Zippable } from "fflate";
 import { markDropCapParagraph } from "./content";
 import { decodeEmbeddedImage } from "./embedded-image";
+import { resolveBookFootnotes, type BookFootnotes } from "./footnotes";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens } from "./presets";
 import { escapeXml, escapeXmlAttribute, htmlToXhtml } from "./xhtml";
@@ -32,7 +33,7 @@ function separatorXhtml(separator: SceneSeparator): string {
 function xhtmlPage(title: string, body: string, bodyClass = ""): string {
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
 <head>
   <meta charset="utf-8" />
   <title>${escapeXml(title)}</title>
@@ -116,7 +117,8 @@ function chapterXhtml(
   book: CompiledBook,
   options: PublishOptions,
   chapterIndex: number,
-  imagePaths: Map<string, string>
+  imagePaths: Map<string, string>,
+  bookFootnotes: BookFootnotes
 ): string {
   const chapter = book.chapters[chapterIndex];
   const first = chapterIndex === 0;
@@ -124,6 +126,7 @@ function chapterXhtml(
     ? `<h2 class="chapter-title">${escapeXml(chapter.label)}</h2>`
     : "";
   const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
+  const seenRefIds = new Set<string>();
   const scenes = chapter.scenes.map((scene, index) => {
     const sceneTitle = options.includeSceneTitles
       ? `<h3 class="scene-title">${escapeXml(scene.title)}</h3>`
@@ -132,14 +135,38 @@ function chapterXhtml(
       ? separatorXhtml(options.sceneSeparator)
       : "";
     const sceneHtml = dropCaps && index === 0 ? markDropCapParagraph(scene.html) : scene.html;
-    return `<div class="scene">${sceneTitle}${htmlToXhtml(sceneHtml, (src) => imagePaths.get(src) ?? src)}</div>${separator}`;
+    const sceneFootnotes = bookFootnotes.byScene.get(scene);
+    const xhtml = htmlToXhtml(sceneHtml, {
+      resolveImage: (src) => imagePaths.get(src) ?? src,
+      resolveFootnote: (id) => {
+        const note = sceneFootnotes?.get(id);
+        if (!note) return undefined;
+        const refId = `fnref-${note.number}`;
+        const emitRefId = !seenRefIds.has(refId);
+        seenRefIds.add(refId);
+        return {
+          number: note.number,
+          href: `#fn-${note.number}`,
+          ...(emitRefId ? { refId } : {})
+        };
+      }
+    });
+    return `<div class="scene">${sceneTitle}${xhtml}</div>${separator}`;
   }).join("\n");
+
+  const chapterNotes = bookFootnotes.byChapter.get(chapter) ?? [];
+  const footnotesBlock = chapterNotes.length > 0
+    ? `\n<section class="footnotes" epub:type="footnotes">\n${chapterNotes.map((note) => {
+      const noteHtml = htmlToXhtml(note.html, (src) => imagePaths.get(src) ?? src);
+      return `  <aside epub:type="footnote" id="fn-${note.number}" class="footnote"><p><span class="footnote-number">${note.number}.</span> ${noteHtml} <a href="#fnref-${note.number}" class="footnote-backref" aria-label="Back to reference ${note.number}">↩</a></p></aside>`;
+    }).join("\n")}\n</section>`
+    : "";
 
   const breakClass = !first && options.pageBreakBeforeChapters ? " chapter-break" : "";
   const dropCapsClass = dropCaps ? " drop-caps" : "";
   return xhtmlPage(
     chapter.label,
-    `<section class="chapter${breakClass}">${heading}\n${scenes}</section>`,
+    `<section class="chapter${breakClass}">${heading}\n${scenes}${footnotesBlock}</section>`,
     `chapter-page${dropCapsClass}`
   );
 }
@@ -259,6 +286,17 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
   margin: 0 auto;
   border-top: 1px solid #d9dbd4;
 }
+.footnotes {
+  margin-top: 2em;
+  padding-top: 0.9em;
+  border-top: 1px solid #d9dbd4;
+  font-size: 0.88em;
+}
+.footnotes aside { margin: 0 0 0.55em; text-indent: 0; }
+.footnotes aside p { margin: 0; text-indent: 0; }
+.footnote-number { font-weight: 600; margin-right: 0.25em; }
+.footnote-ref { text-decoration: none; }
+.footnote-backref { text-decoration: none; margin-left: 0.3em; }
 ${options.dropCaps && tokens.dropCap ? `
 .scene .drop-cap { text-indent: 0; }
 .drop-caps .scene .drop-cap::first-letter {
@@ -464,8 +502,11 @@ ${spine.join("\n")}
   book.frontMatter.forEach((page, index) => {
     files[`OEBPS/text/front-matter-${index + 1}.xhtml`] = strToU8(matterXhtml(page, "front"));
   });
+  const bookFootnotes = resolveBookFootnotes(book, options);
   book.chapters.forEach((_, index) => {
-    files[`OEBPS/text/chapter-${index + 1}.xhtml`] = strToU8(chapterXhtml(book, options, index, imagePaths));
+    files[`OEBPS/text/chapter-${index + 1}.xhtml`] = strToU8(
+      chapterXhtml(book, options, index, imagePaths, bookFootnotes)
+    );
   });
   book.backMatter.forEach((page, index) => {
     files[`OEBPS/text/back-matter-${index + 1}.xhtml`] = strToU8(matterXhtml(page, "back"));

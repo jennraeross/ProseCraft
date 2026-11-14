@@ -90,6 +90,12 @@ export type PlaceSheet = {
   dangers: string;
 };
 
+/** Definition of a footnote attached to a document. */
+export type FootnoteDef = {
+  id: string;
+  html: string;
+};
+
 export type DocumentData = {
   id: string;
   title: string;
@@ -104,6 +110,8 @@ export type DocumentData = {
   trashedWithChapterId?: string;
   /** Id of a project label (see `ProjectData.labels`). */
   labelId?: string;
+  /** Footnotes referenced in `content`, stored as sanitized inline HTML. */
+  footnotes?: FootnoteDef[];
   /**
    * Legacy structured profiles from the former Characters and Places spaces.
    * They are converted into page content by the Wiki migration and are never
@@ -160,11 +168,21 @@ export type PublishOptions = {
   pageBreakBeforeChapters: boolean;
   sceneSeparator: SceneSeparator;
   dropCaps: boolean;
+  footnotesRestartPerChapter: boolean;
   subtitle: string;
   copyright: string;
   dedication: string;
   frontMatter: MatterPage[];
   backMatter: MatterPage[];
+};
+
+export type CompiledFootnote = {
+  /** Original footnote ID from `DocumentData.footnotes`. */
+  id: string;
+  /** Sanitized inline HTML of the footnote body. */
+  html: string;
+  /** 1-based number in manuscript compile order. */
+  number: number;
 };
 
 export type CompiledScene = {
@@ -174,6 +192,7 @@ export type CompiledScene = {
   html: string;
   text: string;
   words: number;
+  footnotes?: CompiledFootnote[];
 };
 
 export type CompiledChapter = {
@@ -292,6 +311,7 @@ export function defaultPublishOptions(): PublishOptions {
     pageBreakBeforeChapters: true,
     sceneSeparator: "hash",
     dropCaps: true,
+    footnotesRestartPerChapter: false,
     subtitle: "",
     copyright: "",
     dedication: "",
@@ -352,6 +372,9 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     pageBreakBeforeChapters: typeof value.pageBreakBeforeChapters === "boolean" ? value.pageBreakBeforeChapters : defaults.pageBreakBeforeChapters,
     sceneSeparator: separators.includes(value.sceneSeparator as SceneSeparator) ? value.sceneSeparator as SceneSeparator : defaults.sceneSeparator,
     dropCaps: typeof value.dropCaps === "boolean" ? value.dropCaps : defaults.dropCaps,
+    footnotesRestartPerChapter: typeof value.footnotesRestartPerChapter === "boolean"
+      ? value.footnotesRestartPerChapter
+      : defaults.footnotesRestartPerChapter,
     subtitle: typeof value.subtitle === "string" ? value.subtitle.slice(0, 200) : defaults.subtitle,
     copyright: typeof value.copyright === "string" ? value.copyright.slice(0, 500) : defaults.copyright,
     dedication: typeof value.dedication === "string" ? value.dedication.slice(0, 1000) : defaults.dedication,

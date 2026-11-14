@@ -99,6 +99,30 @@ describe("text offsets in the editor DOM", () => {
     range.selectNodeContents(outside);
     expect(offsetsFromRange(element, range)).toBeNull();
   });
+
+  it("keeps commentText, offsets, and anchors unchanged when footnote markers are present", () => {
+    const plain = document.createElement("div");
+    plain.innerHTML = "<p>She said no. Then he said yes, and left.</p>";
+    const plainText = commentText(plain);
+    const expectedAnchor = buildAnchor(plainText, 13, 28)!;
+    expect(expectedAnchor.quote).toBe("Then he said ye");
+
+    const withMarkers = document.createElement("div");
+    withMarkers.innerHTML =
+      `<p>She said no.<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false" data-num="1"></sup>`
+      + ` Then he<sup class="footnote-ref" data-footnote-id="fn-2" contenteditable="false" data-num="2"></sup>`
+      + ` said yes, and left.</p>`;
+    document.body.append(withMarkers);
+
+    expect(commentText(withMarkers)).toBe(plainText);
+    expect(locateAnchor(commentText(withMarkers), expectedAnchor)).toEqual({ start: 13, end: 28 });
+
+    const roundTripped = rangeFromOffsets(withMarkers, 13, 28)!;
+    expect(roundTripped).not.toBeNull();
+    expect(roundTripped.toString()).toBe("Then he said ye");
+    expect(offsetsFromRange(withMarkers, roundTripped)).toEqual({ start: 13, end: 28 });
+    withMarkers.remove();
+  });
 });
 
 describe("comments in storage", () => {

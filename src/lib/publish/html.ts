@@ -3,7 +3,9 @@ import {
   defaultPreviewPalette,
   type PreviewPalette
 } from "../color-schemes";
+import { FOOTNOTE_REF_CLASS } from "../sanitize";
 import { markDropCapParagraph } from "./content";
+import { resolveBookFootnotes, type BookFootnotes, type ResolvedFootnote } from "./footnotes";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens, type PresetTokens } from "./presets";
 import { listManuscriptSections, type ManuscriptSection } from "./sections";
@@ -82,12 +84,50 @@ function matterPageHtml(page: CompiledMatterPage, placement: "front" | "back"): 
   return `<section class="matter-page ${placement}-matter${page.blank && !title && !paragraphs ? " blank-matter-page" : ""}">\n${title}${paragraphs}${paragraphs ? "\n" : ""}</section>`;
 }
 
+function footnoteSuffix(note: ResolvedFootnote, restartPerChapter: boolean): string {
+  return restartPerChapter ? `ch${note.chapterIndex + 1}-${note.number}` : String(note.number);
+}
+
+function renderSceneFootnotesHtml(
+  html: string,
+  sceneFootnotes: ReadonlyMap<string, ResolvedFootnote> | undefined,
+  seenRefIds: Set<string>,
+  restartPerChapter: boolean
+): string {
+  if (!sceneFootnotes || sceneFootnotes.size === 0 || !html.includes(FOOTNOTE_REF_CLASS)) return html;
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  let changed = false;
+  for (const sup of Array.from(parsed.body.querySelectorAll<HTMLElement>(`sup.${FOOTNOTE_REF_CLASS}[data-footnote-id]`))) {
+    const id = sup.getAttribute("data-footnote-id") ?? "";
+    const note = sceneFootnotes.get(id);
+    if (!note) continue;
+    const suffix = footnoteSuffix(note, restartPerChapter);
+    const refId = `fnref-${suffix}`;
+    const replacement = parsed.createElement("sup");
+    replacement.className = FOOTNOTE_REF_CLASS;
+    if (!seenRefIds.has(refId)) {
+      replacement.id = refId;
+      seenRefIds.add(refId);
+    }
+    const link = parsed.createElement("a");
+    link.setAttribute("href", `#fn-${suffix}`);
+    link.textContent = String(note.number);
+    replacement.append(link);
+    sup.replaceWith(replacement);
+    changed = true;
+  }
+  return changed ? parsed.body.innerHTML : html;
+}
+
 function chapterHtml(
   chapter: CompiledChapter,
   options: PublishOptions,
   first: boolean,
-  dropCaps: boolean
+  dropCaps: boolean,
+  bookFootnotes: BookFootnotes
 ): string {
+  const seenRefIds = new Set<string>();
+  const restartPerChapter = Boolean(options.footnotesRestartPerChapter);
   const scenes = chapter.scenes.map((scene, index) => {
     const sceneTitle = options.includeSceneTitles
       ? `<h3 class="scene-title">${escapeXml(scene.title)}</h3>`
@@ -95,16 +135,30 @@ function chapterHtml(
     const separator = index < chapter.scenes.length - 1
       ? separatorMarkup(options.sceneSeparator)
       : "";
-    const sceneHtml = dropCaps && index === 0 ? markDropCapParagraph(scene.html) : scene.html;
+    const baseHtml = dropCaps && index === 0 ? markDropCapParagraph(scene.html) : scene.html;
+    const sceneHtml = renderSceneFootnotesHtml(
+      baseHtml,
+      bookFootnotes.byScene.get(scene),
+      seenRefIds,
+      restartPerChapter
+    );
     return `<div class="scene">${sceneTitle}${sceneHtml}</div>${separator}`;
   }).join("\n");
+
+  const chapterNotes = bookFootnotes.byChapter.get(chapter) ?? [];
+  const footnotesHtml = chapterNotes.length > 0
+    ? `\n<section class="footnotes" aria-label="Footnotes">\n  <ol>\n${chapterNotes.map((note) => {
+      const suffix = footnoteSuffix(note, restartPerChapter);
+      return `    <li id="fn-${suffix}" value="${note.number}">${note.html} <a href="#fnref-${suffix}" class="footnote-backref" aria-label="Back to reference ${note.number}">↩</a></li>`;
+    }).join("\n")}\n  </ol>\n</section>`
+    : "";
 
   const breakClass = !first && options.pageBreakBeforeChapters ? " chapter-break" : "";
   const heading = options.includeChapterTitles
     ? `<h2 class="chapter-title">${escapeXml(chapter.label)}</h2>`
     : "";
 
-  return `<section class="chapter${breakClass}" id="chapter-${escapeXmlAttribute(chapter.id)}">${heading}\n${scenes}</section>`;
+  return `<section class="chapter${breakClass}" id="chapter-${escapeXmlAttribute(chapter.id)}">${heading}\n${scenes}${footnotesHtml}</section>`;
 }
 
 export function buildManuscriptSectionHtml(
@@ -112,7 +166,8 @@ export function buildManuscriptSectionHtml(
   options: PublishOptions,
   section: ManuscriptSection,
   preview = false,
-  dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap
+  dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap,
+  bookFootnotes = resolveBookFootnotes(book, options)
 ): string {
   switch (section.kind) {
     case "cover":
@@ -137,15 +192,16 @@ export function buildManuscriptSectionHtml(
       const index = book.chapters.findIndex((chapter) => chapter.id === section.chapterId);
       const chapter = book.chapters[index];
       if (!chapter) return "";
-      return chapterHtml(chapter, options, preview || index === 0, dropCaps);
+      return chapterHtml(chapter, options, preview || index === 0, dropCaps, bookFootnotes);
     }
   }
 }
 
 export function buildManuscriptBody(book: CompiledBook, options: PublishOptions): string {
   const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
+  const bookFootnotes = resolveBookFootnotes(book, options);
   return listManuscriptSections(book, options)
-    .map((section) => buildManuscriptSectionHtml(book, options, section, false, dropCaps))
+    .map((section) => buildManuscriptSectionHtml(book, options, section, false, dropCaps, bookFootnotes))
     .filter(Boolean)
     .join("\n");
 }
@@ -419,6 +475,16 @@ function manuscriptCss(
       margin: 0 auto;
       border-top: 1px solid var(--rule);
     }
+    .footnotes {
+      margin-top: 2em;
+      padding-top: 0.9em;
+      border-top: 1px solid var(--rule);
+      font-size: 0.88em;
+    }
+    .footnotes ol { margin: 0; padding-left: 1.4em; }
+    .footnotes li { margin: 0 0 0.45em; text-indent: 0; }
+    .footnote-ref a { color: inherit; text-decoration: none; }
+    .footnote-backref { color: var(--muted); text-decoration: none; margin-left: 0.3em; }
     ${dropCaps ? `
     .scene .drop-cap { text-indent: 0; }
     .scene .drop-cap::first-letter {

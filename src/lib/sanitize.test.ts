@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeHtml } from "./sanitize";
+import { sanitizeHtml, sanitizeInlineHtml } from "./sanitize";
 
 const SRC = "data:image/png;base64,AA==";
 
@@ -39,6 +39,46 @@ describe("sanitizeHtml image layout", () => {
   it("keeps valid pixel sizes next to the layout", () => {
     expect(sanitizeHtml(`<img src="${SRC}" alt="" width="320" height="200" data-size="medium">`))
       .toBe(`<img src="${SRC}" alt="" width="320" height="200" data-size="medium">`);
+  });
+});
+
+describe("sanitizeHtml footnotes", () => {
+  it("keeps valid footnote markers empty and non-editable", () => {
+    expect(sanitizeHtml(
+      `<p>Text<sup class="footnote-ref extra" data-footnote-id="fn-k3x9" data-num="4" contenteditable="true" onclick="alert(1)" style="color:red">4<b>bad</b></sup>.</p>`
+    )).toBe(`<p>Text<sup class="footnote-ref" data-footnote-id="fn-k3x9" contenteditable="false"></sup>.</p>`);
+  });
+
+  it("drops footnote markers with missing or invalid ids", () => {
+    expect(sanitizeHtml(`<p>A<sup class="footnote-ref">1</sup>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<sup class="footnote-ref" data-footnote-id="bad id!">1</sup>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<sup class="footnote-ref" data-footnote-id="${"a".repeat(33)}">1</sup>B</p>`)).toBe(`<p>AB</p>`);
+  });
+
+  it("unwraps ordinary sup tags without the footnote-ref class", () => {
+    expect(sanitizeHtml(`<p>x<sup>2</sup></p>`)).toBe(`<p>x2</p>`);
+  });
+});
+
+describe("sanitizeInlineHtml", () => {
+  it("allows inline formatting, links, and line breaks", () => {
+    const html = `See <b>bold</b>, <strong>strong</strong>, <i>italic</i>, <em>em</em>, `
+      + `<u>under</u>, <del>strike</del>, <code>code</code>, <a href="https://example.test" onclick="x()">link</a><br>next.`;
+    expect(sanitizeInlineHtml(html)).toBe(
+      `See <b>bold</b>, <strong>strong</strong>, <i>italic</i>, <em>em</em>, `
+      + `<u>under</u>, <s>strike</s>, <code>code</code>, <a href="https://example.test">link</a><br>next.`
+    );
+  });
+
+  it("blocks headings, images, tables, scene breaks, and nested footnote markers", () => {
+    const hostile = `<h1>Heading</h1>`
+      + `<img src="${SRC}" alt="pic">`
+      + `<table><tbody><tr><td>Cell</td></tr></tbody></table>`
+      + `<div class="scene-break">* * *</div>`
+      + `<div class="math-block" data-tex="x^2"></div>`
+      + `<sup class="footnote-ref" data-footnote-id="fn-1">1</sup>`
+      + `<a href="javascript:alert(1)">bad</a>`;
+    expect(sanitizeInlineHtml(hostile)).toBe(`HeadingCell<a>bad</a>`);
   });
 });
 
