@@ -46,6 +46,7 @@
     SlidersHorizontal,
     SpellCheck,
     Square,
+    Superscript,
     Trash2,
     Type,
     Undo2,
@@ -181,7 +182,23 @@
     type RichTextFontPreference,
     type SystemFontFamily
   } from "$lib/editor-fonts";
-  import { sanitizeHtml as cleanHtml } from "$lib/sanitize";
+  import { FOOTNOTE_REF_CLASS, sanitizeHtml as cleanHtml, sanitizeInlineHtml } from "$lib/sanitize";
+  import FootnotePopover from "$lib/FootnotePopover.svelte";
+  import {
+    FOOTNOTE_REF_SELECTOR,
+    addFootnote,
+    decodeBodyUndoValue,
+    encodeBodyUndoValue,
+    extractFootnoteIds,
+    findOrphanFootnotes,
+    footnoteMarkerHtml,
+    numberedFootnotes,
+    pruneOrphanFootnotes,
+    removeFootnote,
+    renumberFootnoteMarkers,
+    updateFootnote,
+    type UndoFootnoteScopeEntry
+  } from "$lib/footnotes";
   import {
     buildChapterHtml,
     isSceneBreakElement,
@@ -225,13 +242,14 @@
     chapterLabel as formatChapterLabel,
     isAutomaticallyNumberedChapter as isAutoNumberedChapter
   } from "$lib/publish/chapters";
-  import { htmlToMarkdown, markdownToHtml } from "$lib/publish/markdown";
+  import { htmlToMarkdown, markdownToDocument, markdownToHtml } from "$lib/publish/markdown";
   import {
     defaultPublishOptions,
     normalizePublishOptions,
     SPACE_NAMES,
     type ChapterData,
     type DocumentData,
+    type FootnoteDef,
     type BinderFolder,
     type LabelDef,
     type PublishOptions,
@@ -635,7 +653,20 @@
   let compactProgressLayout = $state(initialViewportWidth <= 1050);
   let leftSidebarHovered = $state(false);
   let rightSidebarHovered = $state(false);
-  let rightSidebarTab = $state<"progress" | "comments" | "snapshots">("progress");
+  let rightSidebarTab = $state<"progress" | "comments" | "snapshots" | "footnotes">("progress");
+  let liveEditorHtml = $state("");
+  let knownEditorFootnoteIds = new Set<string>();
+  let footnotePopover = $state<{
+    id: string;
+    docId: string;
+    number: number | null;
+    initialHtml: string;
+    left: number;
+    top: number;
+    dirty: boolean;
+    beforeSelection: CaretSelection;
+  } | null>(null);
+  let footnoteFlashTimer: ReturnType<typeof setTimeout> | undefined;
   // On phones both sidebars are overlay drawers. On tablets the progress
   // sidebar still overlays, but the binder remains part of the layout.
   let mobileDrawerOpen = $derived(
@@ -1406,7 +1437,7 @@
         title = active.title;
         clearRichTextFade();
         setEditorContent(active.content);
-        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content, active.footnotes));
       }
     } else {
       activeDocumentId = "";
@@ -3384,16 +3415,35 @@
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const active = documents.find((doc) => doc.id === activeDocumentId);
-    setMarkdownSource(inChapterMode ? chapterMarkdownSource() : (active?.markdownSource ?? htmlToMarkdown(editor.innerHTML)));
+    setMarkdownSource(inChapterMode ? chapterMarkdownSource() : (active?.markdownSource ?? htmlToMarkdown(editor.innerHTML, active?.footnotes)));
     selectEditorImage(null);
+    closeFootnotePopover(false);
     clearRichTextFade();
     markdownEditorMode = true;
+  }
+
+  function applySingleDocumentMarkdown(source: string): string {
+    const parsed = markdownToDocument(source);
+    const html = cleanHtml(parsed.html);
+    documents = documents.map((doc) => {
+      if (doc.id !== activeDocumentId) return doc;
+      const { footnotes: _oldFootnotes, ...rest } = doc;
+      return parsed.footnotes.length > 0
+        ? { ...rest, content: html, markdownSource: source, footnotes: parsed.footnotes }
+        : { ...rest, content: html, markdownSource: source };
+    });
+    return html;
   }
 
   /** Writes the chapter markdown source back to scene documents. */
   function applyMarkdownSourceToDocs() {
     const mdSections = splitChapterMarkdown(markdownSource);
-    writeChapterSections(mdSections.map((section) => cleanHtml(markdownToHtml(section))), mdSections);
+    const parsedSections = mdSections.map((section) => markdownToDocument(section));
+    writeChapterSections(
+      parsedSections.map((section) => cleanHtml(section.html)),
+      mdSections,
+      parsedSections.map((section) => section.footnotes)
+    );
   }
 
   function switchToRichTextEditor() {
@@ -3406,11 +3456,8 @@
         publishOptions.sceneSeparator
       ));
     } else {
-      const html = cleanHtml(markdownToHtml(markdownSource));
+      const html = applySingleDocumentMarkdown(markdownSource);
       setEditorContent(html);
-      documents = documents.map((doc) => doc.id === activeDocumentId
-        ? { ...doc, content: html, markdownSource }
-        : doc);
     }
     markdownEditorMode = false;
     refreshCounts();
@@ -3427,16 +3474,13 @@
 
   function handleMarkdownInput() {
     const previousWordCount = lastEditorWordCount;
-    if (inChapterMode) applyMarkdownSourceToDocs();
-    else {
-      const single = cleanHtml(markdownToHtml(markdownSource));
-      documents = documents.map((doc) => doc.id === activeDocumentId
-        ? { ...doc, content: single, markdownSource }
-        : doc);
+    let html = "";
+    if (inChapterMode && activeChapter) {
+      applyMarkdownSourceToDocs();
+      html = buildChapterHtml(scenesInChapter(activeChapter.id).map((doc) => doc.content), publishOptions.sceneSeparator);
+    } else {
+      html = applySingleDocumentMarkdown(markdownSource);
     }
-    const html = inChapterMode && activeChapter
-      ? buildChapterHtml(scenesInChapter(activeChapter.id).map((doc) => doc.content), publishOptions.sceneSeparator)
-      : cleanHtml(markdownToHtml(markdownSource));
     const text = htmlToPlainText(html, { rich: "omit" });
     wordCount = countWords(text);
     characterCount = text.replace(/\n/g, "").length;
@@ -3731,6 +3775,18 @@
 
   function handleEditorClick(event: MouseEvent) {
     const target = event.target;
+    const footnoteRef = target instanceof Element
+      ? target.closest<HTMLElement>(FOOTNOTE_REF_SELECTOR)
+      : null;
+    if (footnoteRef && editor.contains(footnoteRef)) {
+      event.preventDefault();
+      selectEditorImage(null);
+      hideHarperPopover();
+      hideCommentSelectionPopover();
+      openFootnotePopoverForMarker(footnoteRef);
+      return;
+    }
+    if (footnotePopover) closeFootnotePopover(false);
     const divider = target instanceof Element ? target.closest<HTMLElement>(".scene-break") : null;
     if (divider && editor.contains(divider)) {
       event.preventDefault();
@@ -3998,14 +4054,19 @@
     if (!editor) return;
     editor.innerHTML = html;
     ensureParagraphsAroundRichBlocks(editor);
+    renumberFootnoteMarkers(editor);
+    const cleaned = cleanHtml(html);
+    liveEditorHtml = cleaned;
+    knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
     selectEditorImage(null);
     paintEditorImageWidths();
-    if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
+    if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), encodeCurrentBodyUndo(cleaned));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
     syncScreenplayElementType();
     updateScreenplayMetrics();
     hideHarperPopover();
+    if (!applyingUndoHistory) footnotePopover = null;
     scheduleHarperLint();
   }
 
@@ -4419,19 +4480,26 @@
     if (!editor) return;
     if (inChapterMode && activeChapter) {
       if (markdownEditorMode) {
-        const mdSections = splitChapterMarkdown(markdownSource);
-        writeChapterSections(mdSections.map((section) => cleanHtml(markdownToHtml(section))), mdSections);
+        applyMarkdownSourceToDocs();
       } else {
         writeChapterSections(splitChapterHtml(cleanHtml(editor.innerHTML)));
       }
       chapters = chapters.map((chapter) => chapter.id === activeChapter.id ? { ...chapter, title } : chapter);
       persistChapters();
+    } else if (markdownEditorMode) {
+      const parsed = markdownToDocument(markdownSource);
+      const content = cleanHtml(parsed.html);
+      documents = documents.map((doc) => {
+        if (doc.id !== activeDocumentId) return doc;
+        const { footnotes: _oldFootnotes, ...rest } = doc;
+        return parsed.footnotes.length > 0
+          ? { ...rest, title, content, markdownSource, footnotes: parsed.footnotes }
+          : { ...rest, title, content, markdownSource };
+      });
     } else {
-      const content = markdownEditorMode
-        ? cleanHtml(markdownToHtml(markdownSource))
-        : cleanHtml(editor.innerHTML);
+      const content = cleanHtml(editor.innerHTML);
       documents = documents.map((doc) => doc.id === activeDocumentId
-        ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
+        ? { ...doc, title, content }
         : doc);
     }
     commitPageState();
@@ -4760,7 +4828,7 @@
     // exactly like the beforeinput handler does; handleInput() records it.
     commitPageState();
     const key = bodyUndoKey();
-    if (!undoManager.has(key)) undoManager.sync(key, cleanHtml(editor.innerHTML));
+    if (!undoManager.has(key)) undoManager.sync(key, encodeCurrentBodyUndo(cleanHtml(editor.innerHTML)));
     const caret = encodeSelection(editor);
     pendingEdit = {
       kind: "other",
@@ -4976,6 +5044,343 @@
     persistNow();
   }
 
+  function footnoteDocs(): DocumentData[] {
+    if (inChapterMode && activeChapter) return scenesInChapter(activeChapter.id);
+    const doc = documents.find((entry) => entry.id === activeDocumentId);
+    return doc ? [doc] : [];
+  }
+
+  const activeFootnoteScope = $derived.by(() => {
+    const docs = footnoteDocs();
+    const defs = docs.flatMap((doc) => doc.footnotes ?? []);
+    const html = !markdownEditorMode
+      ? liveEditorHtml
+      : (inChapterMode && activeChapter
+        ? buildChapterHtml(docs.map((doc) => doc.content), publishOptions.sceneSeparator)
+        : (docs[0]?.content ?? ""));
+    return {
+      docs,
+      defs,
+      html,
+      notes: numberedFootnotes(html, defs),
+      orphans: findOrphanFootnotes(html, defs)
+    };
+  });
+
+  function currentScopeFootnotes(): UndoFootnoteScopeEntry[] {
+    return footnoteDocs().map((doc) => ({ docId: doc.id, footnotes: doc.footnotes }));
+  }
+
+  function encodeCurrentBodyUndo(html: string): string {
+    return encodeBodyUndoValue(html, currentScopeFootnotes());
+  }
+
+  function restoreScopeFootnotes(map: Map<string, FootnoteDef[]>) {
+    const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
+    documents = documents.map((doc) => {
+      if (!scopeIds.has(doc.id)) return doc;
+      const nextNotes = map.get(doc.id);
+      const { footnotes: _old, ...rest } = doc;
+      return nextNotes && nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+    });
+  }
+
+  function removeFootnotesFromScope(ids: readonly string[]) {
+    if (ids.length === 0) return;
+    const drop = new Set(ids);
+    const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
+    documents = documents.map((doc) => {
+      if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
+      const nextNotes = doc.footnotes.filter((fn) => !drop.has(fn.id));
+      if (nextNotes.length === doc.footnotes.length) return doc;
+      const { footnotes: _old, ...rest } = doc;
+      return nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+    });
+  }
+
+  function seedBodyUndoBeforeEdit(): CaretSelection {
+    commitPageState();
+    const key = bodyUndoKey();
+    if (editor && !undoManager.has(key)) {
+      undoManager.sync(key, encodeCurrentBodyUndo(cleanHtml(editor.innerHTML)));
+    }
+    return editor ? encodeSelection(editor) : null;
+  }
+
+  function finishProgrammaticBodyEdit(before: CaretSelection, caretMoved = true) {
+    if (!editor) return;
+    renumberFootnoteMarkers(editor);
+    const cleaned = cleanHtml(editor.innerHTML);
+    liveEditorHtml = cleaned;
+    knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
+    pendingEdit = {
+      kind: "other",
+      caretMoved,
+      before
+    };
+    recordFieldEdit(editor, encodeCurrentBodyUndo(cleaned), encodeSelection(editor));
+    refreshCounts();
+    lastEditorWordCount = wordCount;
+    persist();
+    refreshPageStateBaseline();
+    scheduleHarperLint();
+    refreshWikiMentionHighlights();
+  }
+
+  function docIdForRange(range: Range): string | null {
+    if (!inChapterMode || !activeChapter) return activeDocumentId || null;
+    const docs = scenesInChapter(activeChapter.id);
+    const block = editorTopBlock(range.startContainer);
+    const index = block ? sectionIndexOf(block) : 0;
+    return docs[index]?.id ?? docs[0]?.id ?? activeDocumentId ?? null;
+  }
+
+  function findFootnoteOwner(id: string, marker?: HTMLElement | null): { docId: string; html: string } {
+    const docs = footnoteDocs();
+    if (marker && inChapterMode && activeChapter) {
+      const block = editorTopBlock(marker);
+      const index = block ? sectionIndexOf(block) : -1;
+      const sceneDoc = index >= 0 ? docs[index] : undefined;
+      const hit = sceneDoc?.footnotes?.find((fn) => fn.id === id);
+      if (hit) return { docId: sceneDoc!.id, html: hit.html };
+    }
+    for (const doc of docs) {
+      const hit = doc.footnotes?.find((fn) => fn.id === id);
+      if (hit) return { docId: doc.id, html: hit.html };
+    }
+    if (marker && inChapterMode && activeChapter) {
+      const block = editorTopBlock(marker);
+      const index = block ? sectionIndexOf(block) : 0;
+      const sceneDoc = docs[index] ?? docs[0];
+      if (sceneDoc) return { docId: sceneDoc.id, html: "" };
+    }
+    return { docId: docs[0]?.id ?? activeDocumentId, html: "" };
+  }
+
+  function positionFootnotePopoverForRect(rect: DOMRect): { left: number; top: number } {
+    const width = 330;
+    const estimatedHeight = 190;
+    const showAbove = rect.bottom + estimatedHeight + 16 > window.innerHeight && rect.top > estimatedHeight;
+    return {
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      top: showAbove
+        ? Math.max(8, rect.top - estimatedHeight)
+        : Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - estimatedHeight - 8))
+    };
+  }
+
+  function clearActiveFootnoteMarkerClass() {
+    if (!editor) return;
+    for (const el of editor.querySelectorAll(`sup.${FOOTNOTE_REF_CLASS}.active-footnote`)) {
+      el.classList.remove("active-footnote");
+    }
+  }
+
+  function openFootnotePopoverForMarker(marker: HTMLElement) {
+    if (!editor || markdownEditorMode) return;
+    const id = marker.getAttribute("data-footnote-id") ?? "";
+    if (!id) return;
+    if (footnotePopover && footnotePopover.id !== id) {
+      closeFootnotePopover(false);
+    }
+    if (footnotePopover && footnotePopover.id === id) return;
+    const beforeSelection = seedBodyUndoBeforeEdit();
+    const { docId, html } = findFootnoteOwner(id, marker);
+    const numbers = renumberFootnoteMarkers(editor);
+    clearActiveFootnoteMarkerClass();
+    marker.classList.add("active-footnote");
+    const rect = marker.getBoundingClientRect();
+    footnotePopover = {
+      id,
+      docId,
+      number: numbers.get(id) ?? null,
+      initialHtml: html,
+      ...positionFootnotePopoverForRect(rect),
+      dirty: false,
+      beforeSelection
+    };
+  }
+
+  function placeCaretAfterMarker(marker: HTMLElement) {
+    if (!editor) return;
+    const range = document.createRange();
+    range.setStartAfter(marker);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.focus();
+  }
+
+  function closeFootnotePopover(refocusEditor = false) {
+    const current = footnotePopover;
+    if (!current) return;
+    if (current.dirty && editor && !markdownEditorMode) {
+      finishProgrammaticBodyEdit(current.beforeSelection, true);
+    }
+    const marker = editor?.querySelector<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(current.id)}"]`
+    ) ?? null;
+    footnotePopover = null;
+    clearActiveFootnoteMarkerClass();
+    if (refocusEditor && editor && !markdownEditorMode) {
+      if (marker) placeCaretAfterMarker(marker);
+      else editor.focus();
+    }
+  }
+
+  function repositionFootnotePopover() {
+    const popover = footnotePopover;
+    if (!popover || !editor) return;
+    const marker = editor.querySelector<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(popover.id)}"]`
+    );
+    const rect = marker?.getBoundingClientRect();
+    if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) {
+      closeFootnotePopover(false);
+      return;
+    }
+    const pos = positionFootnotePopoverForRect(rect);
+    popover.left = pos.left;
+    popover.top = pos.top;
+  }
+
+  function handleFootnotePopoverChange(id: string, docId: string, html: string) {
+    const clean = sanitizeInlineHtml(html);
+    documents = documents.map((doc) => {
+      if (doc.id !== docId) return doc;
+      const existing = doc.footnotes ?? [];
+      const hasEntry = existing.some((fn) => fn.id === id);
+      const nextNotes = hasEntry
+        ? updateFootnote(existing, id, clean)
+        : [...existing, { id, html: clean }];
+      return { ...doc, footnotes: nextNotes };
+    });
+    if (footnotePopover && footnotePopover.id === id) {
+      footnotePopover.dirty = true;
+    }
+    persist();
+  }
+
+  function insertFootnoteAtCaret() {
+    if (!editor || markdownEditorMode || !activeDocumentId) return;
+    closeFootnotePopover(false);
+    hideHarperPopover();
+    hideCommentSelectionPopover();
+
+    const before = seedBodyUndoBeforeEdit();
+
+    let range: Range;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0
+      && editor.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      range = selection.getRangeAt(0).cloneRange();
+      range.collapse(false);
+    } else {
+      range = document.createRange();
+      const lastParagraph = editor.querySelector("p:last-of-type") ?? editor.lastElementChild ?? editor;
+      range.selectNodeContents(lastParagraph);
+      range.collapse(false);
+    }
+
+    const targetDocId = docIdForRange(range);
+    const targetDoc = documents.find((doc) => doc.id === targetDocId);
+    if (!targetDoc) return;
+
+    const added = addFootnote(targetDoc.footnotes, "");
+    documents = documents.map((doc) => doc.id === targetDoc.id
+      ? { ...doc, footnotes: added.footnotes }
+      : doc);
+
+    const template = document.createElement("div");
+    template.innerHTML = footnoteMarkerHtml(added.footnote.id);
+    const marker = template.firstElementChild as HTMLElement;
+    range.insertNode(marker);
+
+    const after = document.createRange();
+    after.setStartAfter(marker);
+    after.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(after);
+
+    finishProgrammaticBodyEdit(before, true);
+    openFootnotePopoverForMarker(marker);
+  }
+
+  function removeFootnoteById(id: string, refocusEditor = false) {
+    if (!editor || markdownEditorMode) return;
+    const currentPopover = footnotePopover;
+    if (currentPopover && currentPopover.id === id && currentPopover.dirty) {
+      finishProgrammaticBodyEdit(currentPopover.beforeSelection, true);
+    }
+    footnotePopover = null;
+    clearActiveFootnoteMarkerClass();
+
+    const before = seedBodyUndoBeforeEdit();
+    const markers = Array.from(editor.querySelectorAll<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(id)}"]`
+    ));
+    const first = markers[0] ?? null;
+    if (first && first.parentNode) {
+      const range = document.createRange();
+      range.setStartBefore(first);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    for (const marker of markers) marker.remove();
+
+    removeFootnotesFromScope([id]);
+    finishProgrammaticBodyEdit(before, true);
+    if (refocusEditor) editor.focus();
+  }
+
+  function cleanupOrphanFootnotes() {
+    if (!editor || markdownEditorMode) return;
+    closeFootnotePopover(false);
+    const scope = activeFootnoteScope;
+    if (scope.orphans.length === 0) return;
+    const before = seedBodyUndoBeforeEdit();
+    const scopeIds = new Set(scope.docs.map((doc) => doc.id));
+    documents = documents.map((doc) => {
+      if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
+      const pruned = pruneOrphanFootnotes(scope.html, doc.footnotes);
+      const { footnotes: _old, ...rest } = doc;
+      return pruned.length > 0 ? { ...rest, footnotes: pruned } : rest;
+    });
+    finishProgrammaticBodyEdit(before, true);
+  }
+
+  function flashFootnoteMarker(marker: HTMLElement) {
+    if (footnoteFlashTimer) clearTimeout(footnoteFlashTimer);
+    marker.classList.remove("footnote-flash");
+    void marker.offsetWidth;
+    marker.classList.add("footnote-flash");
+    footnoteFlashTimer = setTimeout(() => {
+      marker.classList.remove("footnote-flash");
+    }, 1250);
+  }
+
+  function goToFootnote(id: string): HTMLElement | null {
+    if (!editor || markdownEditorMode) return null;
+    const marker = editor.querySelector<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(id)}"]`
+    );
+    if (!marker) return null;
+    if (compactProgressLayout) closeSidebarDrawers(false);
+    marker.scrollIntoView({ block: "center" });
+    placeCaretAfterMarker(marker);
+    flashFootnoteMarker(marker);
+    return marker;
+  }
+
+  function editFootnoteFromSidebar(id: string) {
+    const marker = goToFootnote(id);
+    if (!marker) return;
+    void tick().then(() => openFootnotePopoverForMarker(marker));
+  }
+
   function snapshotLabel(snapshot: DocumentSnapshot): string {
     const when = new Date(snapshot.createdAt).toLocaleString();
     return snapshot.reason === "before-restore" ? `${when} (before a restore)` : when;
@@ -4987,7 +5392,7 @@
     if (docs.length > 0 && docs.every((doc) => typeof doc.markdownSource === "string")) {
       return joinChapterMarkdown(docs.map((doc) => doc.markdownSource as string));
     }
-    return joinChapterMarkdown(docs.map((doc) => htmlToMarkdown(doc.content)));
+    return joinChapterMarkdown(docs.map((doc) => htmlToMarkdown(doc.content, doc.footnotes)));
   }
 
   /**
@@ -4996,13 +5401,22 @@
    * emptied and moved to Trash; trashed scenes regaining a section are
    * restored (undo of a merge).
    */
-  function writeChapterSections(sections: string[], markdownSections?: string[]) {
+  function writeChapterSections(
+    sections: string[],
+    markdownSections?: string[],
+    footnoteSections?: FootnoteDef[][]
+  ) {
     const chapterId = activeChapter?.id;
     if (!chapterId) return;
-    writeChapterSectionsFor(chapterId, sections, markdownSections);
+    writeChapterSectionsFor(chapterId, sections, markdownSections, footnoteSections);
   }
 
-  function writeChapterSectionsFor(chapterId: string, sections: string[], markdownSections?: string[]) {
+  function writeChapterSectionsFor(
+    chapterId: string,
+    sections: string[],
+    markdownSections?: string[],
+    footnoteSections?: FootnoteDef[][]
+  ) {
     const live = documents.filter((doc) => doc.chapterId === chapterId && !doc.trashed);
     if (live.length === 0) return;
     const trashed = documents.filter((doc) => doc.chapterId === chapterId && doc.trashed);
@@ -5015,6 +5429,7 @@
     const targets = [...live, ...revived];
     const merged = [...sections];
     const mergedMarkdown = markdownSections ? [...markdownSections] : undefined;
+    const mergedFootnotes = footnoteSections ? footnoteSections.map((list) => [...list]) : undefined;
     while (merged.length > targets.length) {
       const extra = merged.pop() as string;
       merged[merged.length - 1] = `${merged[merged.length - 1]}${extra}`;
@@ -5022,29 +5437,82 @@
         const extraSource = mergedMarkdown.pop() as string;
         mergedMarkdown[mergedMarkdown.length - 1] = `${mergedMarkdown[mergedMarkdown.length - 1]}\n\n${extraSource}`;
       }
+      if (mergedFootnotes) {
+        const extraNotes = mergedFootnotes.pop() ?? [];
+        const tail = mergedFootnotes[mergedFootnotes.length - 1];
+        const seen = new Set(tail.map((fn) => fn.id));
+        for (const fn of extraNotes) {
+          if (!seen.has(fn.id)) {
+            tail.push(fn);
+            seen.add(fn.id);
+          }
+        }
+      }
     }
-    const updates = new Map<string, { content: string; markdownSource: string | undefined }>();
+    const updates = new Map<string, { content: string; markdownSource: string | undefined; footnotes?: FootnoteDef[] }>();
     targets.forEach((target, index) => {
       // Scenes left without a section are emptied and trashed below.
       if (index >= merged.length) return;
       updates.set(target.id, {
         content: cleanHtml(merged[index]),
-        markdownSource: mergedMarkdown ? mergedMarkdown[index] ?? "" : undefined
+        markdownSource: mergedMarkdown ? mergedMarkdown[index] ?? "" : undefined,
+        ...(mergedFootnotes ? { footnotes: mergedFootnotes[index] ?? [] } : {})
       });
     });
+
+    // When editing rich HTML in chapter mode, keep each footnote definition on
+    // the scene that references its marker if a split/merge moved it across scenes.
+    const reassignedFootnotes = new Map<string, FootnoteDef[]>();
+    if (!mergedFootnotes) {
+      const ownerById = new Map<string, { docId: string; def: FootnoteDef }>();
+      for (const doc of targets) {
+        for (const def of doc.footnotes ?? []) {
+          if (!ownerById.has(def.id)) ownerById.set(def.id, { docId: doc.id, def });
+        }
+      }
+      const refDocById = new Map<string, string>();
+      const refsPerDoc = new Map<string, Set<string>>();
+      for (const target of targets) {
+        const update = updates.get(target.id);
+        if (!update) continue;
+        const ids = new Set(extractFootnoteIds(update.content));
+        refsPerDoc.set(target.id, ids);
+        for (const id of ids) {
+          if (!refDocById.has(id)) refDocById.set(id, target.id);
+        }
+      }
+      for (const target of targets) {
+        if (!updates.has(target.id)) continue;
+        reassignedFootnotes.set(target.id, []);
+      }
+      for (const [id, entry] of ownerById) {
+        const currentOwner = updates.has(entry.docId) ? entry.docId : targets[0].id;
+        const staysHere = refsPerDoc.get(currentOwner)?.has(id) ?? false;
+        const destId = staysHere ? currentOwner : (refDocById.get(id) ?? currentOwner);
+        reassignedFootnotes.get(destId)?.push(entry.def);
+      }
+    }
+
     documents = documents.map((doc) => {
       if (doc.chapterId !== chapterId) return doc;
       const update = updates.get(doc.id);
       if (update) {
         if (mergedMarkdown) {
-          return { ...doc, content: update.content, markdownSource: update.markdownSource, trashed: false };
+          const { footnotes: _old, ...rest } = doc;
+          const nextNotes = update.footnotes ?? [];
+          return nextNotes.length > 0
+            ? { ...rest, content: update.content, markdownSource: update.markdownSource, footnotes: nextNotes, trashed: false }
+            : { ...rest, content: update.content, markdownSource: update.markdownSource, trashed: false };
         }
-        if (doc.markdownSource === undefined && !doc.trashed) return { ...doc, content: update.content };
-        const { markdownSource: _dropped, ...rest } = doc;
-        return { ...rest, content: update.content, trashed: false };
+        const nextNotes = reassignedFootnotes.get(doc.id) ?? doc.footnotes ?? [];
+        const { markdownSource: _dropped, footnotes: _old, ...rest } = doc;
+        const base = doc.markdownSource === undefined && !doc.trashed
+          ? { ...rest, content: update.content }
+          : { ...rest, content: update.content, trashed: false };
+        return nextNotes.length > 0 ? { ...base, footnotes: nextNotes } : base;
       }
       if (!doc.trashed) {
-        const { markdownSource: _dropped, ...rest } = doc;
+        const { markdownSource: _dropped, footnotes: _old, ...rest } = doc;
         return { ...rest, content: "<p><br></p>", trashed: true };
       }
       return doc;
@@ -5523,7 +5991,7 @@
     title = next.title;
     clearRichTextFade();
     setEditorContent(cleanHtml(next.content));
-    setMarkdownSource(next.markdownSource ?? htmlToMarkdown(next.content));
+    setMarkdownSource(next.markdownSource ?? htmlToMarkdown(next.content, next.footnotes));
     refreshCounts();
     lastEditorWordCount = wordCount;
   }
@@ -5627,7 +6095,7 @@
         }
         const content = cleanHtml(current.content);
         setEditorContent(content);
-        setMarkdownSource(htmlToMarkdown(content));
+        setMarkdownSource(htmlToMarkdown(content, current.footnotes));
       }
       refreshCounts();
       lastEditorWordCount = wordCount;
@@ -7784,12 +8252,21 @@
       return;
     }
     if (event.key === "Escape" && !projectSearchOpen) showZenInterface();
+    if ((event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey
+      && (event.key.toLowerCase() === "f" || event.code === "KeyF")) {
+      if (workspaceView === "writing" && !markdownEditorMode && activeDocumentId
+        && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
+        insertFootnoteAtCaret();
+      }
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openProjectSearch();
       return;
     }
-    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "f") {
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openProjectSearch();
       return;
@@ -7804,13 +8281,29 @@
     if (editor) {
       // Pasted or restored widgets arrive as source only and need rendering.
       ensureParagraphsAroundRichBlocks(editor);
+      renumberFootnoteMarkers(editor);
       void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
       if (event instanceof Event && screenplayActive && !markdownEditorMode) {
         syncScreenplayTyping();
       }
     }
+    const cleaned = editor ? cleanHtml(editor.innerHTML) : "";
+    liveEditorHtml = cleaned;
+    const nextFootnoteIds = new Set(extractFootnoteIds(cleaned));
+    if (!applyingUndoHistory) {
+      const removedFootnoteIds = [...knownEditorFootnoteIds].filter((id) => !nextFootnoteIds.has(id));
+      if (removedFootnoteIds.length > 0) {
+        removeFootnotesFromScope(removedFootnoteIds);
+        if (footnotePopover && removedFootnoteIds.includes(footnotePopover.id)) {
+          footnotePopover = null;
+        }
+      }
+    } else {
+      footnotePopover = null;
+    }
+    knownEditorFootnoteIds = nextFootnoteIds;
     if (!applyingUndoHistory && undoManager.has(bodyUndoKey())) {
-      recordFieldEdit(editor, cleanHtml(editor.innerHTML), encodeSelection(editor));
+      recordFieldEdit(editor, encodeCurrentBodyUndo(cleaned), encodeSelection(editor));
     }
     const previousWordCount = lastEditorWordCount;
     const chapterId = inChapterMode ? activeChapter?.id : undefined;
@@ -7838,7 +8331,7 @@
   const undoManager = new UndoManager<FieldSelection>();
   // Text in these props has its own field history or is not a page action.
   const undoIgnoredProps = {
-    documents: ["content", "title", "markdownSource", "folderId"],
+    documents: ["content", "title", "markdownSource", "folderId", "footnotes"],
     chapters: ["expanded"]
   };
   const anonymousUndoKeys = new WeakMap<Element, string>();
@@ -7936,7 +8429,9 @@
     try {
       if (target === editor) {
         const focused = document.activeElement === editor;
-        setEditorContent(value);
+        const decoded = decodeBodyUndoValue(value);
+        restoreScopeFootnotes(decoded.footnotes);
+        setEditorContent(decoded.html);
         handleInput();
         if (focused) {
           restoreSelection(editor, selection as CaretSelection);
@@ -7966,6 +8461,7 @@
   }
 
   function runFieldHistory(target: NativeTextField | HTMLElement, direction: "undo" | "redo") {
+    if (target === editor) closeFootnotePopover(false);
     commitPageState();
     const key = undoKeyFor(target);
     if (target !== editor) undoManager.sync(key, (target as NativeTextField).value);
@@ -7980,6 +8476,7 @@
   }
 
   function runPageHistory(direction: "undo" | "redo") {
+    closeFootnotePopover(false);
     if (saveTimer) {
       clearTimeout(saveTimer);
       persistNow();
@@ -8041,7 +8538,7 @@
       : null;
     if (!direction) return;
     const element = event.target instanceof Element ? event.target : null;
-    if (element?.closest(".cm-editor")) return;
+    if (element?.closest(".cm-editor, .footnote-popover")) return;
     const target = undoTextTarget(event.target);
     if (target) {
       event.preventDefault();
@@ -8067,7 +8564,7 @@
     const key = undoKeyFor(target);
     const caret = target === editor ? encodeSelection(editor) : nativeSelection(target as NativeTextField);
     if (target === editor) {
-      if (!undoManager.has(key)) undoManager.sync(key, cleanHtml(editor.innerHTML));
+      if (!undoManager.has(key)) undoManager.sync(key, encodeCurrentBodyUndo(cleanHtml(editor.innerHTML)));
     } else {
       undoManager.sync(key, (target as NativeTextField).value);
     }
@@ -8336,7 +8833,7 @@
           if (!renderChapter(active.id)) {
             title = active.title;
             setEditorContent(active.content);
-            setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+            setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content, active.footnotes));
           }
         } else {
           activeDocumentId = "";
@@ -8679,12 +9176,22 @@
     // The proofreading popover re-anchors instead: typewriter mode scrolls on
     // every caret move, which would otherwise dismiss it instantly.
     window.addEventListener("scroll", repositionHarperPopover, true);
+    window.addEventListener("scroll", repositionFootnotePopover, true);
+    const handleOutsideFootnotePointer = (event: PointerEvent) => {
+      if (!footnotePopover) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(`.footnote-popover, ${FOOTNOTE_REF_SELECTOR}`)) return;
+      closeFootnotePopover(false);
+    };
+    window.addEventListener("pointerdown", handleOutsideFootnotePointer);
     return () => {
       window.removeEventListener("resize", handleViewportResize);
       document.removeEventListener("selectionchange", handleRichTextSelectionChange);
       window.removeEventListener("scroll", hideCommentSelectionPopover, true);
       window.removeEventListener("scroll", repositionHarperPopover, true);
       if (screenplayMetricsTimer) clearTimeout(screenplayMetricsTimer);
+      window.removeEventListener("scroll", repositionFootnotePopover, true);
+      window.removeEventListener("pointerdown", handleOutsideFootnotePointer);
       keepCommentPreview();
     };
   });
@@ -9819,6 +10326,7 @@
           <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><ImagePlus size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><MessageSquareText size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert footnote" title="Insert footnote" onpointerdown={(event) => event.preventDefault()} onclick={insertFootnoteAtCaret}><Superscript size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
@@ -10037,6 +10545,19 @@
               <span>Comment</span>
             </button>
           </div>
+        {/if}
+
+        {#if footnotePopover && !markdownEditorMode}
+          <FootnotePopover
+            footnoteId={footnotePopover.id}
+            number={activeFootnoteScope.notes.find((note) => note.id === footnotePopover!.id)?.number ?? footnotePopover.number}
+            initialHtml={footnotePopover.initialHtml}
+            left={footnotePopover.left}
+            top={footnotePopover.top}
+            onChange={(html) => footnotePopover && handleFootnotePopoverChange(footnotePopover.id, footnotePopover.docId, html)}
+            onRemove={() => footnotePopover && removeFootnoteById(footnotePopover.id, true)}
+            onClose={() => closeFootnotePopover(true)}
+          />
         {/if}
 
         {#if harperPopover}
@@ -10366,6 +10887,7 @@
         <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "progress"} aria-selected={rightSidebarTab === "progress"} onclick={() => (rightSidebarTab = "progress")}>Progress</button>
         <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "comments"} aria-selected={rightSidebarTab === "comments"} onclick={() => (rightSidebarTab = "comments")}>Comments</button>
         <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "snapshots"} aria-selected={rightSidebarTab === "snapshots"} onclick={() => (rightSidebarTab = "snapshots")}>Snapshots</button>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "footnotes"} aria-selected={rightSidebarTab === "footnotes"} onclick={() => (rightSidebarTab = "footnotes")}>Footnotes</button>
         <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => closeSidebarDrawers()}><X size={15} aria-hidden="true" /></button>
       </div>
 
@@ -10522,7 +11044,7 @@
           </ul>
         {/if}
       </section>
-      {:else}
+      {:else if rightSidebarTab === "snapshots"}
       <div class="progress-header"><div><span class="progress-eyebrow">VERSIONS</span><h2>Snapshots</h2></div></div>
       <section class="progress-section">
         <div class="section-title"><strong>Save this version</strong></div>
@@ -10556,6 +11078,65 @@
               </li>
             {/each}
           </ul>
+        {/if}
+      </section>
+      {:else}
+      <div class="progress-header"><div><span class="progress-eyebrow">NOTES</span><h2>Footnotes</h2></div></div>
+      <section class="progress-section">
+        <div class="section-title">
+          <strong>{inChapterMode ? "This chapter" : "This document"}</strong>
+          <span>{activeFootnoteScope.notes.length}</span>
+        </div>
+        {#if markdownEditorMode}
+          <p class="data-help">Switch back to the rich text editor to jump to or edit footnote popovers.</p>
+        {/if}
+        {#if activeFootnoteScope.notes.length === 0}
+          <p class="empty-progress">No footnotes yet. Place the cursor in the text and use Insert footnote to add one.</p>
+        {:else}
+          <ul class="footnote-list">
+            {#each activeFootnoteScope.notes as note (note.id)}
+              <li class="footnote-item">
+                <div class="footnote-item-head">
+                  <span class="footnote-badge">{note.number}</span>
+                  {#if note.missingDefinition}
+                    <span class="footnote-empty">Missing definition</span>
+                  {:else if !htmlToPlainText(note.html).trim()}
+                    <span class="footnote-empty">Empty footnote</span>
+                  {:else}
+                    <div class="footnote-preview">{@html sanitizeInlineHtml(note.html)}</div>
+                  {/if}
+                </div>
+                <div class="footnote-actions">
+                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => goToFootnote(note.id)}>Go to</button>
+                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => editFootnoteFromSidebar(note.id)}>Edit</button>
+                  <button class="side-action danger" type="button" disabled={markdownEditorMode} aria-label="Remove footnote {note.number}" onclick={() => removeFootnoteById(note.id)}>Remove</button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+      <section class="progress-section">
+        <div class="section-title">
+          <strong>Unused definitions</strong>
+          <span>{activeFootnoteScope.orphans.length}</span>
+        </div>
+        {#if activeFootnoteScope.orphans.length > 0}
+          <p class="section-subtitle">These footnote definitions no longer have a marker in the text.</p>
+          <ul class="footnote-orphan-list">
+            {#each activeFootnoteScope.orphans as orphan (orphan.id)}
+              <li class="footnote-orphan-item">{htmlToPlainText(orphan.html).trim() || "Empty footnote"}</li>
+            {/each}
+          </ul>
+          <button
+            class="data-button footnote-cleanup-button"
+            type="button"
+            disabled={markdownEditorMode}
+            onclick={cleanupOrphanFootnotes}
+          >Clean up {activeFootnoteScope.orphans.length} orphan{activeFootnoteScope.orphans.length === 1 ? "" : "s"}</button>
+        {:else}
+          <p class="data-help">All footnote definitions are referenced in the text.</p>
+          <button class="data-button footnote-cleanup-button" type="button" disabled>Clean up orphans</button>
         {/if}
       </section>
       {/if}
@@ -12150,8 +12731,8 @@
   .progress-sidebar.peek { transform: translateX(100%); pointer-events: none; }
   .progress-sidebar.peek.peek-open { transform: translateX(0); pointer-events: auto; box-shadow: var(--shadow-panel-left); }
   .progress-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 0 3px 19px; }
-  .sidebar-tabs { display: flex; align-items: center; gap: 5px; margin-bottom: 14px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
-  .sidebar-tab { height: 26px; flex: 1; padding: 0 6px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
+  .sidebar-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 14px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+  .sidebar-tab { height: 26px; flex: 1 1 auto; min-width: 0; padding: 0 5px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
   .sidebar-tab:hover { color: var(--text-primary); }
   .sidebar-tab.active { background: var(--selected-bg); color: var(--selected-text); font-weight: 600; }
   .sidebar-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -12453,6 +13034,36 @@
   .editor-content :global(blockquote) { margin: 26px 0; padding: 2px 0 2px 17px; border-left: 2px solid var(--accent-soft); color: var(--quote); font-style: italic; }
   .editor-content :global(ul), .editor-content :global(ol) { padding-left: 24px; }
   .editor-content :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
+  .editor-content :global(sup.footnote-ref) {
+    display: inline-block;
+    min-width: 1.05em;
+    margin: 0 1px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    color: var(--accent-strong);
+    font-size: 0.72em;
+    font-weight: 600;
+    line-height: 1.25;
+    text-align: center;
+    vertical-align: super;
+    cursor: pointer;
+    user-select: none;
+  }
+  .editor-content :global(sup.footnote-ref::after) {
+    content: attr(data-num);
+  }
+  .editor-content :global(sup.footnote-ref:hover),
+  .editor-content :global(sup.footnote-ref.active-footnote) {
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+  .editor-content :global(sup.footnote-ref.footnote-flash) {
+    animation: footnote-flash 1.2s ease-out;
+  }
+  @keyframes footnote-flash {
+    0% { box-shadow: 0 0 0 3px var(--accent); background: color-mix(in srgb, var(--accent) 42%, transparent); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
   .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
   .editor-content :global(img[data-size="small"]) { width: 25%; height: auto; max-width: 100%; }
@@ -12885,7 +13496,19 @@
   .progress-sidebar .comment-body { font-size: 12px; }
   .progress-sidebar .comment-meta { font-size: 9px; }
   .progress-sidebar .comment-actions,
-  .progress-sidebar .snapshot-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+  .progress-sidebar .snapshot-actions,
+  .progress-sidebar .footnote-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+  .footnote-list,
+  .footnote-orphan-list { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 10px; list-style: none; }
+  .progress-sidebar .footnote-item { padding: 12px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow-card); display: flex; flex-direction: column; gap: 6px; }
+  .footnote-item-head { display: flex; align-items: flex-start; gap: 8px; }
+  .footnote-badge { display: inline-grid; min-width: 20px; height: 20px; padding: 0 5px; place-items: center; flex: 0 0 auto; border-radius: 5px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); font-size: 10px; font-weight: 700; }
+  .footnote-preview { min-width: 0; flex: 1; color: var(--text-body); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  .footnote-preview :global(a) { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+  .footnote-empty { color: var(--text-muted); font-size: 11px; font-style: italic; }
+  .footnote-orphan-list { gap: 6px; margin-bottom: 10px; }
+  .footnote-orphan-item { padding: 7px 9px; border: 1px dashed var(--border-control); border-radius: 6px; color: var(--text-muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+  .footnote-cleanup-button { width: 100%; height: 30px; font-size: 10px; }
   .side-action { padding: 2px 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; font-weight: 600; }
   .side-action:hover:not(:disabled) { color: var(--text-heading); text-decoration: underline; text-underline-offset: 2px; }
   .side-action:disabled { opacity: .4; cursor: default; }

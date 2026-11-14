@@ -23,6 +23,20 @@ describe("shortcut list", () => {
   it("lists no key combination twice", () => {
     const combos = SHORTCUT_GROUPS.flatMap((group) => group.entries.map((entry) => entry.keys.join("+")));
     expect(new Set(combos).size).toBe(combos.length);
+    const normalized = SHORTCUT_GROUPS.flatMap((group) =>
+      group.entries.map((entry) =>
+        entry.keys.map((key) => key.trim().toLowerCase()).sort().join("+")
+      )
+    );
+    expect(new Set(normalized).size).toBe(normalized.length);
+  });
+
+  it("includes Mod+Alt+F for Insert footnote", () => {
+    const entry = SHORTCUT_GROUPS.flatMap((group) => group.entries)
+      .find((item) => item.action === "Insert footnote");
+    expect(entry?.keys).toEqual(["Mod", "Alt", "F"]);
+    expect(formatShortcut(entry!.keys, true)).toBe("⌘⌥F");
+    expect(formatShortcut(entry!.keys, false)).toBe("Ctrl+Alt+F");
   });
 });
 

@@ -14,11 +14,14 @@ import {
   hasRichPlaceholders,
   richPlaceholders
 } from "../rich/model";
+import { FOOTNOTE_REF_CLASS, isValidFootnoteId, sanitizeInlineHtml } from "../sanitize";
+import { resolveBookFootnotes, type ResolvedFootnote } from "./footnotes";
 import {
   FORMAT_INFO,
   slugifyFilename,
   type CompiledBook,
   type ExportPayload,
+  type FootnoteDef,
   type PublishOptions,
   type SceneSeparator
 } from "./types";
@@ -117,6 +120,24 @@ function markdownService(): TurndownService {
       return `\n\n${fence}calc\n${source}\n${fence}\n\n`;
     }
   });
+  service.addRule("footnoteRef", {
+    filter: (node) =>
+      node.nodeName === "SUP"
+      && node.classList.contains(FOOTNOTE_REF_CLASS)
+      && isValidFootnoteId(node.getAttribute("data-footnote-id") ?? ""),
+    replacement: (_content, node) => {
+      const id = (node as HTMLElement).getAttribute("data-footnote-id") ?? "";
+      return `[^${id}]`;
+    }
+  });
+  service.addRule("underline", {
+    filter: "u",
+    replacement: (content) => `<u>${content}</u>`
+  });
+  service.addRule("strikethrough", {
+    filter: (node) => node.nodeName === "S" || node.nodeName === "DEL" || node.nodeName === "STRIKE",
+    replacement: (content) => `~~${content}~~`
+  });
   return service;
 }
 
@@ -125,6 +146,69 @@ function configureMarked(): void {
   markedConfigured = true;
   marked.use({
     extensions: [
+      {
+        name: "footnoteDef",
+        level: "block",
+        start(src) {
+          return src.search(/(?:^|\n)[ \t]{0,3}\[\^[A-Za-z0-9_-]{1,32}\]:/);
+        },
+        tokenizer(src) {
+          const head = /^[ \t]{0,3}\[\^([A-Za-z0-9_-]{1,32})\]:[ \t]*([^\n]*)(?:\n|$)/.exec(src);
+          if (!head) return undefined;
+          let raw = head[0];
+          const lines = [head[2]];
+          let rest = src.slice(raw.length);
+          while (rest.length > 0) {
+            if (/^[ \t]{0,3}\[\^[A-Za-z0-9_-]{1,32}\]:/.test(rest)) break;
+            const cont = /^(?: {2,4}|\t)([^\n]*)(?:\n|$)/.exec(rest);
+            if (cont) {
+              raw += cont[0];
+              lines.push(cont[1]);
+              rest = rest.slice(cont[0].length);
+              continue;
+            }
+            const blankCont = /^\n(?: {2,4}|\t)([^\n]*)(?:\n|$)/.exec(rest);
+            if (blankCont) {
+              raw += blankCont[0];
+              lines.push("", blankCont[1]);
+              rest = rest.slice(blankCont[0].length);
+              continue;
+            }
+            break;
+          }
+          return {
+            type: "footnoteDef",
+            raw,
+            id: head[1],
+            text: lines.join("\n").trim()
+          };
+        },
+        renderer() {
+          return "";
+        }
+      },
+      {
+        name: "footnoteRef",
+        level: "inline",
+        start(src) {
+          return src.search(/\[\^[A-Za-z0-9_-]{1,32}\]/);
+        },
+        tokenizer(src) {
+          const match = /^\[\^([A-Za-z0-9_-]{1,32})\]/.exec(src);
+          if (!match) return undefined;
+          return {
+            type: "footnoteRef",
+            raw: match[0],
+            id: match[1]
+          };
+        },
+        renderer(token: Token) {
+          const ref = token as Token & { id?: string };
+          const id = String(ref.id ?? "");
+          if (!isValidFootnoteId(id)) return "";
+          return `<sup class="${FOOTNOTE_REF_CLASS}" data-footnote-id="${escapeAttribute(id)}" contenteditable="false"></sup>`;
+        }
+      },
       {
         name: "mathBlock",
         level: "block",
@@ -199,20 +283,47 @@ function configureMarked(): void {
   });
 }
 
-export function htmlToMarkdown(html: string): string {
-  return markdownService().turndown(seedRichPlaceholders(html)).trim();
+export function htmlToInlineMarkdown(html: string): string {
+  const clean = sanitizeInlineHtml(html);
+  if (!clean) return "";
+  return markdownService().turndown(seedRichPlaceholders(clean)).trim();
+}
+
+export function htmlToMarkdown(html: string, footnotes?: readonly FootnoteDef[]): string {
+  const body = markdownService().turndown(seedRichPlaceholders(html)).trim();
+  if (!footnotes || footnotes.length === 0) return body;
+  const defs = footnotes
+    .filter((fn) => isValidFootnoteId(fn.id))
+    .map((fn) => {
+      const text = htmlToInlineMarkdown(fn.html);
+      return text ? `[^${fn.id}]: ${text.replace(/\n/g, "\n    ")}` : `[^${fn.id}]:`;
+    });
+  if (defs.length === 0) return body;
+  return body ? `${body}\n\n${defs.join("\n")}` : defs.join("\n");
 }
 
 /**
  * Turndown skips nodes whose text is empty, which would drop source-only
- * equations and diagrams. A zero-width marker makes each placeholder visible
- * to Turndown; the custom rules replace it with the stored Markdown syntax.
+ * equations, diagrams, and footnote markers. A zero-width marker makes each
+ * placeholder visible to Turndown; the custom rules replace it with the
+ * stored Markdown syntax.
  */
 function seedRichPlaceholders(html: string): string {
-  if (!hasRichPlaceholders(html)) return html;
+  const hasRich = hasRichPlaceholders(html);
+  const hasFootnotes = html.includes(FOOTNOTE_REF_CLASS);
+  if (!hasRich && !hasFootnotes) return html;
   const parsed = new DOMParser().parseFromString(html, "text/html");
-  for (const element of richPlaceholders(parsed.body)) {
-    element.replaceChildren("\u200b");
+  if (hasRich) {
+    for (const element of richPlaceholders(parsed.body)) {
+      element.replaceChildren("\u200b");
+    }
+  }
+  if (hasFootnotes) {
+    for (const element of parsed.body.querySelectorAll<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id]`
+    )) {
+      element.replaceChildren("\u200b");
+    }
   }
   return parsed.body.innerHTML;
 }
@@ -220,6 +331,28 @@ function seedRichPlaceholders(html: string): string {
 export function markdownToHtml(markdown: string): string {
   configureMarked();
   return marked.parse(markdown, { async: false }) as string;
+}
+
+/** Parses Markdown into body HTML and extracted inline-sanitized footnote definitions. */
+export function markdownToDocument(markdown: string): { html: string; footnotes: FootnoteDef[] } {
+  configureMarked();
+  const tokens = marked.lexer(markdown);
+  const byId = new Map<string, FootnoteDef>();
+  for (const token of tokens) {
+    if (token.type !== "footnoteDef") continue;
+    const defToken = token as Token & { id?: string; text?: string };
+    const id = String(defToken.id ?? "");
+    if (!isValidFootnoteId(id)) continue;
+    const rawText = String(defToken.text ?? "");
+    const inlineHtml = rawText
+      ? sanitizeInlineHtml(marked.parseInline(rawText, { async: false }) as string)
+      : "";
+    byId.set(id, { id, html: inlineHtml });
+  }
+  return {
+    html: marked.parser(tokens),
+    footnotes: [...byId.values()]
+  };
 }
 
 function separatorMarkdown(separator: SceneSeparator): string {
@@ -246,9 +379,48 @@ function normalizeMarkdown(value: string): string {
     .trim();
 }
 
+function markdownFootnoteLabel(
+  note: ResolvedFootnote,
+  restartPerChapter: boolean,
+  chapterCount: number
+): string {
+  return restartPerChapter && chapterCount > 1
+    ? `${note.chapterIndex + 1}-${note.number}`
+    : String(note.number);
+}
+
+function renumberSceneHtmlForMarkdown(
+  html: string,
+  sceneFootnotes: ReadonlyMap<string, ResolvedFootnote> | undefined,
+  restartPerChapter: boolean,
+  chapterCount: number
+): string {
+  if (!sceneFootnotes || sceneFootnotes.size === 0 || !html.includes(FOOTNOTE_REF_CLASS)) {
+    return seedRichPlaceholders(html);
+  }
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  for (const element of Array.from(parsed.body.querySelectorAll<HTMLElement>(
+    `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id]`
+  ))) {
+    const id = element.getAttribute("data-footnote-id") ?? "";
+    const note = sceneFootnotes.get(id);
+    if (!note) {
+      element.remove();
+      continue;
+    }
+    element.setAttribute(
+      "data-footnote-id",
+      markdownFootnoteLabel(note, restartPerChapter, chapterCount)
+    );
+  }
+  return seedRichPlaceholders(parsed.body.innerHTML);
+}
+
 export function exportMarkdown(book: CompiledBook, options: PublishOptions): ExportPayload {
   const turndown = markdownService();
   const blocks: string[] = [];
+  const bookFootnotes = resolveBookFootnotes(book, options);
+  const restartPerChapter = Boolean(options.footnotesRestartPerChapter);
 
   if (options.includeTitlePage) {
     const frontMatter = [
@@ -278,7 +450,13 @@ export function exportMarkdown(book: CompiledBook, options: PublishOptions): Exp
     for (const scene of chapter.scenes) {
       const sceneBlocks: string[] = [];
       if (options.includeSceneTitles) sceneBlocks.push(`### ${scene.title}`);
-      sceneBlocks.push(normalizeMarkdown(turndown.turndown(scene.html)));
+      const sceneHtml = renumberSceneHtmlForMarkdown(
+        scene.html,
+        bookFootnotes.byScene.get(scene),
+        restartPerChapter,
+        book.chapters.length
+      );
+      sceneBlocks.push(normalizeMarkdown(turndown.turndown(sceneHtml)));
       scenes.push(sceneBlocks.filter(Boolean).join("\n\n"));
     }
     const separator = separatorMarkdown(options.sceneSeparator);
@@ -287,6 +465,15 @@ export function exportMarkdown(book: CompiledBook, options: PublishOptions): Exp
 
   for (const page of book.backMatter) {
     blocks.push([page.title ? `## ${page.title}` : "", page.body].filter(Boolean).join("\n\n"));
+  }
+
+  if (bookFootnotes.all.length > 0) {
+    const defs = bookFootnotes.all.map((note) => {
+      const label = markdownFootnoteLabel(note, restartPerChapter, book.chapters.length);
+      const text = htmlToInlineMarkdown(note.html);
+      return text ? `[^${label}]: ${text.replace(/\n/g, "\n    ")}` : `[^${label}]:`;
+    });
+    blocks.push(defs.join("\n"));
   }
 
   const markdown = `${blocks.filter(Boolean).join("\n\n")}\n`;
