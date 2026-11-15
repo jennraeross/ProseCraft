@@ -13212,7 +13212,7 @@
   .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--writing-font, var(--interface-font)); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
   .title-input::placeholder { color: var(--text-faint); }
   .editor-tools { position: sticky; top: 58px; z-index: 1; display: flex; flex-direction: column; gap: 6px; }
-  .toolbar { display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
+  .toolbar { display: flex; min-width: 0; max-width: 100%; min-height: 41px; flex-wrap: wrap; align-items: center; gap: 3px; row-gap: 4px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
   .style-select { width: 112px; height: 28px; padding: 0 6px; border: 0; outline: 0; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
@@ -14033,7 +14033,7 @@
     .board-card-title { font-size: 16px; }
     .board-card-note, .storyboard-text-editor { font-size: 16px; }
     .storyboard-pan-hint { font-size: 10px; }
-    .toolbar { gap: 1px; overflow-x: auto; scrollbar-width: none; }
+    .toolbar { gap: 3px; flex-wrap: wrap; overflow-x: visible; }
     .toolbar::-webkit-scrollbar { display: none; }
     .style-select { width: 100px; flex: 0 0 auto; }
     .toolbar-divider { margin: 0 3px; }
