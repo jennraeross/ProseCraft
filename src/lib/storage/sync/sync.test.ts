@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { citeMarkerHtml } from "$lib/citations/cite-marker";
 import { createStoredProject, projectsHaveSameContent, stampProject } from "../schema";
 import type { ProjectData, StoredProject } from "../types";
 import { BUNDLE_FILE, OPEN_MARKER_FILE, VAULT_FILE } from "./files";
@@ -313,6 +314,109 @@ describe("open-folder sync", () => {
         footnotes[0],
         { id: "fn-2", html: "Edited <em>note</em>." }
       ]);
+  });
+
+  it("round-trips citations in project.json through the open folder layout", async () => {
+    const fs = new MemoryFileSystem();
+    const citations: ProjectData["citations"] = [
+      {
+        id: "muller2021",
+        type: "book",
+        title: "Über die Methode",
+        author: [{ family: "Müller", given: "Hans" }],
+        issued: { "date-parts": [[2021]] },
+        publisher: "Suhrkamp",
+        "publisher-place": "Berlin",
+        ISBN: "978-3-518-12345-6",
+        citeKey: "muller2021"
+      },
+      {
+        id: "doe2023",
+        type: "article-journal",
+        title: "Citation Sync",
+        author: [{ family: "Doe", given: "Jane" }],
+        "container-title": "Journal of Writing Tools",
+        issued: { "date-parts": [[2023, 5]] },
+        volume: "12",
+        issue: "2",
+        page: "44-58",
+        DOI: "10.1000/jw.2023.44"
+      }
+    ];
+    const withCitations: ProjectData = {
+      ...projectFixture(),
+      citations
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync(
+      "",
+      [createStoredProject(withCitations, "device-a", 1_000)],
+      {},
+      1_000,
+      "device-a"
+    );
+
+    const rawProjectJson = JSON.parse(await fs.readText("projects/project-1/project.json"));
+    expect(rawProjectJson.project.citations).toEqual(citations);
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    expect(reopened.projects[0].project.citations).toEqual(citations);
+    expect(projectsHaveSameContent(first.projects[0].project, reopened.projects[0].project)).toBe(true);
+    expect(
+      projectsHaveSameContent(reopened.projects[0].project, {
+        ...reopened.projects[0].project,
+        citations: citations.slice(0, 1)
+      })
+    ).toBe(false);
+
+    const second = await new OpenFolderSyncProvider(fs)
+      .sync("", [first.projects[0]], first.lastSynced, 1_100, "device-a");
+    expect(second.conflicts).toBe(0);
+  });
+
+  it("round-trips inline citation markers in document bodies and footnotes via the open folder layout", async () => {
+    const fs = new MemoryFileSystem();
+    const bodyMarker = citeMarkerHtml([
+      { id: "muller2021", locator: "42", label: "page", prefix: "see " }
+    ]);
+    const noteMarker = citeMarkerHtml([
+      { id: "doe2023", suppressAuthor: true },
+      { id: "muller2021", locator: "2", label: "chapter" }
+    ]);
+    const fixture = projectFixture();
+    const withMarkers: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((doc) =>
+        doc.id === "doc-1"
+          ? {
+            ...doc,
+            content: `<p>Claim ${bodyMarker}<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>.</p>`,
+            footnotes: [{ id: "fn-1", html: `Compare ${noteMarker}.` }]
+          }
+          : doc
+      )
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync(
+      "",
+      [createStoredProject(withMarkers, "device-a", 1_000)],
+      {},
+      1_000,
+      "device-a"
+    );
+
+    const mdPath = "projects/project-1/documents/doc-1.md";
+    const md = await fs.readText(mdPath);
+    expect(md).toContain("Claim [see @muller2021, p. 42][^fn-1].");
+    expect(md).toContain("[^fn-1]: Compare [-@doe2023; @muller2021, ch. 2].");
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    const reopenedDoc = reopened.projects[0].project.documents.find((doc) => doc.id === "doc-1");
+    expect(reopenedDoc?.content).toContain(`class="cite-ref"`);
+    expect(reopenedDoc?.footnotes).toEqual([{ id: "fn-1", html: `Compare ${noteMarker}.` }]);
+    expect(projectsHaveSameContent(first.projects[0].project, reopened.projects[0].project)).toBe(true);
   });
 
   it("applies external Markdown edits", async () => {

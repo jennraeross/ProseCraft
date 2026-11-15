@@ -45,7 +45,7 @@ function serializeNode(node: Node, options: HtmlToXhtmlOptions): string {
   const tag = node.tagName.toLowerCase();
   const attributes: string[] = [];
   if (node.tagName === "P") {
-    const classes = ["eyebrow", "drop-cap"].filter((name) => node.classList.contains(name));
+    const classes = ["eyebrow", "drop-cap", "bibliography-entry"].filter((name) => node.classList.contains(name));
     if (classes.length > 0) attributes.push(`class="${classes.join(" ")}"`);
   }
   if (node.tagName === "SPAN" || node.tagName === "DIV") {
@@ -54,7 +54,7 @@ function serializeNode(node: Node, options: HtmlToXhtmlOptions): string {
     if (classes.length > 0) attributes.push(`class="${classes.join(" ")}"`);
   }
   if (node.tagName === "ASIDE" || node.tagName === "SECTION" || node.tagName === "SUP") {
-    const classes = ["footnote", "footnotes", "footnote-ref"]
+    const classes = ["footnote", "footnotes", "footnote-ref", "bibliography"]
       .filter((name) => node.classList.contains(name));
     if (classes.length > 0) attributes.push(`class="${classes.join(" ")}"`);
   }

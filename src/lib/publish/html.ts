@@ -1,3 +1,4 @@
+import { resolveBookCitations, type BookBibliography } from "../citations/bibliography";
 import {
   defaultDarkPreviewPalette,
   defaultPreviewPalette,
@@ -84,6 +85,14 @@ function matterPageHtml(page: CompiledMatterPage, placement: "front" | "back"): 
   return `<section class="matter-page ${placement}-matter${page.blank && !title && !paragraphs ? " blank-matter-page" : ""}">\n${title}${paragraphs}${paragraphs ? "\n" : ""}</section>`;
 }
 
+function bibliographyHtml(bibliography: BookBibliography | null): string {
+  if (!bibliography || bibliography.entries.length === 0) return "";
+  const entries = bibliography.entries
+    .map((entry) => `  <p class="bibliography-entry">${entry.html}</p>`)
+    .join("\n");
+  return `<section class="matter-page back-matter bibliography" aria-label="${escapeXmlAttribute(bibliography.heading)}">\n  <h2 class="matter-title">${escapeXml(bibliography.heading)}</h2>\n${entries}\n</section>`;
+}
+
 function footnoteSuffix(note: ResolvedFootnote, restartPerChapter: boolean): string {
   return restartPerChapter ? `ch${note.chapterIndex + 1}-${note.number}` : String(note.number);
 }
@@ -167,41 +176,56 @@ export function buildManuscriptSectionHtml(
   section: ManuscriptSection,
   preview = false,
   dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap,
-  bookFootnotes = resolveBookFootnotes(book, options)
+  bookFootnotes?: BookFootnotes,
+  bibliography?: BookBibliography | null
 ): string {
+  let resolvedBook = book;
+  let resolvedBibliography = bibliography;
+  if (resolvedBibliography === undefined) {
+    const resolved = resolveBookCitations(book, options);
+    resolvedBook = resolved.book;
+    resolvedBibliography = resolved.bibliography;
+  }
+  const resolvedFootnotes = bookFootnotes ?? resolveBookFootnotes(resolvedBook, options);
+
   switch (section.kind) {
     case "cover":
-      return coverPageHtml(book);
+      return coverPageHtml(resolvedBook);
     case "title-page":
-      return titlePageHtml(book, !options.includeCopyrightPage);
+      return titlePageHtml(resolvedBook, !options.includeCopyrightPage);
     case "copyright-page":
-      return copyrightPageHtml(book);
+      return copyrightPageHtml(resolvedBook);
     case "dedication":
-      return dedicationHtml(book);
+      return dedicationHtml(resolvedBook);
     case "contents":
-      return tableOfContentsHtml(book);
+      return tableOfContentsHtml(resolvedBook);
     case "front-matter": {
-      const page = book.frontMatter.find((entry) => entry.id === section.matterId);
+      const page = resolvedBook.frontMatter.find((entry) => entry.id === section.matterId);
       return page ? matterPageHtml(page, "front") : "";
     }
     case "back-matter": {
-      const page = book.backMatter.find((entry) => entry.id === section.matterId);
+      const page = resolvedBook.backMatter.find((entry) => entry.id === section.matterId);
       return page ? matterPageHtml(page, "back") : "";
     }
+    case "bibliography":
+      return bibliographyHtml(resolvedBibliography);
     case "chapter": {
-      const index = book.chapters.findIndex((chapter) => chapter.id === section.chapterId);
-      const chapter = book.chapters[index];
+      const index = resolvedBook.chapters.findIndex((chapter) => chapter.id === section.chapterId);
+      const chapter = resolvedBook.chapters[index];
       if (!chapter) return "";
-      return chapterHtml(chapter, options, preview || index === 0, dropCaps, bookFootnotes);
+      return chapterHtml(chapter, options, preview || index === 0, dropCaps, resolvedFootnotes);
     }
   }
 }
 
 export function buildManuscriptBody(book: CompiledBook, options: PublishOptions): string {
   const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
-  const bookFootnotes = resolveBookFootnotes(book, options);
-  return listManuscriptSections(book, options)
-    .map((section) => buildManuscriptSectionHtml(book, options, section, false, dropCaps, bookFootnotes))
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  const bookFootnotes = resolveBookFootnotes(resolvedBook, options);
+  return listManuscriptSections(resolvedBook, options)
+    .map((section) =>
+      buildManuscriptSectionHtml(resolvedBook, options, section, false, dropCaps, bookFootnotes, bibliography)
+    )
     .filter(Boolean)
     .join("\n");
 }
@@ -343,6 +367,12 @@ function manuscriptCss(
       hyphens: auto;
     }
     .back-matter { break-before: page; page-break-before: always; }
+    .bibliography p.bibliography-entry {
+      margin: 0 0 0.7em;
+      padding-left: 2em;
+      text-indent: -2em;
+      text-align: left;
+    }
     .toc-entry { margin: 0 0 0.7em; text-indent: 0; }
     .toc-entry a {
       color: inherit;
@@ -614,8 +644,13 @@ export function buildPreviewHtml(
   const dark = render.dark ?? false;
   const paginated = render.paginated ?? false;
   const palette = render.palette ?? (dark ? defaultDarkPreviewPalette : defaultPreviewPalette);
-  const section = render.section ?? listManuscriptSections(book, options)[0] ?? null;
-  const content = section ? buildManuscriptSectionHtml(book, options, section, true) : "";
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  const section = render.section ?? listManuscriptSections(resolvedBook, options)[0] ?? null;
+  const dropCaps = options.dropCaps && tokens.dropCap;
+  const bookFootnotes = resolveBookFootnotes(resolvedBook, options);
+  const content = section
+    ? buildManuscriptSectionHtml(resolvedBook, options, section, true, dropCaps, bookFootnotes, bibliography)
+    : "";
   const hasContent = content.length > 0;
   const renderedContent = hasContent
     ? content

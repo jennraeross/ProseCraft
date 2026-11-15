@@ -60,23 +60,51 @@ describe("sanitizeHtml footnotes", () => {
   });
 });
 
-describe("sanitizeInlineHtml", () => {
-  it("allows inline formatting, links, and line breaks", () => {
-    const html = `See <b>bold</b>, <strong>strong</strong>, <i>italic</i>, <em>em</em>, `
-      + `<u>under</u>, <del>strike</del>, <code>code</code>, <a href="https://example.test" onclick="x()">link</a><br>next.`;
-    expect(sanitizeInlineHtml(html)).toBe(
-      `See <b>bold</b>, <strong>strong</strong>, <i>italic</i>, <em>em</em>, `
-      + `<u>under</u>, <s>strike</s>, <code>code</code>, <a href="https://example.test">link</a><br>next.`
+describe("sanitizeHtml citations", () => {
+  it("keeps valid cite-ref markers empty, non-editable, and stripped of hostile attributes", () => {
+    const clean = sanitizeHtml(
+      `<p>Claim<span class="cite-ref extra" data-cites='[{"id":"key","locator":"42","label":"page","prefix":"see ","suffix":"","suppressAuthor":false}]' data-label="(see Key, p. 42)" contenteditable="true" onclick="alert(1)" style="color:red">stale<b>bad</b></span>.</p>`
+    );
+    expect(clean).toBe(
+      `<p>Claim<span class="cite-ref" data-cites="[{&quot;id&quot;:&quot;key&quot;,&quot;locator&quot;:&quot;42&quot;,&quot;label&quot;:&quot;page&quot;,&quot;prefix&quot;:&quot;see &quot;}]" contenteditable="false"></span>.</p>`
     );
   });
 
-  it("blocks headings, images, tables, scene breaks, and nested footnote markers", () => {
+  it("drops hostile, malformed, or oversized data-cites values", () => {
+    expect(sanitizeHtml(`<p>A<span class="cite-ref">stale</span>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<span class="cite-ref" data-cites="{bad">stale</span>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<span class="cite-ref" data-cites="[]">stale</span>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<span class="cite-ref" data-cites='[{"id":"bad id!"}]'>stale</span>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<span class="cite-ref" data-cites='[{"id":"key","extra":"<script>"}]'>stale</span>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<span class="cite-ref" data-cites='[{"id":"key","label":"evil"}]'>stale</span>B</p>`)).toBe(`<p>AB</p>`);
+    expect(sanitizeHtml(`<p>A<span class="cite-ref" data-cites='[{"id":"key","prefix":"${"x".repeat(201)}"}]'>stale</span>B</p>`)).toBe(`<p>AB</p>`);
+  });
+
+  it("unwraps ordinary span tags without the cite-ref class", () => {
+    expect(sanitizeHtml(`<p><span>plain</span></p>`)).toBe(`<p>plain</p>`);
+  });
+});
+
+describe("sanitizeInlineHtml", () => {
+  it("allows inline formatting, links, line breaks, and valid cite-ref markers", () => {
+    const html = `See <b>bold</b>, <strong>strong</strong>, <i>italic</i>, <em>em</em>, `
+      + `<u>under</u>, <del>strike</del>, <code>code</code>, <a href="https://example.test" onclick="x()">link</a>`
+      + `<span class="cite-ref" data-cites='[{"id":"key","locator":"42","label":"page"}]' contenteditable="true">bad</span><br>next.`;
+    expect(sanitizeInlineHtml(html)).toBe(
+      `See <b>bold</b>, <strong>strong</strong>, <i>italic</i>, <em>em</em>, `
+      + `<u>under</u>, <s>strike</s>, <code>code</code>, <a href="https://example.test">link</a>`
+      + `<span class="cite-ref" data-cites="[{&quot;id&quot;:&quot;key&quot;,&quot;locator&quot;:&quot;42&quot;,&quot;label&quot;:&quot;page&quot;}]" contenteditable="false"></span><br>next.`
+    );
+  });
+
+  it("blocks headings, images, tables, scene breaks, nested footnote markers, and hostile citations", () => {
     const hostile = `<h1>Heading</h1>`
       + `<img src="${SRC}" alt="pic">`
       + `<table><tbody><tr><td>Cell</td></tr></tbody></table>`
       + `<div class="scene-break">* * *</div>`
       + `<div class="math-block" data-tex="x^2"></div>`
       + `<sup class="footnote-ref" data-footnote-id="fn-1">1</sup>`
+      + `<span class="cite-ref" data-cites='[{"id":"key","evil":1}]'>dropped</span>`
       + `<a href="javascript:alert(1)">bad</a>`;
     expect(sanitizeInlineHtml(hostile)).toBe(`HeadingCell<a>bad</a>`);
   });

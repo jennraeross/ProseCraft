@@ -29,6 +29,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: ["Mod", "I"], action: "Italic" },
       { keys: ["Mod", "U"], action: "Underline" },
       { keys: ["Mod", "Alt", "F"], action: "Insert footnote" },
+      { keys: ["Mod", "Alt", "C"], action: "Insert citation" },
       { keys: ["Mod", "Z"], action: "Undo" },
       { keys: ["Mod", "Shift", "Z"], action: "Redo" },
       { keys: ["Mod", "Y"], action: "Redo (alternate)" }

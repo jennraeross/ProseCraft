@@ -1,6 +1,12 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "@lucide/svelte";
+  import type { CslItem } from "./citations/csl";
+  import {
+    STYLES,
+    type CitationLocale,
+    type CitationStyleId
+  } from "./citations/styles";
   import {
     defaultPreviewPalette,
     readPreviewPalette,
@@ -62,8 +68,11 @@
     options: PublishOptions;
     theme: "light" | "dark";
     colorScheme: ColorScheme;
+    citations?: CslItem[];
+    citationsCount?: number;
     onOptionsChange: (options: PublishOptions) => void;
     beforeExport: () => Promise<void>;
+    onOpenSources?: () => void;
   };
 
   let {
@@ -74,8 +83,11 @@
     options,
     theme,
     colorScheme,
+    citations = [],
+    citationsCount = citations.length,
     onOptionsChange,
-    beforeExport
+    beforeExport,
+    onOpenSources
   }: Props = $props();
 
   let previewPalette = $state<PreviewPalette>(
@@ -117,7 +129,12 @@
     frontMatter: options.frontMatter,
     backMatter: options.backMatter,
     chapters,
-    documents
+    documents,
+    footnotesRestartPerChapter: options.footnotesRestartPerChapter,
+    citations,
+    citationStyle: options.citationStyle,
+    citationLocale: options.citationLocale,
+    includeBibliography: options.includeBibliography
   }));
   let hasScreenplayDocuments = $derived(documents.some((document) => document.format === "screenplay"));
   let formatEntries = $derived(
@@ -209,7 +226,9 @@
       : 0)
     + compiled.frontMatter.length
   );
-  let backMatterPageEstimate = $derived(compiled.backMatter.length);
+  let backMatterPageEstimate = $derived(
+    compiled.backMatter.length + (previewSections.some((section) => section.kind === "bibliography") ? 1 : 0)
+  );
   let pageEstimate = $derived.by(() => {
     const bodyPages = estimatedPages(compiled.words, previewStyle.wordsPerPage);
     return bodyPages === null ? null : bodyPages + frontMatterPageEstimate + backMatterPageEstimate;
@@ -519,7 +538,12 @@
         frontMatter: exportOptions.frontMatter,
         backMatter: exportOptions.backMatter,
         chapters,
-        documents
+        documents,
+        footnotesRestartPerChapter: exportOptions.footnotesRestartPerChapter,
+        citations,
+        citationStyle: exportOptions.citationStyle,
+        citationLocale: exportOptions.citationLocale,
+        includeBibliography: exportOptions.includeBibliography
       });
       const payload = await renderExport(book, exportOptions);
       const result = await saveExport(payload);
@@ -803,6 +827,60 @@
               {/each}
             </select>
           </label>
+        </div>
+      </section>
+
+      <section class="publish-section">
+        <div class="section-heading">
+          <h2>Citations</h2>
+          <span>{citationsCount} {citationsCount === 1 ? "source" : "sources"}</span>
+        </div>
+        <div class="option-list">
+          <label class="option-row option-row-select">
+            <span>
+              <strong>Citation style</strong>
+              <small>Applied to inline citations and the bibliography.</small>
+            </span>
+            <select
+              aria-label="Citation style"
+              value={options.citationStyle ?? "apa7"}
+              onchange={(event) => update("citationStyle", (event.currentTarget as HTMLSelectElement).value as CitationStyleId)}
+            >
+              {#each STYLES as citationStyle (citationStyle.id)}
+                <option value={citationStyle.id}>{citationStyle.label}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="option-row option-row-select">
+            <span>
+              <strong>Citation language</strong>
+              <small>Used for terms like ed., pp., and n.d.</small>
+            </span>
+            <select
+              aria-label="Citation language"
+              value={options.citationLocale ?? "en"}
+              onchange={(event) => update("citationLocale", (event.currentTarget as HTMLSelectElement).value as CitationLocale)}
+            >
+              <option value="en">English</option>
+              <option value="de">Deutsch</option>
+            </select>
+          </label>
+          <label class="option-row">
+            <input
+              type="checkbox"
+              checked={options.includeBibliography ?? true}
+              onchange={(event) => update("includeBibliography", (event.currentTarget as HTMLInputElement).checked)}
+            />
+            <span>
+              <strong>Include bibliography</strong>
+              <small>Append a formatted reference list when citations are used.</small>
+            </span>
+          </label>
+          {#if onOpenSources}
+            <button type="button" class="new-style-button" onclick={onOpenSources}>
+              Sources…
+            </button>
+          {/if}
         </div>
       </section>
 

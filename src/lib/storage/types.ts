@@ -1,3 +1,4 @@
+import type { CslItem } from "../citations/csl";
 import type {
   ChapterData,
   DocumentData,
@@ -126,6 +127,8 @@ export type ProjectData = {
   snapshots?: DocumentSnapshot[];
   /** User-definable labels for scenes and chapters. */
   labels?: LabelDef[];
+  /** Project bibliography library stored as CSL-JSON items. */
+  citations?: CslItem[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */

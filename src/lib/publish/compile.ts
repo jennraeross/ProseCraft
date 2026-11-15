@@ -1,3 +1,6 @@
+import { buildBookBibliography } from "../citations/bibliography";
+import type { CslItem } from "../citations/csl";
+import type { CitationLocale, CitationStyleId } from "../citations/styles";
 import { normalizeFootnotes, numberedFootnotes } from "../footnotes";
 import { sanitizeHtml } from "../sanitize";
 import { hasRichPlaceholders } from "../rich/model";
@@ -25,6 +28,10 @@ type CompileInput = {
   chapters: ChapterData[];
   documents: DocumentData[];
   footnotesRestartPerChapter?: boolean;
+  citations?: readonly CslItem[];
+  citationStyle?: CitationStyleId;
+  citationLocale?: CitationLocale;
+  includeBibliography?: boolean;
 };
 
 function compileMatterPages(pages: MatterPage[]): CompiledMatterPage[] {
@@ -93,6 +100,18 @@ export function compileBook(input: CompileInput): CompiledBook {
     });
   }
 
+  const citations = input.citations && input.citations.length > 0
+    ? [...input.citations]
+    : undefined;
+  const bibliography = citations && input.includeBibliography !== false
+    ? buildBookBibliography(
+      compiledChapters,
+      citations,
+      input.citationStyle ?? "apa7",
+      input.citationLocale ?? "en"
+    )
+    : null;
+
   return {
     title: input.title.trim() || "Untitled",
     subtitle: input.subtitle.trim(),
@@ -103,7 +122,9 @@ export function compileBook(input: CompileInput): CompiledBook {
     backMatter: compileMatterPages(input.backMatter),
     chapters: compiledChapters,
     words: compiledChapters.reduce((total, chapter) => total + chapter.words, 0),
-    scenes: compiledChapters.reduce((total, chapter) => total + chapter.scenes.length, 0)
+    scenes: compiledChapters.reduce((total, chapter) => total + chapter.scenes.length, 0),
+    ...(citations ? { citations } : {}),
+    ...(bibliography ? { bibliography } : {})
   };
 }
 
