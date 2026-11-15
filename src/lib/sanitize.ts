@@ -1,3 +1,4 @@
+import { normalizeCiteDataAttr } from "./citations/cite-marker";
 import { applyImageLayout, readImageLayout } from "./image-layout";
 import { normalizedRichPlaceholder, richKindOf } from "./rich/model";
 
@@ -18,6 +19,7 @@ const inlineSafeTags = new Set([
 ]);
 export const FOOTNOTE_REF_CLASS = "footnote-ref";
 export const FOOTNOTE_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+export const CITE_REF_CLASS = "cite-ref";
 export const MAX_EMBEDDED_IMAGE_BYTES = 1_500_000;
 
 /** Returns true when `id` is a valid, safe footnote identifier. */
@@ -53,6 +55,16 @@ function cleanNode(node: Node, inlineOnly = false): Node | null {
     const clean = document.createElement("sup");
     clean.className = FOOTNOTE_REF_CLASS;
     clean.setAttribute("data-footnote-id", id);
+    clean.setAttribute("contenteditable", "false");
+    return clean;
+  }
+
+  if (node.tagName === "SPAN" && node.classList.contains(CITE_REF_CLASS)) {
+    const dataCites = normalizeCiteDataAttr(node.getAttribute("data-cites"));
+    if (!dataCites) return null;
+    const clean = document.createElement("span");
+    clean.className = CITE_REF_CLASS;
+    clean.setAttribute("data-cites", dataCites);
     clean.setAttribute("contenteditable", "false");
     return clean;
   }

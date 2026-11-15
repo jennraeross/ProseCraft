@@ -37,6 +37,7 @@
     Pencil,
     PenLine,
     Plus,
+    Quote,
     Redo2,
     RotateCcw,
     Calculator,
@@ -183,7 +184,19 @@
     type SystemFontFamily
   } from "$lib/editor-fonts";
   import { FOOTNOTE_REF_CLASS, sanitizeHtml as cleanHtml, sanitizeInlineHtml } from "$lib/sanitize";
-  import FootnotePopover from "$lib/FootnotePopover.svelte";
+  import FootnotePopover, { type FootnoteCitationRequest } from "$lib/FootnotePopover.svelte";
+  import CitationLibraryDialog from "$lib/CitationLibraryDialog.svelte";
+  import CitationPicker from "$lib/CitationPicker.svelte";
+  import {
+    CITE_REF_CLASS,
+    CITE_REF_SELECTOR,
+    buildCiteData,
+    citeMarkerHtml,
+    parseCiteData,
+    renderCitationLabels,
+    type CiteRefItem
+  } from "$lib/citations/cite-marker";
+  import { normalizeCslItems, type CslItem } from "$lib/citations/csl";
   import {
     FOOTNOTE_REF_SELECTOR,
     addFootnote,
@@ -667,6 +680,18 @@
     beforeSelection: CaretSelection;
   } | null>(null);
   let footnoteFlashTimer: ReturnType<typeof setTimeout> | undefined;
+  let citations = $state<CslItem[]>([]);
+  let citationLibraryOpen = $state(false);
+  let citationPicker = $state<{
+    left: number;
+    top: number;
+    initialCites: CiteRefItem[];
+    isEditing: boolean;
+    target:
+      | { kind: "editor-insert"; range: Range }
+      | { kind: "editor-edit"; marker: HTMLElement }
+      | { kind: "footnote"; onCommit: (cites: CiteRefItem[]) => void; onRemove?: () => void };
+  } | null>(null);
   // On phones both sidebars are overlay drawers. On tablets the progress
   // sidebar still overlays, but the binder remains part of the layout.
   let mobileDrawerOpen = $derived(
@@ -1253,6 +1278,7 @@
       researchFolders,
       researchItems,
       publishOptions,
+      citations,
       comments: dropOrphanComments(comments, new Set(documents.map((doc) => doc.id))),
       snapshots: dropOrphanSnapshots(snapshots, new Set(documents.map((doc) => doc.id)))
     };
@@ -1387,6 +1413,9 @@
     activity = project.activity;
     timelineNodes = normalizeTimelineNodes(project.timelineNodes);
     publishOptions = normalizePublishOptions(project.publishOptions);
+    citations = normalizeCslItems(project.citations);
+    citationLibraryOpen = false;
+    citationPicker = null;
     const savedRows = Array.isArray(project.storyboardRows)
       ? project.storyboardRows.filter((row): row is StoryboardRow =>
         typeof row === "object" && row !== null && typeof row.id === "string" && typeof row.title === "string")
@@ -2492,7 +2521,8 @@
       researchFolderName: "",
       researchFolders: [],
       researchItems: [],
-      publishOptions: defaultPublishOptions()
+      publishOptions: defaultPublishOptions(),
+      citations: []
     };
     const chapter = next.chapters[0];
     const scene: DocumentData = {
@@ -3418,6 +3448,7 @@
     setMarkdownSource(inChapterMode ? chapterMarkdownSource() : (active?.markdownSource ?? htmlToMarkdown(editor.innerHTML, active?.footnotes)));
     selectEditorImage(null);
     closeFootnotePopover(false);
+    closeCitationPicker(false);
     clearRichTextFade();
     markdownEditorMode = true;
   }
@@ -3783,10 +3814,23 @@
       selectEditorImage(null);
       hideHarperPopover();
       hideCommentSelectionPopover();
+      closeCitationPicker(false);
       openFootnotePopoverForMarker(footnoteRef);
       return;
     }
     if (footnotePopover) closeFootnotePopover(false);
+    const citeRef = target instanceof Element
+      ? target.closest<HTMLElement>(CITE_REF_SELECTOR)
+      : null;
+    if (citeRef && editor.contains(citeRef)) {
+      event.preventDefault();
+      selectEditorImage(null);
+      hideHarperPopover();
+      hideCommentSelectionPopover();
+      openCitationPickerForMarker(citeRef);
+      return;
+    }
+    if (citationPicker && citationPicker.target.kind !== "footnote") closeCitationPicker(false);
     const divider = target instanceof Element ? target.closest<HTMLElement>(".scene-break") : null;
     if (divider && editor.contains(divider)) {
       event.preventDefault();
@@ -4055,6 +4099,7 @@
     editor.innerHTML = html;
     ensureParagraphsAroundRichBlocks(editor);
     renumberFootnoteMarkers(editor);
+    refreshEditorCitationLabels();
     const cleaned = cleanHtml(html);
     liveEditorHtml = cleaned;
     knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
@@ -4066,7 +4111,10 @@
     syncScreenplayElementType();
     updateScreenplayMetrics();
     hideHarperPopover();
-    if (!applyingUndoHistory) footnotePopover = null;
+    if (!applyingUndoHistory) {
+      footnotePopover = null;
+      citationPicker = null;
+    }
     scheduleHarperLint();
   }
 
@@ -5221,6 +5269,7 @@
     const marker = editor?.querySelector<HTMLElement>(
       `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(current.id)}"]`
     ) ?? null;
+    if (citationPicker?.target.kind === "footnote") citationPicker = null;
     footnotePopover = null;
     clearActiveFootnoteMarkerClass();
     if (refocusEditor && editor && !markdownEditorMode) {
@@ -5379,6 +5428,225 @@
     const marker = goToFootnote(id);
     if (!marker) return;
     void tick().then(() => openFootnotePopoverForMarker(marker));
+  }
+
+  function refreshEditorCitationLabels() {
+    if (!editor) return;
+    renderCitationLabels(
+      editor,
+      citations,
+      publishOptions.citationStyle ?? "apa7",
+      publishOptions.citationLocale ?? "en"
+    );
+  }
+
+  $effect(() => {
+    void citations;
+    void publishOptions.citationStyle;
+    void publishOptions.citationLocale;
+    if (editor && !markdownEditorMode) {
+      refreshEditorCitationLabels();
+    }
+  });
+
+  function handleCitationsChange(next: CslItem[]) {
+    citations = next;
+    pageStateDirty = true;
+    commitPageState();
+    persist();
+    refreshEditorCitationLabels();
+  }
+
+  function openCitationLibrary() {
+    citationLibraryOpen = true;
+  }
+
+  function positionCitationPickerForRect(rect: DOMRect): { left: number; top: number } {
+    const width = 370;
+    const estimatedHeight = 360;
+    const showAbove = rect.bottom + estimatedHeight + 16 > window.innerHeight && rect.top > estimatedHeight;
+    return {
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      top: showAbove
+        ? Math.max(8, rect.top - estimatedHeight)
+        : Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - estimatedHeight - 8))
+    };
+  }
+
+  function clearActiveCitationMarkerClass() {
+    if (!editor) return;
+    for (const el of editor.querySelectorAll(`span.${CITE_REF_CLASS}.active-cite`)) {
+      el.classList.remove("active-cite");
+    }
+  }
+
+  function openCitationPickerAtCaret() {
+    if (!editor || markdownEditorMode || !activeDocumentId) return;
+    closeFootnotePopover(false);
+    hideHarperPopover();
+    hideCommentSelectionPopover();
+    clearActiveCitationMarkerClass();
+
+    let range: Range;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0
+      && editor.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      range = selection.getRangeAt(0).cloneRange();
+      range.collapse(false);
+    } else {
+      range = document.createRange();
+      const lastParagraph = editor.querySelector("p:last-of-type") ?? editor.lastElementChild ?? editor;
+      range.selectNodeContents(lastParagraph);
+      range.collapse(false);
+    }
+
+    const rawRect = range.getBoundingClientRect();
+    const fallbackEl = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement ?? editor;
+    const rect = rawRect.width > 0 || rawRect.height > 0 ? rawRect : fallbackEl.getBoundingClientRect();
+    citationPicker = {
+      ...positionCitationPickerForRect(rect),
+      initialCites: [],
+      isEditing: false,
+      target: { kind: "editor-insert", range }
+    };
+  }
+
+  function openCitationPickerForMarker(marker: HTMLElement) {
+    if (!editor || markdownEditorMode) return;
+    const cites = parseCiteData(marker.getAttribute("data-cites"));
+    if (!cites) return;
+    clearActiveCitationMarkerClass();
+    marker.classList.add("active-cite");
+    citationPicker = {
+      ...positionCitationPickerForRect(marker.getBoundingClientRect()),
+      initialCites: cites,
+      isEditing: true,
+      target: { kind: "editor-edit", marker }
+    };
+  }
+
+  function openCitationPickerForFootnote(request: FootnoteCitationRequest) {
+    clearActiveCitationMarkerClass();
+    citationPicker = {
+      ...positionCitationPickerForRect(request.rect),
+      initialCites: request.initialCites,
+      isEditing: request.isEditing,
+      target: {
+        kind: "footnote",
+        onCommit: request.onCommit,
+        onRemove: request.onRemove
+      }
+    };
+  }
+
+  function closeCitationPicker(refocusEditor = false) {
+    const current = citationPicker;
+    if (!current) return;
+    citationPicker = null;
+    clearActiveCitationMarkerClass();
+    if (refocusEditor && current.target.kind !== "footnote" && editor && !markdownEditorMode) {
+      if (current.target.kind === "editor-edit" && editor.contains(current.target.marker)) {
+        placeCaretAfterMarker(current.target.marker);
+      } else {
+        editor.focus();
+      }
+    }
+  }
+
+  function repositionCitationPicker() {
+    const current = citationPicker;
+    if (!current || !editor) return;
+    if (current.target.kind !== "editor-edit") return;
+    if (!editor.contains(current.target.marker)) {
+      closeCitationPicker(false);
+      return;
+    }
+    const rect = current.target.marker.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      closeCitationPicker(false);
+      return;
+    }
+    const pos = positionCitationPickerForRect(rect);
+    current.left = pos.left;
+    current.top = pos.top;
+  }
+
+  function commitCitationPicker(cites: CiteRefItem[]) {
+    const current = citationPicker;
+    if (!current) return;
+    if (current.target.kind === "footnote") {
+      const fnCommit = current.target.onCommit;
+      citationPicker = null;
+      fnCommit(cites);
+      return;
+    }
+    if (!editor || markdownEditorMode) {
+      closeCitationPicker(false);
+      return;
+    }
+
+    const before = seedBodyUndoBeforeEdit();
+    if (current.target.kind === "editor-edit") {
+      const marker = current.target.marker;
+      if (editor.contains(marker)) {
+        marker.setAttribute("data-cites", buildCiteData(cites));
+        refreshEditorCitationLabels();
+        finishProgrammaticBodyEdit(before, true);
+        placeCaretAfterMarker(marker);
+      }
+    } else {
+      const range = current.target.range;
+      const tpl = document.createElement("div");
+      tpl.innerHTML = citeMarkerHtml(cites);
+      const marker = tpl.firstElementChild as HTMLElement;
+      if (editor.contains(range.commonAncestorContainer)) {
+        range.insertNode(marker);
+      } else {
+        const lastParagraph = editor.querySelector("p:last-of-type") ?? editor.lastElementChild ?? editor;
+        lastParagraph.append(marker);
+      }
+      const after = document.createRange();
+      after.setStartAfter(marker);
+      after.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(after);
+      refreshEditorCitationLabels();
+      finishProgrammaticBodyEdit(before, true);
+      editor.focus();
+    }
+    citationPicker = null;
+    clearActiveCitationMarkerClass();
+  }
+
+  function removeCitationFromPicker() {
+    const current = citationPicker;
+    if (!current) return;
+    if (current.target.kind === "footnote") {
+      const fnRemove = current.target.onRemove;
+      citationPicker = null;
+      fnRemove?.();
+      return;
+    }
+    if (current.target.kind === "editor-edit" && editor && !markdownEditorMode) {
+      const marker = current.target.marker;
+      if (editor.contains(marker)) {
+        const before = seedBodyUndoBeforeEdit();
+        const range = document.createRange();
+        range.setStartBefore(marker);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        marker.remove();
+        finishProgrammaticBodyEdit(before, true);
+        editor.focus();
+      }
+    }
+    citationPicker = null;
+    clearActiveCitationMarkerClass();
   }
 
   function snapshotLabel(snapshot: DocumentSnapshot): string {
@@ -8261,6 +8529,15 @@
       }
       return;
     }
+    if ((event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey
+      && (event.key.toLowerCase() === "c" || event.code === "KeyC")) {
+      if (workspaceView === "writing" && !markdownEditorMode && activeDocumentId
+        && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
+        openCitationPickerAtCaret();
+      }
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openProjectSearch();
@@ -8282,6 +8559,7 @@
       // Pasted or restored widgets arrive as source only and need rendering.
       ensureParagraphsAroundRichBlocks(editor);
       renumberFootnoteMarkers(editor);
+      refreshEditorCitationLabels();
       void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
       if (event instanceof Event && screenplayActive && !markdownEditorMode) {
         syncScreenplayTyping();
@@ -8396,6 +8674,7 @@
       storyboardRows: $state.snapshot(storyboardRows),
       timelineNodes: $state.snapshot(timelineNodes),
       publishOptions: $state.snapshot(publishOptions),
+      citations: $state.snapshot(citations),
       chapters: $state.snapshot(chapters),
       documents: $state.snapshot(documents)
     };
@@ -8511,6 +8790,10 @@
     if (step.changes.storyboardRows) storyboardRows = next.storyboardRows as StoryboardRow[];
     if (step.changes.timelineNodes) timelineNodes = next.timelineNodes as TimelineNode[];
     if (step.changes.publishOptions) publishOptions = next.publishOptions as PublishOptions;
+    if (step.changes.citations) {
+      citations = next.citations as CslItem[];
+      refreshEditorCitationLabels();
+    }
     if (step.changes.chapters) chapters = next.chapters as ChapterData[];
     if (step.changes.documents) documents = next.documents as DocumentData[];
     if (!storyboardDrawings.some((drawing) => drawing.id === selectedDrawingId)) selectedDrawingId = null;
@@ -9177,10 +9460,14 @@
     // every caret move, which would otherwise dismiss it instantly.
     window.addEventListener("scroll", repositionHarperPopover, true);
     window.addEventListener("scroll", repositionFootnotePopover, true);
+    window.addEventListener("scroll", repositionCitationPicker, true);
     const handleOutsideFootnotePointer = (event: PointerEvent) => {
-      if (!footnotePopover) return;
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest(`.footnote-popover, ${FOOTNOTE_REF_SELECTOR}`)) return;
+      if (citationPicker && !target?.closest(`.citation-picker, ${CITE_REF_SELECTOR}`)) {
+        closeCitationPicker(false);
+      }
+      if (!footnotePopover) return;
+      if (target?.closest(`.footnote-popover, .citation-picker, ${FOOTNOTE_REF_SELECTOR}`)) return;
       closeFootnotePopover(false);
     };
     window.addEventListener("pointerdown", handleOutsideFootnotePointer);
@@ -9191,6 +9478,7 @@
       window.removeEventListener("scroll", repositionHarperPopover, true);
       if (screenplayMetricsTimer) clearTimeout(screenplayMetricsTimer);
       window.removeEventListener("scroll", repositionFootnotePopover, true);
+      window.removeEventListener("scroll", repositionCitationPicker, true);
       window.removeEventListener("pointerdown", handleOutsideFootnotePointer);
       keepCommentPreview();
     };
@@ -10327,6 +10615,8 @@
           <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><MessageSquareText size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert footnote" title="Insert footnote" onpointerdown={(event) => event.preventDefault()} onclick={insertFootnoteAtCaret}><Superscript size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert citation" title="Insert citation" onpointerdown={(event) => event.preventDefault()} onclick={openCitationPickerAtCaret}><Quote size={16} aria-hidden="true" /></button>
+          <button class="tool-button tool-button-wide" aria-label="Sources" title="Sources…" onpointerdown={(event) => event.preventDefault()} onclick={openCitationLibrary}>Sources…</button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
@@ -10554,9 +10844,29 @@
             initialHtml={footnotePopover.initialHtml}
             left={footnotePopover.left}
             top={footnotePopover.top}
+            {citations}
+            citationStyle={publishOptions.citationStyle ?? "apa7"}
+            citationLocale={publishOptions.citationLocale ?? "en"}
             onChange={(html) => footnotePopover && handleFootnotePopoverChange(footnotePopover.id, footnotePopover.docId, html)}
             onRemove={() => footnotePopover && removeFootnoteById(footnotePopover.id, true)}
             onClose={() => closeFootnotePopover(true)}
+            onRequestCitation={openCitationPickerForFootnote}
+          />
+        {/if}
+
+        {#if citationPicker && !markdownEditorMode}
+          <CitationPicker
+            items={citations}
+            citationStyle={publishOptions.citationStyle ?? "apa7"}
+            citationLocale={publishOptions.citationLocale ?? "en"}
+            initialCites={citationPicker.initialCites}
+            isEditing={citationPicker.isEditing}
+            left={citationPicker.left}
+            top={citationPicker.top}
+            onCommit={commitCitationPicker}
+            onRemove={citationPicker.isEditing ? removeCitationFromPicker : undefined}
+            onClose={() => closeCitationPicker(true)}
+            onOpenLibrary={() => { closeCitationPicker(false); openCitationLibrary(); }}
           />
         {/if}
 
@@ -10869,8 +11179,11 @@
             options={publishOptions}
             theme={resolvedTheme}
             {colorScheme}
+            {citations}
+            citationsCount={citations.length}
             onOptionsChange={handlePublishOptionsChange}
             beforeExport={preparePublishExport}
+            onOpenSources={openCitationLibrary}
           />
         {/if}
     </section>
@@ -11710,6 +12023,18 @@
       </p>
     </section>
     <section class="preference-section">
+      <div class="preference-heading">
+        <strong>Open source licences / Attribution</strong>
+        <span>Bundled citation style rules are derived from the Citation Style Language project styles (CC BY-SA 3.0).</span>
+      </div>
+      <p class="about-link-row">
+        <a class="about-link" href="https://github.com/citation-style-language/styles" target="_blank" rel="noreferrer" onclick={(event) => {
+          event.preventDefault();
+          void openExternalUrl("https://github.com/citation-style-language/styles");
+        }}>https://github.com/citation-style-language/styles</a>
+      </p>
+    </section>
+    <section class="preference-section">
       <div class="preference-heading"><strong>Diagnostics</strong><span>The report below contains no titles or text from your writing. It only describes the app and your setup.</span></div>
       <textarea
         class="about-diagnostics"
@@ -12246,6 +12571,15 @@
     <div class="settings-footer"><span>Only http and https links are supported.</span><button class="done-button" type="submit">Add link</button></div>
   </form>
 </dialog>
+
+{#if citationLibraryOpen}
+  <CitationLibraryDialog
+    items={citations}
+    {documents}
+    onChange={handleCitationsChange}
+    onClose={() => (citationLibraryOpen = false)}
+  />
+{/if}
 
 {#if projectSearchOpen}
   <SearchDialog
@@ -13063,6 +13397,24 @@
   @keyframes footnote-flash {
     0% { box-shadow: 0 0 0 3px var(--accent); background: color-mix(in srgb, var(--accent) 42%, transparent); }
     100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .editor-content :global(span.cite-ref) {
+    display: inline;
+    margin: 0 1px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    color: var(--accent-strong);
+    font-size: 0.92em;
+    cursor: pointer;
+    user-select: none;
+  }
+  .editor-content :global(span.cite-ref::after) {
+    content: attr(data-label);
+  }
+  .editor-content :global(span.cite-ref:hover),
+  .editor-content :global(span.cite-ref.active-cite) {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
   .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }

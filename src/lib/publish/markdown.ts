@@ -14,6 +14,15 @@ import {
   hasRichPlaceholders,
   richPlaceholders
 } from "../rich/model";
+import { resolveBookCitations } from "../citations/bibliography";
+import {
+  CITE_REF_CLASS,
+  CITE_REF_SELECTOR,
+  formatPandocCitations,
+  parseCiteData,
+  parsePandocCitationCluster,
+  type CiteRefItem
+} from "../citations/cite-marker";
 import { FOOTNOTE_REF_CLASS, isValidFootnoteId, sanitizeInlineHtml } from "../sanitize";
 import { resolveBookFootnotes, type ResolvedFootnote } from "./footnotes";
 import {
@@ -130,6 +139,15 @@ function markdownService(): TurndownService {
       return `[^${id}]`;
     }
   });
+  service.addRule("citeRef", {
+    filter: (node) =>
+      node.nodeName === "SPAN"
+      && node.classList.contains(CITE_REF_CLASS),
+    replacement: (_content, node) => {
+      const cites = parseCiteData((node as HTMLElement).getAttribute("data-cites"));
+      return cites ? formatPandocCitations(cites) : "";
+    }
+  });
   service.addRule("underline", {
     filter: "u",
     replacement: (content) => `<u>${content}</u>`
@@ -207,6 +225,52 @@ function configureMarked(): void {
           const id = String(ref.id ?? "");
           if (!isValidFootnoteId(id)) return "";
           return `<sup class="${FOOTNOTE_REF_CLASS}" data-footnote-id="${escapeAttribute(id)}" contenteditable="false"></sup>`;
+        }
+      },
+      {
+        name: "citeRef",
+        level: "inline",
+        start(src) {
+          return src.search(/\[(?!\^)[^\]\n]*@/);
+        },
+        tokenizer(src) {
+          if (!src.startsWith("[") || src.startsWith("[^")) return undefined;
+          let end = -1;
+          let escaped = false;
+          for (let i = 1; i < src.length; i += 1) {
+            const ch = src[i];
+            if (escaped) {
+              escaped = false;
+              continue;
+            }
+            if (ch === "\\") {
+              escaped = true;
+              continue;
+            }
+            if (ch === "[" || ch === "\n" || ch === "\r") {
+              return undefined;
+            }
+            if (ch === "]") {
+              end = i;
+              break;
+            }
+          }
+          if (end <= 1) return undefined;
+          const next = src[end + 1];
+          if (next === "(" || (next === "[" && src[end + 2] !== "^")) return undefined;
+          const raw = src.slice(0, end + 1);
+          const cites = parsePandocCitationCluster(src.slice(1, end));
+          if (!cites) return undefined;
+          return {
+            type: "citeRef",
+            raw,
+            cites
+          };
+        },
+        renderer(token: Token) {
+          const ref = token as Token & { cites?: CiteRefItem[] };
+          if (!ref.cites || ref.cites.length === 0) return "";
+          return `<span class="${CITE_REF_CLASS}" data-cites="${escapeAttribute(JSON.stringify(ref.cites))}" contenteditable="false"></span>`;
         }
       },
       {
@@ -311,7 +375,8 @@ export function htmlToMarkdown(html: string, footnotes?: readonly FootnoteDef[])
 function seedRichPlaceholders(html: string): string {
   const hasRich = hasRichPlaceholders(html);
   const hasFootnotes = html.includes(FOOTNOTE_REF_CLASS);
-  if (!hasRich && !hasFootnotes) return html;
+  const hasCitations = html.includes(CITE_REF_CLASS);
+  if (!hasRich && !hasFootnotes && !hasCitations) return html;
   const parsed = new DOMParser().parseFromString(html, "text/html");
   if (hasRich) {
     for (const element of richPlaceholders(parsed.body)) {
@@ -322,6 +387,11 @@ function seedRichPlaceholders(html: string): string {
     for (const element of parsed.body.querySelectorAll<HTMLElement>(
       `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id]`
     )) {
+      element.replaceChildren("\u200b");
+    }
+  }
+  if (hasCitations) {
+    for (const element of parsed.body.querySelectorAll<HTMLElement>(CITE_REF_SELECTOR)) {
       element.replaceChildren("\u200b");
     }
   }
@@ -417,6 +487,8 @@ function renumberSceneHtmlForMarkdown(
 }
 
 export function exportMarkdown(book: CompiledBook, options: PublishOptions): ExportPayload {
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  book = resolvedBook;
   const turndown = markdownService();
   const blocks: string[] = [];
   const bookFootnotes = resolveBookFootnotes(book, options);
@@ -465,6 +537,13 @@ export function exportMarkdown(book: CompiledBook, options: PublishOptions): Exp
 
   for (const page of book.backMatter) {
     blocks.push([page.title ? `## ${page.title}` : "", page.body].filter(Boolean).join("\n\n"));
+  }
+
+  if (bibliography && bibliography.entries.length > 0) {
+    const items = bibliography.entries
+      .map((entry) => `- ${htmlToInlineMarkdown(entry.html)}`)
+      .join("\n");
+    blocks.push(`## ${bibliography.heading}\n\n${items}`);
   }
 
   if (bookFootnotes.all.length > 0) {

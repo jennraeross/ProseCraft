@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2.js";
+import { normalizeCslItems } from "$lib/citations/csl";
 import { normalizeFootnotes } from "$lib/footnotes";
 import { normalizeProjectKind } from "$lib/project-kind";
 import { htmlToMarkdown, markdownToDocument } from "$lib/publish/markdown";
@@ -701,6 +702,9 @@ export async function readOpenProject(
   );
 
   const normalizedKind = normalizeProjectKind(payload.project.kind);
+  const normalizedCitations = payload.project.citations !== undefined
+    ? normalizeCslItems(payload.project.citations)
+    : undefined;
   const projectRecord: ProjectData = {
     ...payload.project,
     id: payload.id,
@@ -713,6 +717,11 @@ export async function readOpenProject(
     projectRecord.kind = normalizedKind;
   } else {
     delete projectRecord.kind;
+  }
+  if (normalizedCitations !== undefined) {
+    projectRecord.citations = normalizedCitations;
+  } else {
+    delete projectRecord.citations;
   }
 
   return {
@@ -762,8 +771,9 @@ async function writeIfChanged(
 }
 
 function projectPayload(project: StoredProject): ProjectFilePayload {
-  const { documents, chapters, storyboardRows, storyboardCards, kind, ...rest } = project.project;
+  const { documents, chapters, storyboardRows, storyboardCards, kind, citations, ...rest } = project.project;
   const normalizedKind = normalizeProjectKind(kind);
+  const normalizedCitations = citations !== undefined ? normalizeCslItems(citations) : undefined;
   return {
     format: PROJECT_FORMAT,
     version: PROJECT_VERSION,
@@ -777,6 +787,7 @@ function projectPayload(project: StoredProject): ProjectFilePayload {
     project: {
       ...rest,
       ...(normalizedKind ? { kind: normalizedKind } : {}),
+      ...(normalizedCitations !== undefined ? { citations: normalizedCitations } : {}),
       documents: [],
       chapters: [],
       storyboardRows: [],

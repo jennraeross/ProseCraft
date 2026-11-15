@@ -758,6 +758,266 @@ fn oauth_cancel_loopback() {
     cancel_loopback_session();
 }
 
+const ZOTERO_HOST: &str = "127.0.0.1:23119";
+const ZOTERO_PORT: u16 = 23119;
+const ZOTERO_TIMEOUT: Duration = Duration::from_secs(5);
+const ZOTERO_MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
+const ZOTERO_MAX_PATH_LEN: usize = 4096;
+
+fn validate_zotero_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') || path.starts_with("//") {
+        return Err("Zotero request path must start with a single '/'.".to_string());
+    }
+    if path.len() > ZOTERO_MAX_PATH_LEN {
+        return Err("Zotero request path is too long.".to_string());
+    }
+    if !path.bytes().all(|b| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'/'
+                    | b'?'
+                    | b'&'
+                    | b'='
+                    | b'+'
+                    | b'%'
+                    | b':'
+                    | b'@'
+                    | b'!'
+                    | b'$'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b','
+                    | b';'
+            )
+    }) {
+        return Err("Zotero request path contains disallowed characters.".to_string());
+    }
+    Ok(())
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_http_headers(header_bytes: &[u8]) -> Result<(u16, Option<usize>, bool), String> {
+    let header_str = std::str::from_utf8(header_bytes)
+        .map_err(|_| "Zotero returned invalid HTTP headers.".to_string())?;
+    let mut lines = header_str.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| "Zotero returned an empty HTTP response.".to_string())?;
+    let mut status_parts = status_line.split_whitespace();
+    let version = status_parts.next().unwrap_or_default();
+    if !version.starts_with("HTTP/") {
+        return Err("Zotero returned a malformed HTTP status line.".to_string());
+    }
+    let status_code = status_parts
+        .next()
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "Zotero returned an invalid HTTP status code.".to_string())?;
+
+    let mut content_length: Option<usize> = None;
+    let mut is_chunked = false;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            let name_lower = name.trim().to_ascii_lowercase();
+            let value_trim = value.trim();
+            if name_lower == "content-length"
+                && let Ok(len) = value_trim.parse::<usize>()
+            {
+                content_length = Some(len);
+            } else if name_lower == "transfer-encoding"
+                && value_trim.to_ascii_lowercase().contains("chunked")
+            {
+                is_chunked = true;
+            }
+        }
+    }
+
+    Ok((status_code, content_length, is_chunked))
+}
+
+enum ChunkedDecode {
+    Incomplete,
+    Complete(Vec<u8>),
+}
+
+fn decode_chunked_body(raw: &[u8]) -> Result<ChunkedDecode, String> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+
+    loop {
+        let Some(rel_crlf) = raw[pos..].windows(2).position(|w| w == b"\r\n") else {
+            return Ok(ChunkedDecode::Incomplete);
+        };
+        let size_line = std::str::from_utf8(&raw[pos..pos + rel_crlf])
+            .map_err(|_| "Invalid chunked encoding from Zotero.".to_string())?;
+        let size_hex = size_line.split(';').next().unwrap_or_default().trim();
+        let chunk_size = usize::from_str_radix(size_hex, 16)
+            .map_err(|_| "Invalid chunk size from Zotero.".to_string())?;
+        pos += rel_crlf + 2;
+
+        if chunk_size == 0 {
+            if raw.len() < pos + 2 {
+                return Ok(ChunkedDecode::Incomplete);
+            }
+            return Ok(ChunkedDecode::Complete(out));
+        }
+
+        if out.len().saturating_add(chunk_size) > ZOTERO_MAX_RESPONSE_BYTES {
+            return Err("Zotero response exceeded 5 MB limit.".to_string());
+        }
+
+        if raw.len() < pos + chunk_size + 2 {
+            return Ok(ChunkedDecode::Incomplete);
+        }
+        out.extend_from_slice(&raw[pos..pos + chunk_size]);
+        if &raw[pos + chunk_size..pos + chunk_size + 2] != b"\r\n" {
+            return Err("Malformed chunk terminator from Zotero.".to_string());
+        }
+        pos += chunk_size + 2;
+    }
+}
+
+fn map_zotero_io_error(error: std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionRefused => {
+            "Zotero is not running (connection refused on 127.0.0.1:23119).".to_string()
+        }
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+            "Zotero request timed out after 5s.".to_string()
+        }
+        _ => format!("Could not reach Zotero: {error}"),
+    }
+}
+
+fn perform_zotero_request_to(addr: std::net::SocketAddr, path: &str) -> Result<String, String> {
+    validate_zotero_path(path)?;
+
+    let deadline = Instant::now() + ZOTERO_TIMEOUT;
+    let mut stream = TcpStream::connect_timeout(&addr, ZOTERO_TIMEOUT).map_err(map_zotero_io_error)?;
+    stream
+        .set_write_timeout(Some(ZOTERO_TIMEOUT))
+        .map_err(map_zotero_io_error)?;
+    stream
+        .set_read_timeout(Some(ZOTERO_TIMEOUT))
+        .map_err(map_zotero_io_error)?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {ZOTERO_HOST}\r\nUser-Agent: ProseCraft\r\nAccept: application/json, text/plain, */*\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(map_zotero_io_error)?;
+
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut parsed_headers: Option<(usize, u16, Option<usize>, bool)> = None;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Zotero request timed out after 5s.".to_string());
+        }
+        let _ = stream.set_read_timeout(Some(remaining));
+
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read_len) => {
+                if raw.len().saturating_add(read_len) > ZOTERO_MAX_RESPONSE_BYTES {
+                    return Err("Zotero response exceeded 5 MB limit.".to_string());
+                }
+                raw.extend_from_slice(&chunk[..read_len]);
+
+                if parsed_headers.is_none()
+                    && let Some(header_end) = find_header_end(&raw)
+                {
+                    let (status, content_length, is_chunked) =
+                        parse_http_headers(&raw[..header_end])?;
+                    if let Some(len) = content_length
+                        && len > ZOTERO_MAX_RESPONSE_BYTES
+                    {
+                        return Err("Zotero response exceeded 5 MB limit.".to_string());
+                    }
+                    parsed_headers = Some((header_end + 4, status, content_length, is_chunked));
+                }
+
+                if let Some((body_start, _, content_length, is_chunked)) = parsed_headers {
+                    let body_slice = &raw[body_start..];
+                    if is_chunked {
+                        if matches!(decode_chunked_body(body_slice)?, ChunkedDecode::Complete(_)) {
+                            break;
+                        }
+                    } else if let Some(len) = content_length
+                        && body_slice.len() >= len
+                    {
+                        break;
+                    }
+                }
+            }
+            Err(error) => return Err(map_zotero_io_error(error)),
+        }
+    }
+
+    let (body_start, status, content_length, is_chunked) = match parsed_headers {
+        Some(headers) => headers,
+        None => {
+            let header_end = find_header_end(&raw)
+                .ok_or_else(|| "Zotero returned an incomplete HTTP response.".to_string())?;
+            let (status, content_length, is_chunked) = parse_http_headers(&raw[..header_end])?;
+            (header_end + 4, status, content_length, is_chunked)
+        }
+    };
+
+    let body_raw = &raw[body_start..];
+    let body_bytes = if is_chunked {
+        match decode_chunked_body(body_raw)? {
+            ChunkedDecode::Complete(decoded) => decoded,
+            ChunkedDecode::Incomplete => {
+                return Err("Zotero closed the connection before completing chunked body.".to_string());
+            }
+        }
+    } else if let Some(len) = content_length {
+        if body_raw.len() < len {
+            return Err("Zotero closed the connection before sending the full response.".to_string());
+        }
+        body_raw[..len].to_vec()
+    } else {
+        body_raw.to_vec()
+    };
+
+    if body_bytes.len() > ZOTERO_MAX_RESPONSE_BYTES {
+        return Err("Zotero response exceeded 5 MB limit.".to_string());
+    }
+
+    if (200..300).contains(&status) {
+        String::from_utf8(body_bytes)
+            .map_err(|_| "Zotero response was not valid UTF-8.".to_string())
+    } else {
+        let message = String::from_utf8_lossy(&body_bytes).trim().to_string();
+        if message.is_empty() {
+            Err(format!("HTTP {status}"))
+        } else {
+            Err(format!("HTTP {status}: {message}"))
+        }
+    }
+}
+
+/// Forwards a GET request exclusively to Zotero's local HTTP server on `127.0.0.1:23119`.
+#[tauri::command]
+async fn zotero_request(path: String) -> Result<String, String> {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ZOTERO_PORT));
+    tauri::async_runtime::spawn_blocking(move || perform_zotero_request_to(addr, &path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -931,7 +1191,8 @@ pub fn run() {
             research_delete_file,
             oauth_start_loopback,
             oauth_wait_for_callback,
-            oauth_cancel_loopback
+            oauth_cancel_loopback,
+            zotero_request
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1070,5 +1331,60 @@ mod tests {
     #[test]
     fn loopback_callback_ignores_unrelated_requests() {
         assert!(parse_callback_request("GET /favicon.ico HTTP/1.1\r\n\r\n").is_none());
+    }
+
+    #[test]
+    fn zotero_path_validation_allows_safe_paths_and_rejects_unsafe() {
+        assert!(validate_zotero_path("/connector/ping").is_ok());
+        assert!(validate_zotero_path("/api/users/0/items?q=hello%20world&format=csljson&limit=25").is_ok());
+        assert!(validate_zotero_path("/better-bibtex/cayw?format=json").is_ok());
+
+        assert!(validate_zotero_path("http://evil.com/").is_err());
+        assert!(validate_zotero_path("//evil.com/path").is_err());
+        assert!(validate_zotero_path("/bad path").is_err());
+        assert!(validate_zotero_path("/bad\r\nHost: evil.com").is_err());
+        assert!(validate_zotero_path("/bad#frag").is_err());
+    }
+
+    #[test]
+    fn zotero_request_handles_chunked_200_and_403_over_loopback() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            for idx in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let req = read_http_request(&mut stream).unwrap();
+                assert!(req.contains("Host: 127.0.0.1:23119\r\n"));
+                assert!(req.contains("User-Agent: ProseCraft\r\n"));
+                if idx == 0 {
+                    let resp = concat!(
+                        "HTTP/1.1 200 OK\r\n",
+                        "Transfer-Encoding: chunked\r\n",
+                        "Content-Type: application/json\r\n",
+                        "\r\n",
+                        "2\r\n[]\r\n",
+                        "0\r\n\r\n"
+                    );
+                    stream.write_all(resp.as_bytes()).unwrap();
+                } else {
+                    let body = "Local API is not enabled";
+                    let resp = format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(resp.as_bytes()).unwrap();
+                }
+            }
+        });
+
+        let ok_res = perform_zotero_request_to(addr, "/api/users/0/items?q=&format=csljson&limit=25");
+        assert_eq!(ok_res.unwrap(), "[]");
+
+        let err_res = perform_zotero_request_to(addr, "/api/users/0/items?q=test&format=csljson&limit=25");
+        assert_eq!(err_res.unwrap_err(), "HTTP 403: Local API is not enabled");
+
+        handle.join().unwrap();
     }
 }

@@ -1,7 +1,25 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { Link as LinkIcon, Trash2, X } from "@lucide/svelte";
+  import { Link as LinkIcon, Quote, Trash2, X } from "@lucide/svelte";
+  import {
+    CITE_REF_SELECTOR,
+    buildCiteData,
+    citeMarkerHtml,
+    parseCiteData,
+    renderCitationLabels,
+    type CiteRefItem
+  } from "$lib/citations/cite-marker";
+  import type { CslItem } from "$lib/citations/csl";
+  import type { CitationLocale, CitationStyleId } from "$lib/citations/styles";
   import { sanitizeInlineHtml } from "$lib/sanitize";
+
+  export type FootnoteCitationRequest = {
+    rect: DOMRect;
+    initialCites: CiteRefItem[];
+    isEditing: boolean;
+    onCommit: (cites: CiteRefItem[]) => void;
+    onRemove?: () => void;
+  };
 
   let {
     footnoteId,
@@ -9,18 +27,26 @@
     initialHtml,
     left,
     top,
+    citations = [],
+    citationStyle = "apa7",
+    citationLocale = "en",
     onChange,
     onRemove,
-    onClose
+    onClose,
+    onRequestCitation
   }: {
     footnoteId: string;
     number: number | null;
     initialHtml: string;
     left: number;
     top: number;
+    citations?: CslItem[];
+    citationStyle?: CitationStyleId;
+    citationLocale?: CitationLocale;
     onChange: (html: string) => void;
     onRemove: () => void;
     onClose: () => void;
+    onRequestCitation?: (request: FootnoteCitationRequest) => void;
   } = $props();
 
   let noteEditor = $state<HTMLDivElement>();
@@ -45,11 +71,17 @@
     selection.addRange(range);
   }
 
+  function refreshNoteCitations() {
+    if (!noteEditor) return;
+    renderCitationLabels(noteEditor, citations, citationStyle, citationLocale);
+  }
+
   $effect(() => {
     const id = footnoteId;
     if (!noteEditor || id === loadedId) return;
     loadedId = id;
     noteEditor.innerHTML = sanitizeInlineHtml(initialHtml);
+    refreshNoteCitations();
     linkEditorOpen = false;
     linkUrl = "";
     linkError = "";
@@ -59,6 +91,13 @@
       placeCaretAtEnd(noteEditor);
       refreshFormatState();
     });
+  });
+
+  $effect(() => {
+    void citations;
+    void citationStyle;
+    void citationLocale;
+    refreshNoteCitations();
   });
 
   function emitChange() {
@@ -93,6 +132,7 @@
     noteEditor.focus();
     document.execCommand(command, false);
     emitChange();
+    refreshNoteCitations();
     refreshFormatState();
   }
 
@@ -199,6 +239,7 @@
     linkUrl = "";
     linkError = "";
     emitChange();
+    refreshNoteCitations();
     refreshFormatState();
   }
 
@@ -241,8 +282,87 @@
     emitChange();
   }
 
+  function insertCitationMarkerInNote(cites: CiteRefItem[]) {
+    if (!noteEditor) return;
+    noteEditor.focus();
+    const selection = window.getSelection();
+    let range: Range;
+    if (savedRange && noteEditor.contains(savedRange.commonAncestorContainer)) {
+      range = savedRange.cloneRange();
+      range.collapse(false);
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(noteEditor);
+      range.collapse(false);
+    }
+    const tpl = document.createElement("div");
+    tpl.innerHTML = citeMarkerHtml(cites);
+    const marker = tpl.firstElementChild as HTMLElement;
+    range.insertNode(marker);
+    const after = document.createRange();
+    after.setStartAfter(marker);
+    after.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(after);
+    savedRange = null;
+    refreshNoteCitations();
+    emitChange();
+  }
+
+  function openCitationInNote() {
+    if (!noteEditor || !onRequestCitation) return;
+    captureNoteSelection();
+    const rect = savedRange?.getBoundingClientRect();
+    const fallbackRect = noteEditor.getBoundingClientRect();
+    const anchorRect = rect && (rect.width > 0 || rect.height > 0) ? rect : fallbackRect;
+    onRequestCitation({
+      rect: anchorRect,
+      initialCites: [],
+      isEditing: false,
+      onCommit: insertCitationMarkerInNote
+    });
+  }
+
+  function handleNoteClick(event: MouseEvent) {
+    if (!noteEditor || !onRequestCitation) return;
+    const target = event.target;
+    const marker = target instanceof Element ? target.closest<HTMLElement>(CITE_REF_SELECTOR) : null;
+    if (!marker || !noteEditor.contains(marker)) return;
+    const cites = parseCiteData(marker.getAttribute("data-cites"));
+    if (!cites) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onRequestCitation({
+      rect: marker.getBoundingClientRect(),
+      initialCites: cites,
+      isEditing: true,
+      onCommit: (nextCites) => {
+        if (!noteEditor || !noteEditor.contains(marker)) return;
+        marker.setAttribute("data-cites", buildCiteData(nextCites));
+        refreshNoteCitations();
+        emitChange();
+        noteEditor.focus();
+      },
+      onRemove: () => {
+        if (!noteEditor || !noteEditor.contains(marker)) return;
+        marker.remove();
+        emitChange();
+        noteEditor.focus();
+      }
+    });
+  }
+
   function handleNoteKeydown(event: KeyboardEvent) {
     const mod = event.metaKey || event.ctrlKey;
+    if (mod && event.altKey && !event.shiftKey
+      && (event.key.toLowerCase() === "c" || event.code === "KeyC")) {
+      if (onRequestCitation) {
+        event.preventDefault();
+        event.stopPropagation();
+        openCitationInNote();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -288,6 +408,7 @@
       document.execCommand("insertText", false, text);
     }
     emitChange();
+    refreshNoteCitations();
     refreshFormatState();
   }
 </script>
@@ -338,6 +459,16 @@
         onpointerdown={(event) => event.preventDefault()}
         onclick={openLinkEditor}
       ><LinkIcon size={13} aria-hidden="true" /></button>
+      {#if onRequestCitation}
+        <button
+          type="button"
+          class="footnote-tool"
+          aria-label="Insert citation"
+          title="Insert citation"
+          onpointerdown={(event) => event.preventDefault()}
+          onclick={openCitationInNote}
+        ><Quote size={13} aria-hidden="true" /></button>
+      {/if}
     </div>
     <button
       type="button"
@@ -384,7 +515,8 @@
     aria-label="Footnote text"
     aria-multiline="true"
     data-placeholder="Write footnote…"
-    oninput={() => { emitChange(); refreshFormatState(); }}
+    oninput={() => { emitChange(); refreshNoteCitations(); refreshFormatState(); }}
+    onclick={handleNoteClick}
     onkeyup={refreshFormatState}
     onmouseup={refreshFormatState}
     onpaste={handlePaste}
@@ -526,6 +658,23 @@
     color: var(--link);
     text-decoration: underline;
     text-underline-offset: 2px;
+  }
+  .footnote-note-editor :global(span.cite-ref) {
+    display: inline;
+    margin: 0 1px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    color: var(--accent-strong);
+    font-size: 0.92em;
+    cursor: pointer;
+    user-select: none;
+  }
+  .footnote-note-editor :global(span.cite-ref::after) {
+    content: attr(data-label);
+  }
+  .footnote-note-editor :global(span.cite-ref:hover) {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
   .footnote-popover-foot {
     display: flex;
