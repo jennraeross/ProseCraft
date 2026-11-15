@@ -12,8 +12,17 @@ let counter = 0;
 
 type MermaidApi = {
   initialize(config: Record<string, unknown>): void;
+  parse(source: string): Promise<unknown>;
   render(id: string, source: string): Promise<{ svg: string }>;
 };
+
+/** Mermaid leaves its scratch nodes (and an error graphic) in the body when rendering fails. */
+function removeRenderLeftovers(id: string): void {
+  if (typeof document === "undefined") return;
+  for (const leftover of [`#${id}`, `#d${id}`, `#i${id}`]) {
+    document.querySelector(leftover)?.remove();
+  }
+}
 
 let mermaidPromise: Promise<MermaidApi> | null = null;
 
@@ -77,12 +86,16 @@ export async function renderDiagramSvg(source: string): Promise<DiagramRenderRes
   const id = `prosecraft-diagram-${++counter}`;
   let svgMarkup: string;
   try {
+    // Parse first so syntax errors are caught before render touches the DOM.
+    await mermaid.parse(definition);
     svgMarkup = (await mermaid.render(id, definition)).svg;
   } catch (error) {
     const message = error instanceof Error && error.message
       ? `Could not render that diagram: ${error.message.split("\n")[0]}`
       : "Could not render that diagram. Check the Mermaid syntax.";
     throw new Error(message);
+  } finally {
+    removeRenderLeftovers(id);
   }
 
   const parsed = new DOMParser().parseFromString(svgMarkup, "text/html");

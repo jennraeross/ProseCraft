@@ -128,15 +128,29 @@ jobs:
           releaseBody: |
             ## What's New
 
-            - View PDFs in Split View (#4)
-            - Save, preview, and restore scene snapshots (#5)
-            - Add comments to selected text (#6)
-            - Undo and redo edits across fields and pages (#9)
+            - Edit whole chapters as one document with scene dividers
+            - Sidebar actions move into right-click menus; scenes drag to reorder
+            - Chapters auto-collapse, remember their last scene, and open on click
+            - Wiki tree drag-and-drop reorder with a decluttered sidebar
+            - Full-window storyboard with floating controls
+            - Timeline view behind an opt-in toggle
+            - Right sidebar tabs: Progress, Comments and Snapshots
+            - Split view auto-hides the sidebars
+            - Colour labels for scenes and chapters with filtering (#22)
+            - Project starters with genre presets and world-building modules (#23)
+            - Project-wide search with find and replace (#24)
+            - Keyboard shortcut sheet (#25)
+            - Fluid tiling split view with editable side tiles (#26)
+            - Settings dialog categories (#27)
+            - Focus mode and native file drops (#21)
+            - About dialog with a diagnostics report (#20)
+            - MathCAD-style calculation worksheets (#18)
+            - Mermaid syntax errors no longer leak graphics (#17)
 
             ## Contributors
 
-            - [@studiosusmed](https://github.com/studiosusmed) - PRs #4, #5, and #6
-            - [@Sycration](https://github.com/Sycration) - PR #9
+            - [@studiosusmed](https://github.com/studiosusmed) - PRs #20, #21, #22, #23, #24, #25, #26 and #27
+            - [@Sycration](https://github.com/Sycration) - PRs #17 and #18
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

@@ -104,11 +104,12 @@ function viewBoxSize(value: string | null): { width: number; height: number } | 
 export async function renderMathSvg(
   tex: string,
   display: boolean,
-  emPx = 16
+  emPx = 16,
+  maxLength = MAX_MATH_SOURCE_LENGTH
 ): Promise<MathRenderResult> {
   const source = tex.trim();
   if (!source) throw new Error("Add some LaTeX to render an equation.");
-  if (source.length > MAX_MATH_SOURCE_LENGTH) {
+  if (source.length > maxLength) {
     throw new Error("That equation is too large to render.");
   }
   const { adaptor, doc } = await mathJaxContext();

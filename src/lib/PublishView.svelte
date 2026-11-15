@@ -1,6 +1,12 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "@lucide/svelte";
+  import type { CslItem } from "./citations/csl";
+  import {
+    STYLES,
+    type CitationLocale,
+    type CitationStyleId
+  } from "./citations/styles";
   import {
     defaultPreviewPalette,
     readPreviewPalette,
@@ -43,6 +49,7 @@
   import {
     FORMAT_INFO,
     FORMAT_ORDER,
+    SCREENPLAY_FORMAT_ORDER,
     slugifyFilename,
     type ChapterData,
     type CompiledBook,
@@ -61,8 +68,11 @@
     options: PublishOptions;
     theme: "light" | "dark";
     colorScheme: ColorScheme;
+    citations?: CslItem[];
+    citationsCount?: number;
     onOptionsChange: (options: PublishOptions) => void;
     beforeExport: () => Promise<void>;
+    onOpenSources?: () => void;
   };
 
   let {
@@ -73,8 +83,11 @@
     options,
     theme,
     colorScheme,
+    citations = [],
+    citationsCount = citations.length,
     onOptionsChange,
-    beforeExport
+    beforeExport,
+    onOpenSources
   }: Props = $props();
 
   let previewPalette = $state<PreviewPalette>(
@@ -116,8 +129,17 @@
     frontMatter: options.frontMatter,
     backMatter: options.backMatter,
     chapters,
-    documents
+    documents,
+    footnotesRestartPerChapter: options.footnotesRestartPerChapter,
+    citations,
+    citationStyle: options.citationStyle,
+    citationLocale: options.citationLocale,
+    includeBibliography: options.includeBibliography
   }));
+  let hasScreenplayDocuments = $derived(documents.some((document) => document.format === "screenplay"));
+  let formatEntries = $derived(
+    hasScreenplayDocuments ? [...FORMAT_ORDER, ...SCREENPLAY_FORMAT_ORDER] : FORMAT_ORDER
+  );
   let styleEntries = $derived(styleSummaries(options.customStyles));
   let selectedStyle = $derived(resolveStyleTokens(options.style, options.customStyles));
   let canAddStyle = $derived(options.customStyles.length < MAX_CUSTOM_STYLES);
@@ -204,7 +226,9 @@
       : 0)
     + compiled.frontMatter.length
   );
-  let backMatterPageEstimate = $derived(compiled.backMatter.length);
+  let backMatterPageEstimate = $derived(
+    compiled.backMatter.length + (previewSections.some((section) => section.kind === "bibliography") ? 1 : 0)
+  );
   let pageEstimate = $derived.by(() => {
     const bodyPages = estimatedPages(compiled.words, previewStyle.wordsPerPage);
     return bodyPages === null ? null : bodyPages + frontMatterPageEstimate + backMatterPageEstimate;
@@ -514,7 +538,12 @@
         frontMatter: exportOptions.frontMatter,
         backMatter: exportOptions.backMatter,
         chapters,
-        documents
+        documents,
+        footnotesRestartPerChapter: exportOptions.footnotesRestartPerChapter,
+        citations,
+        citationStyle: exportOptions.citationStyle,
+        citationLocale: exportOptions.citationLocale,
+        includeBibliography: exportOptions.includeBibliography
       });
       const payload = await renderExport(book, exportOptions);
       const result = await saveExport(payload);
@@ -559,7 +588,7 @@
           <span>{FORMAT_INFO[options.format].extension.toUpperCase()}</span>
         </div>
         <div class="format-grid">
-          {#each FORMAT_ORDER as format (format)}
+          {#each formatEntries as format (format)}
             <button
               type="button"
               class="format-card"
@@ -798,6 +827,60 @@
               {/each}
             </select>
           </label>
+        </div>
+      </section>
+
+      <section class="publish-section">
+        <div class="section-heading">
+          <h2>Citations</h2>
+          <span>{citationsCount} {citationsCount === 1 ? "source" : "sources"}</span>
+        </div>
+        <div class="option-list">
+          <label class="option-row option-row-select">
+            <span>
+              <strong>Citation style</strong>
+              <small>Applied to inline citations and the bibliography.</small>
+            </span>
+            <select
+              aria-label="Citation style"
+              value={options.citationStyle ?? "apa7"}
+              onchange={(event) => update("citationStyle", (event.currentTarget as HTMLSelectElement).value as CitationStyleId)}
+            >
+              {#each STYLES as citationStyle (citationStyle.id)}
+                <option value={citationStyle.id}>{citationStyle.label}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="option-row option-row-select">
+            <span>
+              <strong>Citation language</strong>
+              <small>Used for terms like ed., pp., and n.d.</small>
+            </span>
+            <select
+              aria-label="Citation language"
+              value={options.citationLocale ?? "en"}
+              onchange={(event) => update("citationLocale", (event.currentTarget as HTMLSelectElement).value as CitationLocale)}
+            >
+              <option value="en">English</option>
+              <option value="de">Deutsch</option>
+            </select>
+          </label>
+          <label class="option-row">
+            <input
+              type="checkbox"
+              checked={options.includeBibliography ?? true}
+              onchange={(event) => update("includeBibliography", (event.currentTarget as HTMLInputElement).checked)}
+            />
+            <span>
+              <strong>Include bibliography</strong>
+              <small>Append a formatted reference list when citations are used.</small>
+            </span>
+          </label>
+          {#if onOpenSources}
+            <button type="button" class="new-style-button" onclick={onOpenSources}>
+              Sources…
+            </button>
+          {/if}
         </div>
       </section>
 
@@ -1269,14 +1352,14 @@
   .preview-header h2 { margin: 5px 0 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 22px; font-weight: 500; }
   .preview-badge { padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text-muted); font-size: 8px; letter-spacing: .35px; white-space: nowrap; }
   .preview-workspace { display: grid; grid-template-columns: 174px minmax(0, 1fr); gap: 10px; align-items: stretch; }
-  .preview-nav { display: flex; min-width: 0; max-height: min(84vh, 900px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .preview-nav { display: flex; min-width: 0; max-height: min(84vh, 900px); max-height: min(84dvh, 900px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
   .preview-nav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 9px 8px; border-bottom: 1px solid var(--border-soft); color: var(--text-muted); font-size: 7px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
   .preview-nav-steps { display: flex; align-items: center; gap: 3px; letter-spacing: 0; text-transform: none; }
   .preview-nav-steps button { display: grid; width: 19px; height: 19px; place-items: center; padding: 0; border: 1px solid var(--border-control); border-radius: 4px; background: var(--control-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; line-height: 1; }
   .preview-nav-steps button:hover:not(:disabled) { border-color: var(--accent-soft); background: var(--control-hover); color: var(--text-heading); }
   .preview-nav-steps button:disabled { cursor: default; opacity: .35; }
   .preview-nav-steps > span { min-width: 29px; color: var(--text-muted); font-size: 7px; font-variant-numeric: tabular-nums; text-align: center; }
-  .preview-nav-groups { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 5px 7px; }
+  .preview-nav-groups { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 4px 5px 7px; }
   .preview-nav-group { padding: 6px 1px 1px; }
   .preview-nav-group + .preview-nav-group { margin-top: 4px; border-top: 1px solid var(--border-soft); }
   .preview-nav-group h3 { margin: 0 4px 4px; color: var(--eyebrow); font-size: 7px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
@@ -1288,7 +1371,7 @@
   .preview-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview-nav-item:focus-visible, .preview-nav-steps button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .preview-stage { min-width: 0; }
-  .preview-frame { display: block; width: 100%; height: min(84vh, 900px); border: 1px solid var(--border); border-radius: 9px; background: var(--page-bg); box-shadow: var(--shadow-preview-frame); }
+  .preview-frame { display: block; width: 100%; height: min(84vh, 900px); height: min(84dvh, 900px); border: 1px solid var(--border); border-radius: 9px; background: var(--page-bg); box-shadow: var(--shadow-preview-frame); }
   .preview-caption { margin: 8px 2px 0; color: var(--text-muted); font-size: 8px; line-height: 1.45; }
   .publish-empty { display: flex; min-height: 320px; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border: 1px dashed var(--border-control); border-radius: 9px; background: var(--surface); color: var(--text-muted); text-align: center; }
   .publish-empty strong { color: var(--text-heading); font-family: var(--interface-font); font-size: 18px; font-weight: 500; }
@@ -1310,7 +1393,7 @@
   @container (max-width: 660px) {
     .publish-grid { grid-template-columns: 1fr; }
     .publish-preview { position: static; }
-    .preview-frame { height: 72vh; }
+    .preview-frame { height: 72vh; height: 72dvh; }
   }
   @container (max-width: 380px) {
     .publish-controls { padding: 14px 12px; }

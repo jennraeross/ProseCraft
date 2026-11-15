@@ -1,9 +1,12 @@
+import { resolveBookCitations, type BookBibliography } from "../citations/bibliography";
 import {
   defaultDarkPreviewPalette,
   defaultPreviewPalette,
   type PreviewPalette
 } from "../color-schemes";
+import { FOOTNOTE_REF_CLASS } from "../sanitize";
 import { markDropCapParagraph } from "./content";
+import { resolveBookFootnotes, type BookFootnotes, type ResolvedFootnote } from "./footnotes";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens, type PresetTokens } from "./presets";
 import { listManuscriptSections, type ManuscriptSection } from "./sections";
@@ -82,12 +85,58 @@ function matterPageHtml(page: CompiledMatterPage, placement: "front" | "back"): 
   return `<section class="matter-page ${placement}-matter${page.blank && !title && !paragraphs ? " blank-matter-page" : ""}">\n${title}${paragraphs}${paragraphs ? "\n" : ""}</section>`;
 }
 
+function bibliographyHtml(bibliography: BookBibliography | null): string {
+  if (!bibliography || bibliography.entries.length === 0) return "";
+  const entries = bibliography.entries
+    .map((entry) => `  <p class="bibliography-entry">${entry.html}</p>`)
+    .join("\n");
+  return `<section class="matter-page back-matter bibliography" aria-label="${escapeXmlAttribute(bibliography.heading)}">\n  <h2 class="matter-title">${escapeXml(bibliography.heading)}</h2>\n${entries}\n</section>`;
+}
+
+function footnoteSuffix(note: ResolvedFootnote, restartPerChapter: boolean): string {
+  return restartPerChapter ? `ch${note.chapterIndex + 1}-${note.number}` : String(note.number);
+}
+
+function renderSceneFootnotesHtml(
+  html: string,
+  sceneFootnotes: ReadonlyMap<string, ResolvedFootnote> | undefined,
+  seenRefIds: Set<string>,
+  restartPerChapter: boolean
+): string {
+  if (!sceneFootnotes || sceneFootnotes.size === 0 || !html.includes(FOOTNOTE_REF_CLASS)) return html;
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  let changed = false;
+  for (const sup of Array.from(parsed.body.querySelectorAll<HTMLElement>(`sup.${FOOTNOTE_REF_CLASS}[data-footnote-id]`))) {
+    const id = sup.getAttribute("data-footnote-id") ?? "";
+    const note = sceneFootnotes.get(id);
+    if (!note) continue;
+    const suffix = footnoteSuffix(note, restartPerChapter);
+    const refId = `fnref-${suffix}`;
+    const replacement = parsed.createElement("sup");
+    replacement.className = FOOTNOTE_REF_CLASS;
+    if (!seenRefIds.has(refId)) {
+      replacement.id = refId;
+      seenRefIds.add(refId);
+    }
+    const link = parsed.createElement("a");
+    link.setAttribute("href", `#fn-${suffix}`);
+    link.textContent = String(note.number);
+    replacement.append(link);
+    sup.replaceWith(replacement);
+    changed = true;
+  }
+  return changed ? parsed.body.innerHTML : html;
+}
+
 function chapterHtml(
   chapter: CompiledChapter,
   options: PublishOptions,
   first: boolean,
-  dropCaps: boolean
+  dropCaps: boolean,
+  bookFootnotes: BookFootnotes
 ): string {
+  const seenRefIds = new Set<string>();
+  const restartPerChapter = Boolean(options.footnotesRestartPerChapter);
   const scenes = chapter.scenes.map((scene, index) => {
     const sceneTitle = options.includeSceneTitles
       ? `<h3 class="scene-title">${escapeXml(scene.title)}</h3>`
@@ -95,16 +144,30 @@ function chapterHtml(
     const separator = index < chapter.scenes.length - 1
       ? separatorMarkup(options.sceneSeparator)
       : "";
-    const sceneHtml = dropCaps && index === 0 ? markDropCapParagraph(scene.html) : scene.html;
+    const baseHtml = dropCaps && index === 0 ? markDropCapParagraph(scene.html) : scene.html;
+    const sceneHtml = renderSceneFootnotesHtml(
+      baseHtml,
+      bookFootnotes.byScene.get(scene),
+      seenRefIds,
+      restartPerChapter
+    );
     return `<div class="scene">${sceneTitle}${sceneHtml}</div>${separator}`;
   }).join("\n");
+
+  const chapterNotes = bookFootnotes.byChapter.get(chapter) ?? [];
+  const footnotesHtml = chapterNotes.length > 0
+    ? `\n<section class="footnotes" aria-label="Footnotes">\n  <ol>\n${chapterNotes.map((note) => {
+      const suffix = footnoteSuffix(note, restartPerChapter);
+      return `    <li id="fn-${suffix}" value="${note.number}">${note.html} <a href="#fnref-${suffix}" class="footnote-backref" aria-label="Back to reference ${note.number}">↩</a></li>`;
+    }).join("\n")}\n  </ol>\n</section>`
+    : "";
 
   const breakClass = !first && options.pageBreakBeforeChapters ? " chapter-break" : "";
   const heading = options.includeChapterTitles
     ? `<h2 class="chapter-title">${escapeXml(chapter.label)}</h2>`
     : "";
 
-  return `<section class="chapter${breakClass}" id="chapter-${escapeXmlAttribute(chapter.id)}">${heading}\n${scenes}</section>`;
+  return `<section class="chapter${breakClass}" id="chapter-${escapeXmlAttribute(chapter.id)}">${heading}\n${scenes}${footnotesHtml}</section>`;
 }
 
 export function buildManuscriptSectionHtml(
@@ -112,40 +175,57 @@ export function buildManuscriptSectionHtml(
   options: PublishOptions,
   section: ManuscriptSection,
   preview = false,
-  dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap
+  dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap,
+  bookFootnotes?: BookFootnotes,
+  bibliography?: BookBibliography | null
 ): string {
+  let resolvedBook = book;
+  let resolvedBibliography = bibliography;
+  if (resolvedBibliography === undefined) {
+    const resolved = resolveBookCitations(book, options);
+    resolvedBook = resolved.book;
+    resolvedBibliography = resolved.bibliography;
+  }
+  const resolvedFootnotes = bookFootnotes ?? resolveBookFootnotes(resolvedBook, options);
+
   switch (section.kind) {
     case "cover":
-      return coverPageHtml(book);
+      return coverPageHtml(resolvedBook);
     case "title-page":
-      return titlePageHtml(book, !options.includeCopyrightPage);
+      return titlePageHtml(resolvedBook, !options.includeCopyrightPage);
     case "copyright-page":
-      return copyrightPageHtml(book);
+      return copyrightPageHtml(resolvedBook);
     case "dedication":
-      return dedicationHtml(book);
+      return dedicationHtml(resolvedBook);
     case "contents":
-      return tableOfContentsHtml(book);
+      return tableOfContentsHtml(resolvedBook);
     case "front-matter": {
-      const page = book.frontMatter.find((entry) => entry.id === section.matterId);
+      const page = resolvedBook.frontMatter.find((entry) => entry.id === section.matterId);
       return page ? matterPageHtml(page, "front") : "";
     }
     case "back-matter": {
-      const page = book.backMatter.find((entry) => entry.id === section.matterId);
+      const page = resolvedBook.backMatter.find((entry) => entry.id === section.matterId);
       return page ? matterPageHtml(page, "back") : "";
     }
+    case "bibliography":
+      return bibliographyHtml(resolvedBibliography);
     case "chapter": {
-      const index = book.chapters.findIndex((chapter) => chapter.id === section.chapterId);
-      const chapter = book.chapters[index];
+      const index = resolvedBook.chapters.findIndex((chapter) => chapter.id === section.chapterId);
+      const chapter = resolvedBook.chapters[index];
       if (!chapter) return "";
-      return chapterHtml(chapter, options, preview || index === 0, dropCaps);
+      return chapterHtml(chapter, options, preview || index === 0, dropCaps, resolvedFootnotes);
     }
   }
 }
 
 export function buildManuscriptBody(book: CompiledBook, options: PublishOptions): string {
   const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
-  return listManuscriptSections(book, options)
-    .map((section) => buildManuscriptSectionHtml(book, options, section, false, dropCaps))
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  const bookFootnotes = resolveBookFootnotes(resolvedBook, options);
+  return listManuscriptSections(resolvedBook, options)
+    .map((section) =>
+      buildManuscriptSectionHtml(resolvedBook, options, section, false, dropCaps, bookFootnotes, bibliography)
+    )
     .filter(Boolean)
     .join("\n");
 }
@@ -287,6 +367,12 @@ function manuscriptCss(
       hyphens: auto;
     }
     .back-matter { break-before: page; page-break-before: always; }
+    .bibliography p.bibliography-entry {
+      margin: 0 0 0.7em;
+      padding-left: 2em;
+      text-indent: -2em;
+      text-align: left;
+    }
     .toc-entry { margin: 0 0 0.7em; text-indent: 0; }
     .toc-entry a {
       color: inherit;
@@ -359,7 +445,7 @@ function manuscriptCss(
       vertical-align: middle;
       text-indent: 0;
     }
-    .scene .math-block, .scene .mermaid-diagram {
+    .scene .math-block, .scene .mermaid-diagram, .scene .calc-worksheet {
       display: block;
       max-width: 100%;
       margin: 0.85em auto;
@@ -367,7 +453,8 @@ function manuscriptCss(
       text-indent: 0;
     }
     .scene .math-block svg, .scene .math-block img,
-    .scene .mermaid-diagram svg, .scene .mermaid-diagram img {
+    .scene .mermaid-diagram svg, .scene .mermaid-diagram img,
+    .scene .calc-worksheet svg, .scene .calc-worksheet img {
       display: block;
       max-width: 100%;
       max-height: min(4.5in, calc(var(--page-height) - var(--page-margin-top) - var(--page-margin-bottom) - 2em));
@@ -383,7 +470,7 @@ function manuscriptCss(
     }
     .scene .math-inline:empty::before { content: attr(data-tex); font-family: ui-monospace, monospace; }
     .scene .math-block:empty::before { content: attr(data-tex); display: block; font-family: ui-monospace, monospace; white-space: pre-wrap; }
-    .scene .mermaid-diagram:empty::before { content: attr(data-source); display: block; font-family: ui-monospace, monospace; white-space: pre-wrap; text-align: left; }
+    .scene .mermaid-diagram:empty::before, .scene .calc-worksheet:empty::before { content: attr(data-source); display: block; font-family: ui-monospace, monospace; white-space: pre-wrap; text-align: left; }
     .scene .eyebrow {
       margin: 0 0 0.6em;
       color: var(--muted);
@@ -418,6 +505,16 @@ function manuscriptCss(
       margin: 0 auto;
       border-top: 1px solid var(--rule);
     }
+    .footnotes {
+      margin-top: 2em;
+      padding-top: 0.9em;
+      border-top: 1px solid var(--rule);
+      font-size: 0.88em;
+    }
+    .footnotes ol { margin: 0; padding-left: 1.4em; }
+    .footnotes li { margin: 0 0 0.45em; text-indent: 0; }
+    .footnote-ref a { color: inherit; text-decoration: none; }
+    .footnote-backref { color: var(--muted); text-decoration: none; margin-left: 0.3em; }
     ${dropCaps ? `
     .scene .drop-cap { text-indent: 0; }
     .scene .drop-cap::first-letter {
@@ -436,7 +533,8 @@ function manuscriptCss(
       border: 1px solid var(--page-border);
       background: var(--page-bg);
       box-shadow: var(--page-shadow);
-      zoom: var(--preview-scale, 1);
+      transform: scale(var(--preview-scale, 1));
+      transform-origin: top center;
     }
     .scene a { pointer-events: none; }
     .book > .cover-page {
@@ -457,7 +555,8 @@ function manuscriptCss(
       width: max-content;
       margin: 0 auto;
       padding-bottom: 8px;
-      zoom: var(--preview-scale, 1);
+      transform: scale(var(--preview-scale, 1));
+      transform-origin: top center;
     }
     .page {
       position: relative;
@@ -545,8 +644,13 @@ export function buildPreviewHtml(
   const dark = render.dark ?? false;
   const paginated = render.paginated ?? false;
   const palette = render.palette ?? (dark ? defaultDarkPreviewPalette : defaultPreviewPalette);
-  const section = render.section ?? listManuscriptSections(book, options)[0] ?? null;
-  const content = section ? buildManuscriptSectionHtml(book, options, section, true) : "";
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  const section = render.section ?? listManuscriptSections(resolvedBook, options)[0] ?? null;
+  const dropCaps = options.dropCaps && tokens.dropCap;
+  const bookFootnotes = resolveBookFootnotes(resolvedBook, options);
+  const content = section
+    ? buildManuscriptSectionHtml(resolvedBook, options, section, true, dropCaps, bookFootnotes, bibliography)
+    : "";
   const hasContent = content.length > 0;
   const renderedContent = hasContent
     ? content

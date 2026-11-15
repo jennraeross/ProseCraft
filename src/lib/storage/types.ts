@@ -1,3 +1,4 @@
+import type { CslItem } from "../citations/csl";
 import type {
   ChapterData,
   DocumentData,
@@ -5,7 +6,8 @@ import type {
   PublishOptions,
   ResearchFolder,
   ResearchItem,
-  SpaceName
+  SpaceName,
+  LabelDef
 } from "../publish/types";
 
 export type ActivityRecord = { edits: number; wordsAdded: number };
@@ -98,6 +100,7 @@ export type TimelineNode = {
 export type ProjectData = {
   id: string;
   name: string;
+  kind?: "novel" | "screenplay";
   trashed?: boolean;
   author: string;
   documents: DocumentData[];
@@ -122,6 +125,10 @@ export type ProjectData = {
   comments?: TextComment[];
   /** Saved earlier versions of document text, newest per document capped by `MAX_SNAPSHOTS_PER_DOCUMENT`. */
   snapshots?: DocumentSnapshot[];
+  /** User-definable labels for scenes and chapters. */
+  labels?: LabelDef[];
+  /** Project bibliography library stored as CSL-JSON items. */
+  citations?: CslItem[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */

@@ -2,33 +2,37 @@
 export const MATH_INLINE_CLASS = "math-inline";
 export const MATH_BLOCK_CLASS = "math-block";
 export const DIAGRAM_CLASS = "mermaid-diagram";
+export const CALC_CLASS = "calc-worksheet";
 
 /** Source limits keep persisted markup small and bound renderer work. */
 export const MAX_MATH_SOURCE_LENGTH = 4_000;
 export const MAX_DIAGRAM_SOURCE_LENGTH = 20_000;
+export const MAX_CALC_SOURCE_LENGTH = 8_000;
 
-export type RichKind = "math-inline" | "math-block" | "diagram";
+export type RichKind = "math-inline" | "math-block" | "diagram" | "calc";
 
 export type RichPlaceholder = {
   kind: RichKind;
   source: string;
 };
 
-const RICH_SELECTOR = `.${MATH_INLINE_CLASS}, .${MATH_BLOCK_CLASS}, .${DIAGRAM_CLASS}`;
+export const RICH_SELECTOR = `.${MATH_INLINE_CLASS}, .${MATH_BLOCK_CLASS}, .${DIAGRAM_CLASS}, .${CALC_CLASS}`;
 
 export function richKindOf(element: Element): RichKind | null {
   if (element.classList.contains(MATH_INLINE_CLASS)) return "math-inline";
   if (element.classList.contains(MATH_BLOCK_CLASS)) return "math-block";
   if (element.classList.contains(DIAGRAM_CLASS)) return "diagram";
+  if (element.classList.contains(CALC_CLASS)) return "calc";
   return null;
 }
 
 export function richSourceAttribute(kind: RichKind): "data-tex" | "data-source" {
-  return kind === "diagram" ? "data-source" : "data-tex";
+  return kind === "diagram" || kind === "calc" ? "data-source" : "data-tex";
 }
 
 export function richSourceLimit(kind: RichKind): number {
-  return kind === "diagram" ? MAX_DIAGRAM_SOURCE_LENGTH : MAX_MATH_SOURCE_LENGTH;
+  if (kind === "diagram") return MAX_DIAGRAM_SOURCE_LENGTH;
+  return kind === "calc" ? MAX_CALC_SOURCE_LENGTH : MAX_MATH_SOURCE_LENGTH;
 }
 
 export function readRichPlaceholder(element: Element): RichPlaceholder | null {
@@ -51,9 +55,11 @@ export function createRichPlaceholder(
   const element = doc.createElement(kind === "math-inline" ? "span" : "div");
   element.className = kind === "diagram"
     ? DIAGRAM_CLASS
-    : kind === "math-block"
-      ? MATH_BLOCK_CLASS
-      : MATH_INLINE_CLASS;
+    : kind === "calc"
+      ? CALC_CLASS
+      : kind === "math-block"
+        ? MATH_BLOCK_CLASS
+        : MATH_INLINE_CLASS;
   element.setAttribute(richSourceAttribute(kind), source.slice(0, richSourceLimit(kind)));
   return element;
 }
@@ -76,7 +82,7 @@ export function richPlaceholders(root: ParentNode): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(RICH_SELECTOR));
 }
 
-/** True when the fragment contains at least one authorable equation or diagram. */
+/** True when the fragment contains at least one equation, diagram, or calculation. */
 export function hasRichPlaceholders(html: string): boolean {
-  return new RegExp(`class=["'][^"']*\\b(?:${MATH_INLINE_CLASS}|${MATH_BLOCK_CLASS}|${DIAGRAM_CLASS})\\b`).test(html);
+  return new RegExp(`class=["'][^"']*\\b(?:${MATH_INLINE_CLASS}|${MATH_BLOCK_CLASS}|${DIAGRAM_CLASS}|${CALC_CLASS})\\b`).test(html);
 }

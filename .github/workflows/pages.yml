@@ -42,12 +42,34 @@ jobs:
         run: npm run build
         env:
           PAGES_BASE: /ProseCraft/app
+          VITE_GOOGLE_WEB_CLIENT_ID: ${{ secrets.VITE_GOOGLE_WEB_CLIENT_ID }}
+          VITE_GOOGLE_WEB_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_WEB_CLIENT_SECRET }}
+          # Optional: set VITE_GOOGLE_CLIENT_SECRET in repo Actions secrets so
+          # hardware QA can test Google Drive sync. Local .env.local is never
+          # committed; an empty secret still builds, Drive just reports config error.
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.VITE_GOOGLE_CLIENT_SECRET }}
+
+      - name: Verify PWA output
+        run: |
+          test -f build/manifest.webmanifest
+          test -f build/service-worker.js
+          test -f build/icons/icon-192.png
+          test -f build/icons/icon-512.png
+          test -f build/icons/maskable-512.png
+          test -f build/icons/apple-touch-icon.png
+          grep -q '/ProseCraft/app/manifest.webmanifest' build/index.html
 
       - name: Assemble the site
         run: |
+          rm -rf _site
           mkdir -p _site/app
           cp -r site/. _site/
           cp -r build/. _site/app/
+          # Guarantee Jekyll stays disabled so the _app/ bundle is served.
+          touch _site/.nojekyll
+          test -f _site/.nojekyll
+          test -f _site/index.html
+          test -f _site/app/index.html
 
       - uses: actions/configure-pages@v5
 

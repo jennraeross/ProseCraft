@@ -9,7 +9,27 @@ function basename(path: string, fallback: string): string {
   return path.split(/[\\/]/).pop() || fallback;
 }
 
-function downloadInBrowser(payload: ExportPayload): SaveResult {
+async function downloadInBrowser(payload: ExportPayload): Promise<SaveResult> {
+  // On phones the download folder is hard to reach inside a standalone PWA.
+  // Offer the native share sheet first when the browser can share files.
+  try {
+    const file = new File([payload.blob], payload.filename, {
+      type: payload.blob.type || "application/octet-stream"
+    });
+    if (
+      window.matchMedia("(pointer: coarse)").matches &&
+      navigator.canShare?.({ files: [file] })
+    ) {
+      await navigator.share({ files: [file], title: payload.filename });
+      return { outcome: "downloaded", filename: payload.filename };
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return { outcome: "cancelled" };
+    }
+    // Fall through to a regular download when sharing is unavailable.
+  }
+
   const url = URL.createObjectURL(payload.blob);
   const link = document.createElement("a");
   link.href = url;

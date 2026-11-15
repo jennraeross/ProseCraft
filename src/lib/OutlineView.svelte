@@ -9,6 +9,8 @@
     chapters: ChapterData[];
     chapterWordCounts: Record<string, number>;
     chapterSceneCounts: Record<string, number>;
+    chapterLabels: Record<string, { name: string; color: string }>;
+    sceneLabelSummary: Record<string, { id: string; name: string; color: string; count: number }[]>;
     onAddChapter: () => string;
     onSummaryChange: (chapterId: string, summary: string) => void;
   };
@@ -17,6 +19,8 @@
     chapters,
     chapterWordCounts,
     chapterSceneCounts,
+    chapterLabels,
+    sceneLabelSummary,
     onAddChapter,
     onSummaryChange
   }: Props = $props();
@@ -70,13 +74,33 @@
           </div>
           <div class="outline-body">
             <header class="outline-card-header">
-              <h2>{chapterLabel(chapter, chapters)}</h2>
+              <h2>
+                {#if chapterLabels[chapter.id]}
+                  <span
+                    class="outline-label-dot"
+                    role="img"
+                    aria-label={`Label: ${chapterLabels[chapter.id].name}`}
+                    style={`--label-color: ${chapterLabels[chapter.id].color}`}
+                  ></span>
+                {/if}
+                {chapterLabel(chapter, chapters)}
+              </h2>
               <span class="outline-meta">
                 {chapterSceneCounts[chapter.id] ?? 0} {(chapterSceneCounts[chapter.id] ?? 0) === 1 ? "scene" : "scenes"}
                 <span class="outline-meta-divider">·</span>
                 {(chapterWordCounts[chapter.id] ?? 0).toLocaleString()} words
               </span>
             </header>
+            {#if sceneLabelSummary[chapter.id]}
+              <p class="outline-label-summary">
+                {#each sceneLabelSummary[chapter.id] as entry (entry.id)}
+                  <span class="outline-label-chip">
+                    <span class="outline-label-dot" style={`--label-color: ${entry.color}`} aria-hidden="true"></span>
+                    {entry.count} {entry.name}
+                  </span>
+                {/each}
+              </p>
+            {/if}
             <textarea
               bind:this={summaryInputs[chapter.id]}
               class="outline-summary"
@@ -122,6 +146,10 @@
   .outline-card-header h2 { overflow: hidden; margin: 0; color: var(--text-heading); font-family: var(--interface-font); font-size: 19px; font-weight: 500; letter-spacing: -.2px; text-overflow: ellipsis; white-space: nowrap; }
   .outline-meta { flex: 0 0 auto; color: var(--text-muted); font-size: 8px; white-space: nowrap; }
   .outline-meta-divider { margin: 0 4px; color: var(--border-control); }
+  .outline-label-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--label-color); }
+  .outline-card-header h2 .outline-label-dot { margin-right: 6px; vertical-align: middle; }
+  .outline-label-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 11px; margin: 0 0 5px; color: var(--text-muted); font-size: 8px; }
+  .outline-label-chip { display: inline-flex; align-items: center; gap: 5px; }
   .outline-summary { display: block; width: 100%; min-height: 82px; padding: 3px 0; resize: none; overflow-y: hidden; border: 0; outline: none; background: transparent; color: var(--text-body); font-family: var(--interface-font); font-size: 13px; line-height: 1.72; }
   .outline-summary::placeholder { color: var(--text-muted); font-family: Inter, ui-sans-serif, sans-serif; font-size: 10px; }
   .outline-add-card { display: flex; align-items: center; gap: 11px; min-height: 68px; padding: 13px 16px; border: 1px dashed var(--border-control); border-radius: 9px; background: transparent; color: var(--text-muted); cursor: pointer; text-align: left; }
@@ -138,6 +166,9 @@
     .outline-header { align-items: flex-start; flex-direction: column; gap: 12px; }
     .outline-header-actions { width: 100%; justify-content: space-between; }
     .outline-count { white-space: normal; }
+    .outline-add { height: 40px; padding: 0 14px; font-size: 12px; }
+    .outline-add-card { min-height: 76px; }
+    .outline-summary { font-size: 16px; }
     .outline-card { grid-template-columns: 39px minmax(0, 1fr); }
     .outline-rail { padding-right: 5px; padding-left: 5px; }
     .outline-body { padding-right: 13px; padding-left: 13px; }
@@ -147,6 +178,5 @@
     .outline-header-actions { align-items: flex-start; flex-direction: column; gap: 7px; }
     .outline-meta { white-space: normal; }
     .outline-card-header { align-items: flex-start; flex-direction: column; gap: 3px; }
-    .outline-summary { font-size: 12px; }
   }
 </style>

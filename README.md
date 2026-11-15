@@ -67,11 +67,12 @@ the release once they succeed.
 - [x] Focus mode
 - [x] Zen mode
 - [x] Comments on selected text (for a co-author, a proofreader or an agent)
+- [x] Offline proofreading with Harper (opt-in, on-device spelling and grammar)
 - [x] Split view (the editor plus up to four read-only reference panes, PDFs included)
 - [x] Snapshots of a scene (save, preview and restore earlier versions)
 - [x] LaTeX math (MathJax)
 - [x] Mermaid
-- [ ] MathCAD
+- [x] MathCAD-style calculations (units, functions, live results)
 - [ ] Wiki previews
 
 #### Publishing
@@ -113,8 +114,11 @@ pasting the authorization code back into ProseCraft.
 - [ ] Custom colorschemes
 - [x] Import Epub as Project
 - [x] Import a Scrivener project (.scriv, as a zip or a folder)
+- [x] Import a folder of Markdown files as a project (manuscript and wiki)
 
 #### Mobile
-- [ ] Fully responsive interface (partial)
-- [ ] Mobile syncing
-- [ ] Touch dragging capability for chapters and cards
+- [x] Fully responsive interface
+- [x] Mobile syncing through Google Drive (paste the authorization code when the browser cannot return automatically)
+- [x] Touch dragging capability for chapters and cards
+- [x] Installable PWA with an offline app shell
+- [ ] Real-device QA on iOS Safari and Android Chrome

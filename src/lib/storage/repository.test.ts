@@ -67,6 +67,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   resetVaultStorageForTests();
   resetDeviceIdCache();
   localStorage.clear();
@@ -154,6 +155,22 @@ describe("vault persistence", () => {
     expect(loaded?.projects).toHaveLength(1);
     expect(loaded?.projects[0].name).toBe("Round Trip Novel");
     expect(loaded?.projects[0].documents[0].content).toContain("dark and stormy");
+  });
+
+  it("persists a project graph containing reactive proxies", async () => {
+    await initVaultStorage();
+    const project = projectFixture("proxied", "Proxied Novel");
+    // Svelte `$state` wraps data in proxies; structured clone rejects them.
+    const proxied = new Proxy(project, {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    saveVault([proxied], project.id);
+    await expect(flushVaultStorage()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+
+    resetVaultStorageForTests();
+    await initVaultStorage();
+    expect(loadVault()?.projects[0].name).toBe("Proxied Novel");
   });
 
   it("does not write legacy mirror keys", async () => {

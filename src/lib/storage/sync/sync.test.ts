@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { citeMarkerHtml } from "$lib/citations/cite-marker";
 import { createStoredProject, projectsHaveSameContent, stampProject } from "../schema";
 import type { ProjectData, StoredProject } from "../types";
 import { BUNDLE_FILE, OPEN_MARKER_FILE, VAULT_FILE } from "./files";
@@ -10,6 +11,7 @@ import { loadSyncState, saveSyncState, SYNC_STATE_KEY } from "./state";
 import { WebDavFileSystem } from "./webdav-provider";
 
 const PASSPHRASE = "correct horse battery";
+const IMAGE_SRC = "data:image/png;base64,AA==";
 
 function projectFixture(id = "project-1", name = "Test Novel"): ProjectData {
   return {
@@ -167,6 +169,29 @@ describe("open-folder sync", () => {
       .toMatchObject({ trashed: true, trashedWithChapterId: "chapter-1" });
   });
 
+  it("round-trips project kind in project.json", async () => {
+    const fs = new MemoryFileSystem();
+    const screenplay = createStoredProject(
+      { ...projectFixture("sp-1", "Screenplay One"), kind: "screenplay" },
+      "device-a",
+      1_000
+    );
+    const novel = createStoredProject(
+      { ...projectFixture("nv-1", "Novel One"), kind: "novel" },
+      "device-a",
+      1_000
+    );
+
+    await new OpenFolderSyncProvider(fs).sync("", [screenplay, novel], {}, 1_000, "device-a");
+
+    const rawScreenplayJson = JSON.parse(await fs.readText("projects/sp-1/project.json"));
+    expect(rawScreenplayJson.project.kind).toBe("screenplay");
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    expect(reopened.projects.find((p) => p.id === "sp-1")?.project.kind).toBe("screenplay");
+    expect(reopened.projects.find((p) => p.id === "nv-1")?.project.kind).toBe("novel");
+  });
+
   it("round-trips projects as Markdown and JSON", async () => {
     const fs = new MemoryFileSystem();
     const provider = new OpenFolderSyncProvider(fs);
@@ -217,6 +242,181 @@ describe("open-folder sync", () => {
     expect(second.projects[0].project.documents[0].content).toBe(
       first.projects[0].project.documents[0].content
     );
+  });
+
+  it("round-trips image layout through the Markdown documents", async () => {
+    const fs = new MemoryFileSystem();
+    const fixture = projectFixture();
+    const image = `<img src="${IMAGE_SRC}" alt="Chart" data-size="small" data-align="right">`;
+    const withImage: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((document) => document.id === "doc-1"
+        ? { ...document, content: `<p>Before</p><p>${image}</p><p>After</p>` }
+        : document)
+    };
+    await new OpenFolderSyncProvider(fs)
+      .sync("", [createStoredProject(withImage, "device-a", 1_000)], {}, 1_000, "device-a");
+
+    const markdown = await fs.readText("projects/project-1/documents/doc-1.md");
+    expect(markdown).toContain(image);
+
+    const connection = await new OpenFolderSyncProvider(fs).connect("");
+    const document = connection.projects[0].project.documents.find((doc) => doc.id === "doc-1");
+    expect(document?.markdownSource).toContain(image);
+    expect(document?.content).toContain(image);
+  });
+
+  it("round-trips footnotes through the open folder layout and applies external edits", async () => {
+    const fs = new MemoryFileSystem();
+    const fixture = projectFixture();
+    const footnotes = [
+      { id: "fn-1", html: `See <em>Source</em> and <a href="https://example.test">notes</a>.` },
+      { id: "fn-2", html: `Second <strong>note</strong>.` }
+    ];
+    const withFootnotes: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((document) => document.id === "doc-1"
+        ? {
+          ...document,
+          content: `<p>First<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup> and second<sup class="footnote-ref" data-footnote-id="fn-2" contenteditable="false"></sup>.</p>`,
+          footnotes
+        }
+        : document)
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync("", [createStoredProject(withFootnotes, "device-a", 1_000)], {}, 1_000, "device-a");
+
+    const mdPath = "projects/project-1/documents/doc-1.md";
+    const markdown = await fs.readText(mdPath);
+    expect(markdown).toContain("First[^fn-1] and second[^fn-2].");
+    expect(markdown).toContain("[^fn-1]: See _Source_ and [notes](https://example.test).");
+    expect(markdown).toContain("[^fn-2]: Second **note**.");
+
+    const connection = await new OpenFolderSyncProvider(fs).connect("");
+    const reopenedDoc = connection.projects[0].project.documents.find((doc) => doc.id === "doc-1");
+    expect(reopenedDoc?.footnotes).toEqual(footnotes);
+    expect(reopenedDoc?.content).toContain(`data-footnote-id="fn-1"`);
+    expect(reopenedDoc?.content).toContain(`data-footnote-id="fn-2"`);
+    expect(projectsHaveSameContent(first.projects[0].project, connection.projects[0].project)).toBe(true);
+
+    const second = await new OpenFolderSyncProvider(fs)
+      .sync("", [first.projects[0]], first.lastSynced, 1_100, "device-a");
+    expect(second.conflicts).toBe(0);
+
+    // External Markdown edit to a footnote definition updates the decoded footnote.
+    const edited = markdown.replace("Second **note**.", "Edited _note_.");
+    await fs.writeText(mdPath, edited);
+    const afterExternal = await new OpenFolderSyncProvider(fs).connect("");
+    expect(afterExternal.projects[0].updatedBy).toBe("external");
+    expect(afterExternal.projects[0].project.documents.find((doc) => doc.id === "doc-1")?.footnotes)
+      .toEqual([
+        footnotes[0],
+        { id: "fn-2", html: "Edited <em>note</em>." }
+      ]);
+  });
+
+  it("round-trips citations in project.json through the open folder layout", async () => {
+    const fs = new MemoryFileSystem();
+    const citations: ProjectData["citations"] = [
+      {
+        id: "muller2021",
+        type: "book",
+        title: "Über die Methode",
+        author: [{ family: "Müller", given: "Hans" }],
+        issued: { "date-parts": [[2021]] },
+        publisher: "Suhrkamp",
+        "publisher-place": "Berlin",
+        ISBN: "978-3-518-12345-6",
+        citeKey: "muller2021"
+      },
+      {
+        id: "doe2023",
+        type: "article-journal",
+        title: "Citation Sync",
+        author: [{ family: "Doe", given: "Jane" }],
+        "container-title": "Journal of Writing Tools",
+        issued: { "date-parts": [[2023, 5]] },
+        volume: "12",
+        issue: "2",
+        page: "44-58",
+        DOI: "10.1000/jw.2023.44"
+      }
+    ];
+    const withCitations: ProjectData = {
+      ...projectFixture(),
+      citations
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync(
+      "",
+      [createStoredProject(withCitations, "device-a", 1_000)],
+      {},
+      1_000,
+      "device-a"
+    );
+
+    const rawProjectJson = JSON.parse(await fs.readText("projects/project-1/project.json"));
+    expect(rawProjectJson.project.citations).toEqual(citations);
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    expect(reopened.projects[0].project.citations).toEqual(citations);
+    expect(projectsHaveSameContent(first.projects[0].project, reopened.projects[0].project)).toBe(true);
+    expect(
+      projectsHaveSameContent(reopened.projects[0].project, {
+        ...reopened.projects[0].project,
+        citations: citations.slice(0, 1)
+      })
+    ).toBe(false);
+
+    const second = await new OpenFolderSyncProvider(fs)
+      .sync("", [first.projects[0]], first.lastSynced, 1_100, "device-a");
+    expect(second.conflicts).toBe(0);
+  });
+
+  it("round-trips inline citation markers in document bodies and footnotes via the open folder layout", async () => {
+    const fs = new MemoryFileSystem();
+    const bodyMarker = citeMarkerHtml([
+      { id: "muller2021", locator: "42", label: "page", prefix: "see " }
+    ]);
+    const noteMarker = citeMarkerHtml([
+      { id: "doe2023", suppressAuthor: true },
+      { id: "muller2021", locator: "2", label: "chapter" }
+    ]);
+    const fixture = projectFixture();
+    const withMarkers: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((doc) =>
+        doc.id === "doc-1"
+          ? {
+            ...doc,
+            content: `<p>Claim ${bodyMarker}<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>.</p>`,
+            footnotes: [{ id: "fn-1", html: `Compare ${noteMarker}.` }]
+          }
+          : doc
+      )
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync(
+      "",
+      [createStoredProject(withMarkers, "device-a", 1_000)],
+      {},
+      1_000,
+      "device-a"
+    );
+
+    const mdPath = "projects/project-1/documents/doc-1.md";
+    const md = await fs.readText(mdPath);
+    expect(md).toContain("Claim [see @muller2021, p. 42][^fn-1].");
+    expect(md).toContain("[^fn-1]: Compare [-@doe2023; @muller2021, ch. 2].");
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    const reopenedDoc = reopened.projects[0].project.documents.find((doc) => doc.id === "doc-1");
+    expect(reopenedDoc?.content).toContain(`class="cite-ref"`);
+    expect(reopenedDoc?.footnotes).toEqual([{ id: "fn-1", html: `Compare ${noteMarker}.` }]);
+    expect(projectsHaveSameContent(first.projects[0].project, reopened.projects[0].project)).toBe(true);
   });
 
   it("applies external Markdown edits", async () => {
@@ -325,6 +525,7 @@ describe("sync state", () => {
       googleDriveRefreshToken: "",
       googleDriveTokenExpiry: 0,
       googleDriveEmail: "",
+      googleDriveClientKind: "desktop",
       lastSynced: {}
     });
   });
@@ -338,6 +539,7 @@ describe("sync state", () => {
       googleDriveRefreshToken: "",
       googleDriveTokenExpiry: 0,
       googleDriveEmail: "",
+      googleDriveClientKind: "desktop",
       lastSynced: {}
     });
     expect(loadSyncState()?.mode).toBe("open-folder");
@@ -352,6 +554,7 @@ describe("sync state", () => {
       googleDriveRefreshToken: "refresh-token",
       googleDriveTokenExpiry: 1_234,
       googleDriveEmail: "writer@example.com",
+      googleDriveClientKind: "web",
       lastSynced: {}
     });
     expect(loadSyncState()).toMatchObject({
@@ -360,7 +563,8 @@ describe("sync state", () => {
       googleDriveAccessToken: "access-token",
       googleDriveRefreshToken: "refresh-token",
       googleDriveTokenExpiry: 1_234,
-      googleDriveEmail: "writer@example.com"
+      googleDriveEmail: "writer@example.com",
+      googleDriveClientKind: "web"
     });
   });
 

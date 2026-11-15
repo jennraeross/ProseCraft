@@ -3,7 +3,7 @@ import { sanitizeHtml } from "../sanitize";
 import { compileBook } from "../publish/compile";
 import { htmlToPlainText } from "../publish/content";
 import { htmlToMarkdown, markdownToHtml } from "../publish/markdown";
-import { renderRichWidgets } from "./dom";
+import { editableNeighbor, ensureParagraphsAroundRichBlocks, renderRichWidgets, richClickSide } from "./dom";
 
 const rendered = vi.hoisted(() => ({
   failSource: "" as string,
@@ -31,6 +31,7 @@ import type { CompiledBook } from "../publish/types";
 const INLINE = `<span class="math-inline" data-tex="x^2"></span>`;
 const BLOCK = `<div class="math-block" data-tex="\\int_0^1 x\\,dx"></div>`;
 const DIAGRAM = `<div class="mermaid-diagram" data-source="graph TD; A-->B"></div>`;
+const CALC = `<div class="calc-worksheet" data-source="m := 5 kg\nF := m g ="></div>`;
 
 describe("rich placeholders", () => {
   beforeEach(() => {
@@ -69,6 +70,24 @@ describe("rich placeholders", () => {
     expect(html).toContain('data-tex="\\int_0^1 x\\,dx"');
     expect(html).toContain('class="mermaid-diagram"');
     expect(html).toContain('data-source="graph TD; A--&gt;B"');
+  });
+
+  it("round-trips calculations through Markdown and sanitizing", () => {
+    const clean = sanitizeHtml(`<div class="calc-worksheet" data-source="x := 2" style="color:red"><svg></svg></div>`);
+    expect(clean).toBe(`<div class="calc-worksheet" data-source="x := 2"></div>`);
+
+    const markdown = htmlToMarkdown(CALC);
+    expect(markdown).toBe("```calc\nm := 5 kg\nF := m g =\n```");
+    const html = markdownToHtml(markdown);
+    expect(html).toContain('class="calc-worksheet"');
+    expect(html).toContain("F := m g =");
+    expect(markdownToHtml("```mathcad\nx := 1\n```")).toContain('class="calc-worksheet"');
+  });
+
+  it("exports evaluated calculations as text and omits them from word counts", () => {
+    const html = `<p>Weight:</p>${CALC}`;
+    expect(htmlToPlainText(html)).toBe("Weight:\n\nm := 5 kg\nF := m g = 49.033 N");
+    expect(htmlToPlainText(html, { rich: "omit" }).trim()).toBe("Weight:");
   });
 
   it("parses LaTeX-style inline and display delimiters", () => {
@@ -134,6 +153,36 @@ describe("rich placeholders", () => {
     root.innerHTML = INLINE;
     await renderRichWidgets(root, { mode: "svg" });
     expect(root.firstElementChild?.getAttribute("contenteditable")).toBe("false");
+  });
+
+  it("keeps a paragraph around block widgets so the caret can reach both sides", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `${CALC}${DIAGRAM}<p>text</p>${BLOCK}`;
+    expect(ensureParagraphsAroundRichBlocks(root)).toBe(true);
+    expect(Array.from(root.children, (child) => child.className || child.tagName)).toEqual([
+      "P", "calc-worksheet", "P", "mermaid-diagram", "P", "math-block", "P"
+    ]);
+    expect(ensureParagraphsAroundRichBlocks(root)).toBe(false);
+
+    const inline = document.createElement("div");
+    inline.innerHTML = `<p>${INLINE}</p>`;
+    expect(ensureParagraphsAroundRichBlocks(inline)).toBe(false);
+  });
+
+  it("tells clicks on a widget's rendering from clicks beside it", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `<p>before</p><div class="calc-worksheet" data-source="x := 1"><svg></svg></div>`;
+    const block = root.querySelector<HTMLElement>(".calc-worksheet")!;
+    block.querySelector("svg")!.getBoundingClientRect = () =>
+      ({ left: 100, right: 200, top: 50, bottom: 90 }) as DOMRect;
+    expect(richClickSide(block, 150, 70)).toBe("content");
+    expect(richClickSide(block, 400, 70)).toBe("after");
+    expect(richClickSide(block, 20, 70)).toBe("before");
+
+    expect(editableNeighbor(block, "before")).toBe(root.firstElementChild);
+    const after = editableNeighbor(block, "after");
+    expect(after).toBe(root.lastElementChild);
+    expect((after as Element).outerHTML).toBe("<p><br></p>");
   });
 
   it("falls back to readable source when a renderer fails", async () => {

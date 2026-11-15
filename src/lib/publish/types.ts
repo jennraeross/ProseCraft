@@ -1,3 +1,6 @@
+import type { CslItem } from "../citations/csl";
+import type { FormattedBibliographyEntry } from "../citations/format";
+import { STYLES, type CitationLocale, type CitationStyleId } from "../citations/styles";
 import { isEmbeddedImageSrc } from "../sanitize";
 import { normalizeMatterPages, type MatterPage } from "./matter";
 import {
@@ -10,7 +13,10 @@ import {
 export const SPACE_NAMES = ["Wiki"] as const;
 export type SpaceName = (typeof SPACE_NAMES)[number];
 
-export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string; trashed?: boolean };
+export type LabelColor = "grey" | "amber" | "green" | "blue" | "orange" | "purple" | "red" | "pink";
+export type LabelDef = { id: string; name: string; color: LabelColor };
+
+export type ChapterData = { id: string; title: string; expanded: boolean; summary?: string; trashed?: boolean; labelId?: string };
 export type BinderFolder = { id: string; title: string; parentId: string | null };
 export type NoteFolder = BinderFolder;
 export type ResearchFolder = BinderFolder;
@@ -87,6 +93,12 @@ export type PlaceSheet = {
   dangers: string;
 };
 
+/** Definition of a footnote attached to a document. */
+export type FootnoteDef = {
+  id: string;
+  html: string;
+};
+
 export type DocumentData = {
   id: string;
   title: string;
@@ -94,9 +106,15 @@ export type DocumentData = {
   markdownSource?: string;
   chapterId?: string;
   space?: SpaceName;
+  /** Writing mode; absent means prose. */
+  format?: "prose" | "screenplay";
   folderId?: string;
   trashed?: boolean;
   trashedWithChapterId?: string;
+  /** Id of a project label (see `ProjectData.labels`). */
+  labelId?: string;
+  /** Footnotes referenced in `content`, stored as sanitized inline HTML. */
+  footnotes?: FootnoteDef[];
   /**
    * Legacy structured profiles from the former Characters and Places spaces.
    * They are converted into page content by the Wiki migration and are never
@@ -106,7 +124,7 @@ export type DocumentData = {
   place?: PlaceSheet;
 };
 
-export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text";
+export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text" | "fountain" | "screenplay-pdf";
 /** Built-in style identifiers. Custom styles use string IDs from `customStyles`. */
 export type StylePreset = BuiltinStyleId;
 export type SceneSeparator = "blank" | "asterisks" | "hash" | "line" | "none";
@@ -153,11 +171,24 @@ export type PublishOptions = {
   pageBreakBeforeChapters: boolean;
   sceneSeparator: SceneSeparator;
   dropCaps: boolean;
+  footnotesRestartPerChapter: boolean;
+  citationStyle?: CitationStyleId;
+  citationLocale?: CitationLocale;
+  includeBibliography?: boolean;
   subtitle: string;
   copyright: string;
   dedication: string;
   frontMatter: MatterPage[];
   backMatter: MatterPage[];
+};
+
+export type CompiledFootnote = {
+  /** Original footnote ID from `DocumentData.footnotes`. */
+  id: string;
+  /** Sanitized inline HTML of the footnote body. */
+  html: string;
+  /** 1-based number in manuscript compile order. */
+  number: number;
 };
 
 export type CompiledScene = {
@@ -167,6 +198,7 @@ export type CompiledScene = {
   html: string;
   text: string;
   words: number;
+  footnotes?: CompiledFootnote[];
 };
 
 export type CompiledChapter = {
@@ -184,6 +216,13 @@ export type CompiledMatterPage = {
   blank?: boolean;
 };
 
+export type CompiledBibliography = {
+  heading: string;
+  style: CitationStyleId;
+  locale: CitationLocale;
+  entries: FormattedBibliographyEntry[];
+};
+
 export type CompiledBook = {
   title: string;
   subtitle: string;
@@ -195,6 +234,10 @@ export type CompiledBook = {
   chapters: CompiledChapter[];
   words: number;
   scenes: number;
+  /** Project citation library available at export time. */
+  citations?: CslItem[];
+  /** Formatted bibliography produced when citations are present and enabled. */
+  bibliography?: CompiledBibliography;
   /** Attached at preview/export time; generated covers are never persisted. */
   cover?: CompiledCover;
 };
@@ -247,10 +290,24 @@ export const FORMAT_INFO: Record<ExportFormat, {
     extension: "txt",
     formatName: "Plain text document",
     description: "Clean text with no formatting."
+  },
+  fountain: {
+    label: "Fountain",
+    extension: "fountain",
+    formatName: "Fountain screenplay",
+    description: "Plain-text screenplay format for screenwriting apps."
+  },
+  "screenplay-pdf": {
+    label: "Screenplay PDF",
+    extension: "pdf",
+    formatName: "Screenplay PDF",
+    description: "US Letter pages in industry screenplay format."
   }
 };
 
 export const FORMAT_ORDER: ExportFormat[] = ["pdf", "epub", "docx", "markdown", "html", "text"];
+/** Formats that only make sense for projects with screenplay documents. */
+export const SCREENPLAY_FORMAT_ORDER: ExportFormat[] = ["fountain", "screenplay-pdf"];
 
 export function defaultPublishOptions(): PublishOptions {
   return {
@@ -271,6 +328,10 @@ export function defaultPublishOptions(): PublishOptions {
     pageBreakBeforeChapters: true,
     sceneSeparator: "hash",
     dropCaps: true,
+    footnotesRestartPerChapter: false,
+    citationStyle: "apa7",
+    citationLocale: "en",
+    includeBibliography: true,
     subtitle: "",
     copyright: "",
     dedication: "",
@@ -308,7 +369,7 @@ function normalizeCover(value: unknown, defaults: CoverOptions): CoverOptions {
 export function normalizePublishOptions(value: unknown): PublishOptions {
   const defaults = defaultPublishOptions();
   if (!isRecord(value)) return defaults;
-  const formats = FORMAT_ORDER;
+  const formats = [...FORMAT_ORDER, ...SCREENPLAY_FORMAT_ORDER];
   const customStyles = normalizeCustomStyles(value.customStyles);
   const styleIds = new Set<string>([
     ...BUILTIN_STYLE_IDS,
@@ -318,6 +379,13 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     ? value.style
     : defaults.style;
   const separators: SceneSeparator[] = ["blank", "asterisks", "hash", "line", "none"];
+  const citationStyleIds = new Set<string>(STYLES.map((entry) => entry.id));
+  const citationStyle = typeof value.citationStyle === "string" && citationStyleIds.has(value.citationStyle)
+    ? value.citationStyle as CitationStyleId
+    : defaults.citationStyle;
+  const citationLocale: CitationLocale = value.citationLocale === "de" || value.citationLocale === "en"
+    ? value.citationLocale
+    : (defaults.citationLocale ?? "en");
   return {
     format: formats.includes(value.format as ExportFormat) ? value.format as ExportFormat : defaults.format,
     style,
@@ -331,6 +399,14 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     pageBreakBeforeChapters: typeof value.pageBreakBeforeChapters === "boolean" ? value.pageBreakBeforeChapters : defaults.pageBreakBeforeChapters,
     sceneSeparator: separators.includes(value.sceneSeparator as SceneSeparator) ? value.sceneSeparator as SceneSeparator : defaults.sceneSeparator,
     dropCaps: typeof value.dropCaps === "boolean" ? value.dropCaps : defaults.dropCaps,
+    footnotesRestartPerChapter: typeof value.footnotesRestartPerChapter === "boolean"
+      ? value.footnotesRestartPerChapter
+      : defaults.footnotesRestartPerChapter,
+    citationStyle,
+    citationLocale,
+    includeBibliography: typeof value.includeBibliography === "boolean"
+      ? value.includeBibliography
+      : defaults.includeBibliography,
     subtitle: typeof value.subtitle === "string" ? value.subtitle.slice(0, 200) : defaults.subtitle,
     copyright: typeof value.copyright === "string" ? value.copyright.slice(0, 500) : defaults.copyright,
     dedication: typeof value.dedication === "string" ? value.dedication.slice(0, 1000) : defaults.dedication,

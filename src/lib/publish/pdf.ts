@@ -1,7 +1,9 @@
 import { jsPDF } from "jspdf";
+import { resolveBookCitations } from "../citations/bibliography";
+import { resolveBookFootnotes, type ResolvedFootnote } from "./footnotes";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens, type PresetTokens } from "./presets";
-import { blocksFromHtml, type Block, type InlineRun } from "./rich-text";
+import { blocksFromHtml, inlineRunsFromHtml, type Block, type InlineRun } from "./rich-text";
 import {
   FORMAT_INFO,
   slugifyFilename,
@@ -17,6 +19,7 @@ type TextToken = {
   width: number;
   isSpace: boolean;
   lineBreak?: boolean;
+  superscript?: boolean;
   run: InlineRun;
   image?: { src: string; fileType: string; width: number; height: number };
 };
@@ -41,6 +44,7 @@ type ParagraphOptions = {
   spacingAfter?: number;
   color?: [number, number, number];
   dropCap?: boolean;
+  sceneFootnotes?: ReadonlyMap<string, ResolvedFootnote>;
 };
 
 const INK: [number, number, number] = [29, 33, 29];
@@ -69,6 +73,8 @@ function pdfImageFormat(mediaType: string): string {
 }
 
 export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPayload {
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  book = resolvedBook;
   const tokens = resolveStyleTokens(options.style, options.customStyles);
   const pdfFont = tokens.pdfFont;
   const pageWidth = tokens.page.widthPt;
@@ -168,9 +174,30 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     return doc.getTextWidth(text);
   };
 
-  const tokenize = (runs: InlineRun[], size: number, forceBold = false, forceItalic = false): TextToken[] => {
+  const tokenize = (
+    runs: InlineRun[],
+    size: number,
+    forceBold = false,
+    forceItalic = false,
+    sceneFootnotes?: ReadonlyMap<string, ResolvedFootnote>
+  ): TextToken[] => {
     const tokens: TextToken[] = [];
     for (const run of runs) {
+      if (run.footnoteId) {
+        const note = sceneFootnotes?.get(run.footnoteId);
+        if (note) {
+          const text = String(note.number);
+          const supSize = size * 0.68;
+          tokens.push({
+            text,
+            width: measure(text, run, supSize, forceBold, forceItalic),
+            isSpace: false,
+            superscript: true,
+            run
+          });
+        }
+        continue;
+      }
       if (run.lineBreak) {
         tokens.push({ text: "", width: 0, isSpace: false, lineBreak: true, run });
         continue;
@@ -342,6 +369,13 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
         cursor += token.width;
         continue;
       }
+      if (token.superscript) {
+        const supSize = size * 0.68;
+        setFont(fontStyle(token.run, forceBold, forceItalic), supSize);
+        doc.text(token.text, cursor, baseline - size * 0.35);
+        cursor += token.width;
+        continue;
+      }
       setFont(fontStyle(token.run, forceBold, forceItalic), size);
       doc.text(token.text, cursor, baseline);
       if (token.run.underline) {
@@ -390,7 +424,7 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       }
     }
 
-    const tokens = tokenize(drawRuns, opts.size, opts.bold, opts.italic);
+    const tokens = tokenize(drawRuns, opts.size, opts.bold, opts.italic, opts.sceneFootnotes);
     const firstIndent = dropCapLetter ? 0 : opts.firstIndent;
     const lines = wrapTokens(
       tokens,
@@ -444,7 +478,11 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     setColor(INK);
   };
 
-  const renderHeading = (block: Block, size: number) => {
+  const renderHeading = (
+    block: Block,
+    size: number,
+    sceneFootnotes?: ReadonlyMap<string, ResolvedFootnote>
+  ) => {
     const spacingBefore = size * 0.8;
     const spacingAfter = size * 0.35;
     const runs = block.runs.map((run) => ({ ...run, bold: true }));
@@ -454,7 +492,8 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       firstIndent: 0,
       spacingBefore,
       spacingAfter,
-      bold: true
+      bold: true,
+      sceneFootnotes
     });
   };
 
@@ -482,14 +521,19 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     y += imageHeight + bodyLine * 0.5;
   };
 
-  const renderBlock = (block: Block, firstInScene: boolean, allowDropCap: boolean) => {
+  const renderBlock = (
+    block: Block,
+    firstInScene: boolean,
+    allowDropCap: boolean,
+    sceneFootnotes?: ReadonlyMap<string, ResolvedFootnote>
+  ) => {
     if (block.kind === "image") {
       renderImage(block);
       return;
     }
     if (block.kind === "heading") {
       const size = bodySize * (block.level === 1 ? 1.45 : block.level === 2 ? 1.28 : 1.12);
-      renderHeading(block, size);
+      renderHeading(block, size, sceneFootnotes);
       return;
     }
     if (block.kind === "quote") {
@@ -502,7 +546,8 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
           leftIndent: bodySize * 1.5,
           spacingBefore: bodySize * 0.4,
           spacingAfter: bodySize * 0.4,
-          color: MUTED
+          color: MUTED,
+          sceneFootnotes
         }
       );
       return;
@@ -515,7 +560,8 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
           lineHeight: bodyLine,
           firstIndent: 0,
           leftIndent: bodySize * 1.5,
-          spacingAfter: bodySize * 0.2
+          spacingAfter: bodySize * 0.2,
+          sceneFootnotes
         }
       );
       return;
@@ -529,7 +575,8 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
           firstIndent: 0,
           spacingBefore: bodySize * 0.2,
           spacingAfter: bodySize * 0.45,
-          color: MUTED
+          color: MUTED,
+          sceneFootnotes
         }
       );
       return;
@@ -540,8 +587,41 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       firstIndent: firstInScene ? 0 : tokens.paragraphIndentEm * bodySize,
       justify: tokens.justify,
       spacingAfter: tokens.paragraphSpacingEm * bodySize,
-      dropCap: allowDropCap
+      dropCap: allowDropCap,
+      sceneFootnotes
     });
+  };
+
+  // Footnotes are rendered as chapter endnotes in this version; page-bottom
+  // footnote layout is not required here.
+  const renderChapterEndnotes = (notes: readonly ResolvedFootnote[]) => {
+    if (notes.length === 0) return;
+    const noteSize = bodySize * 0.85;
+    const noteLine = noteSize * 1.4;
+    ensureSpace(bodyLine * 2.5);
+    y += bodySize * 0.7;
+    doc.setDrawColor(RULE[0], RULE[1], RULE[2]);
+    doc.line(contentLeft, y, contentLeft + Math.min(96, contentWidth * 0.3), y);
+    y += bodySize * 1.1;
+    renderParagraph([{ text: "Notes", bold: true }], {
+      size: noteSize,
+      lineHeight: noteLine,
+      firstIndent: 0,
+      spacingAfter: noteSize * 0.4,
+      bold: true,
+      color: MUTED
+    });
+    for (const note of notes) {
+      const runs = inlineRunsFromHtml(note.html);
+      renderParagraph([{ text: `${note.number}. `, bold: true }, ...runs], {
+        size: noteSize,
+        lineHeight: noteLine,
+        firstIndent: 0,
+        leftIndent: noteSize * 0.9,
+        spacingAfter: noteSize * 0.35,
+        color: INK
+      });
+    }
   };
 
   const renderSceneTitle = (title: string) => {
@@ -779,6 +859,8 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     frontMatterMode = false;
   }
 
+  const bookFootnotes = resolveBookFootnotes(book, options);
+
   book.chapters.forEach((chapter, chapterIndex) => {
     if (chapterIndex === 0) {
       beginBody();
@@ -812,6 +894,7 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     chapter.scenes.forEach((scene, sceneIndex) => {
       if (options.includeSceneTitles) renderSceneTitle(scene.title);
       const blocks = blocksFromHtml(scene.html);
+      const sceneFootnotes = bookFootnotes.byScene.get(scene);
       const dropCapIndex = options.dropCaps && tokens.dropCap && sceneIndex === 0
         ? blocks.findIndex((block) => block.kind === "paragraph" && !block.eyebrow)
         : -1;
@@ -819,11 +902,13 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
         renderBlock(
           block,
           blockIndex === 0,
-          blockIndex === dropCapIndex
+          blockIndex === dropCapIndex,
+          sceneFootnotes
         );
       });
       if (sceneIndex < chapter.scenes.length - 1) renderSeparator(options.sceneSeparator);
     });
+    renderChapterEndnotes(bookFootnotes.byChapter.get(chapter) ?? []);
   });
 
   for (const page of book.backMatter) {
@@ -833,6 +918,33 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       beginBody();
     }
     renderMatterPage(page);
+  }
+
+  if (bibliography && bibliography.entries.length > 0) {
+    if (bodyStarted) {
+      newBodyPage();
+    } else {
+      beginBody();
+    }
+    renderParagraph(plainRuns(bibliography.heading), {
+      size: bodySize * 1.5,
+      lineHeight: bodySize * 1.8,
+      firstIndent: 0,
+      bold: true,
+      align: "center",
+      spacingAfter: bodySize * 0.8
+    });
+    const hangingIndent = bodySize * 1.8;
+    for (const entry of bibliography.entries) {
+      renderParagraph(inlineRunsFromHtml(entry.html), {
+        size: bodySize,
+        lineHeight: bodyLine,
+        firstIndent: -hangingIndent,
+        leftIndent: hangingIndent,
+        justify: false,
+        spacingAfter: bodySize * 0.5
+      });
+    }
   }
 
   renderTableOfContents();

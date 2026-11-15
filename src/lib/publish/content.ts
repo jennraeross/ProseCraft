@@ -1,19 +1,25 @@
+import { worksheetToPlainText } from "../rich/calc";
+import { FOOTNOTE_REF_CLASS } from "../sanitize";
+
 const BLOCK_TAGS = new Set([
   "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DIV", "FIGCAPTION", "FIGURE",
   "FOOTER", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "LI", "MAIN",
   "NAV", "OL", "P", "PRE", "SECTION", "UL"
 ]);
 
-const RICH_SELECTOR = ".math-inline, .math-block, .mermaid-diagram";
+const RICH_SELECTOR = ".math-inline, .math-block, .mermaid-diagram, .calc-worksheet";
 
 type RichTextMode = "source" | "omit";
 
 export type PlainTextOptions = {
   /**
-   * How equations and diagrams are represented. `source` keeps TeX/Mermaid
-   * source for the text export; `omit` keeps them out of word counts.
+   * How equations, diagrams, and calculations are represented. `source` keeps
+   * TeX/Mermaid source and evaluated calculations for the text export; `omit`
+   * keeps them out of word counts.
    */
   rich?: RichTextMode;
+  /** Optional map of footnote id -> resolved 1-based number to emit `[n]` markers. */
+  footnoteNumbers?: ReadonlyMap<string, number>;
 };
 
 type TextBlock = { text: string; tight: boolean };
@@ -27,6 +33,9 @@ function richRepresentation(node: HTMLElement, mode: RichTextMode): string | nul
   if (node.classList.contains("math-block")) {
     return `$$\n${node.getAttribute("data-tex") ?? ""}\n$$`;
   }
+  if (node.classList.contains("calc-worksheet")) {
+    return worksheetToPlainText(node.getAttribute("data-source") ?? "");
+  }
   return `[Diagram]\n${node.getAttribute("data-source") ?? ""}`;
 }
 
@@ -35,6 +44,11 @@ function inlineText(node: Node, options: PlainTextOptions): string {
   if (!(node instanceof HTMLElement)) return "";
   const rich = richRepresentation(node, options.rich ?? "source");
   if (rich !== null) return rich;
+  if (node.tagName === "SUP" && node.classList.contains(FOOTNOTE_REF_CLASS)) {
+    const id = node.getAttribute("data-footnote-id") ?? "";
+    const number = options.footnoteNumbers?.get(id);
+    return number !== undefined ? `[${number}]` : "";
+  }
   if (node.tagName === "BR") return "\n";
   return Array.from(node.childNodes)
     .map((child) => {
@@ -70,7 +84,9 @@ function collectBlocks(root: HTMLElement, options: PlainTextOptions): TextBlock[
       buffer += richRepresentation(node, options.rich ?? "source") ?? "";
       return;
     }
-    if (node.classList.contains("math-block") || node.classList.contains("mermaid-diagram")) {
+    if (node.classList.contains("math-block")
+      || node.classList.contains("mermaid-diagram")
+      || node.classList.contains("calc-worksheet")) {
       flush();
       const text = richRepresentation(node, options.rich ?? "source");
       if (text) blocks.push({ text, tight: false });
@@ -79,6 +95,13 @@ function collectBlocks(root: HTMLElement, options: PlainTextOptions): TextBlock[
 
     if (node.tagName === "BR") {
       buffer += "\n";
+      return;
+    }
+
+    if (node.tagName === "SUP" && node.classList.contains(FOOTNOTE_REF_CLASS)) {
+      const id = node.getAttribute("data-footnote-id") ?? "";
+      const number = options.footnoteNumbers?.get(id);
+      if (number !== undefined) buffer += `[${number}]`;
       return;
     }
 

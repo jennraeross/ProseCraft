@@ -1,6 +1,8 @@
 import { strToU8, zipSync, type Zippable } from "fflate";
+import { resolveBookCitations, type BookBibliography } from "../citations/bibliography";
 import { markDropCapParagraph } from "./content";
 import { decodeEmbeddedImage } from "./embedded-image";
+import { resolveBookFootnotes, type BookFootnotes } from "./footnotes";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens } from "./presets";
 import { escapeXml, escapeXmlAttribute, htmlToXhtml } from "./xhtml";
@@ -32,7 +34,7 @@ function separatorXhtml(separator: SceneSeparator): string {
 function xhtmlPage(title: string, body: string, bodyClass = ""): string {
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
 <head>
   <meta charset="utf-8" />
   <title>${escapeXml(title)}</title>
@@ -112,11 +114,23 @@ function matterXhtml(page: CompiledMatterPage, placement: "front" | "back"): str
   );
 }
 
+function bibliographyXhtml(bibliography: BookBibliography): string {
+  const entries = bibliography.entries
+    .map((entry) => `  <p class="bibliography-entry">${htmlToXhtml(entry.html)}</p>`)
+    .join("\n");
+  return xhtmlPage(
+    bibliography.heading,
+    `<section class="matter-page back-matter bibliography" epub:type="bibliography">\n  <h1 class="matter-title">${escapeXml(bibliography.heading)}</h1>\n${entries}\n</section>`,
+    "back-matter-page bibliography-page"
+  );
+}
+
 function chapterXhtml(
   book: CompiledBook,
   options: PublishOptions,
   chapterIndex: number,
-  imagePaths: Map<string, string>
+  imagePaths: Map<string, string>,
+  bookFootnotes: BookFootnotes
 ): string {
   const chapter = book.chapters[chapterIndex];
   const first = chapterIndex === 0;
@@ -124,6 +138,7 @@ function chapterXhtml(
     ? `<h2 class="chapter-title">${escapeXml(chapter.label)}</h2>`
     : "";
   const dropCaps = options.dropCaps && resolveStyleTokens(options.style, options.customStyles).dropCap;
+  const seenRefIds = new Set<string>();
   const scenes = chapter.scenes.map((scene, index) => {
     const sceneTitle = options.includeSceneTitles
       ? `<h3 class="scene-title">${escapeXml(scene.title)}</h3>`
@@ -132,14 +147,38 @@ function chapterXhtml(
       ? separatorXhtml(options.sceneSeparator)
       : "";
     const sceneHtml = dropCaps && index === 0 ? markDropCapParagraph(scene.html) : scene.html;
-    return `<div class="scene">${sceneTitle}${htmlToXhtml(sceneHtml, (src) => imagePaths.get(src) ?? src)}</div>${separator}`;
+    const sceneFootnotes = bookFootnotes.byScene.get(scene);
+    const xhtml = htmlToXhtml(sceneHtml, {
+      resolveImage: (src) => imagePaths.get(src) ?? src,
+      resolveFootnote: (id) => {
+        const note = sceneFootnotes?.get(id);
+        if (!note) return undefined;
+        const refId = `fnref-${note.number}`;
+        const emitRefId = !seenRefIds.has(refId);
+        seenRefIds.add(refId);
+        return {
+          number: note.number,
+          href: `#fn-${note.number}`,
+          ...(emitRefId ? { refId } : {})
+        };
+      }
+    });
+    return `<div class="scene">${sceneTitle}${xhtml}</div>${separator}`;
   }).join("\n");
+
+  const chapterNotes = bookFootnotes.byChapter.get(chapter) ?? [];
+  const footnotesBlock = chapterNotes.length > 0
+    ? `\n<section class="footnotes" epub:type="footnotes">\n${chapterNotes.map((note) => {
+      const noteHtml = htmlToXhtml(note.html, (src) => imagePaths.get(src) ?? src);
+      return `  <aside epub:type="footnote" id="fn-${note.number}" class="footnote"><p><span class="footnote-number">${note.number}.</span> ${noteHtml} <a href="#fnref-${note.number}" class="footnote-backref" aria-label="Back to reference ${note.number}">↩</a></p></aside>`;
+    }).join("\n")}\n</section>`
+    : "";
 
   const breakClass = !first && options.pageBreakBeforeChapters ? " chapter-break" : "";
   const dropCapsClass = dropCaps ? " drop-caps" : "";
   return xhtmlPage(
     chapter.label,
-    `<section class="chapter${breakClass}">${heading}\n${scenes}</section>`,
+    `<section class="chapter${breakClass}">${heading}\n${scenes}${footnotesBlock}</section>`,
     `chapter-page${dropCapsClass}`
   );
 }
@@ -180,6 +219,12 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
   margin: 0 0 ${tokens.paragraphSpacingEm}em;
   text-align: ${tokens.justify ? "justify" : "left"};
   text-indent: 0;
+}
+.bibliography p.bibliography-entry {
+  margin: 0 0 0.7em;
+  padding-left: 2em;
+  text-indent: -2em;
+  text-align: left;
 }
 .contents-page { margin-top: 8%; }
 .contents-page .toc-list { margin: 0; padding: 0; list-style: none; }
@@ -224,8 +269,8 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
 .scene img { display: block; max-width: 100%; max-height: min(4in, 60vh); height: auto; margin: 0.75em auto; object-fit: contain; }
 .scene .math-inline { display: inline; text-indent: 0; white-space: nowrap; }
 .scene .math-inline img { display: inline-block; max-width: none; max-height: 1.6em; width: auto; height: auto; margin: 0 0.08em; vertical-align: middle; }
-.scene .math-block, .scene .mermaid-diagram { display: block; max-width: 100%; margin: 0.85em auto; text-align: center; text-indent: 0; }
-.scene .math-block img, .scene .mermaid-diagram img { display: block; max-width: 100%; max-height: 60vh; width: auto; height: auto; margin: 0 auto; object-fit: contain; }
+.scene .math-block, .scene .mermaid-diagram, .scene .calc-worksheet { display: block; max-width: 100%; margin: 0.85em auto; text-align: center; text-indent: 0; }
+.scene .math-block img, .scene .mermaid-diagram img, .scene .calc-worksheet img { display: block; max-width: 100%; max-height: 60vh; width: auto; height: auto; margin: 0 auto; object-fit: contain; }
 .scene .rich-render-error { font-family: monospace; font-size: 0.85em; white-space: pre-wrap; }
 .scene .eyebrow {
   margin: 0 0 0.6em;
@@ -259,6 +304,17 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
   margin: 0 auto;
   border-top: 1px solid #d9dbd4;
 }
+.footnotes {
+  margin-top: 2em;
+  padding-top: 0.9em;
+  border-top: 1px solid #d9dbd4;
+  font-size: 0.88em;
+}
+.footnotes aside { margin: 0 0 0.55em; text-indent: 0; }
+.footnotes aside p { margin: 0; text-indent: 0; }
+.footnote-number { font-weight: 600; margin-right: 0.25em; }
+.footnote-ref { text-decoration: none; }
+.footnote-backref { text-decoration: none; margin-left: 0.3em; }
 ${options.dropCaps && tokens.dropCap ? `
 .scene .drop-cap { text-indent: 0; }
 .drop-caps .scene .drop-cap::first-letter {
@@ -339,6 +395,8 @@ ${points}
 }
 
 export async function exportEpub(book: CompiledBook, options: PublishOptions): Promise<ExportPayload> {
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  book = resolvedBook;
   const identifier = bookIdentifier();
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const files: Zippable = {};
@@ -414,6 +472,10 @@ export async function exportEpub(book: CompiledBook, options: PublishOptions): P
     manifest.push(`    <item id="${id}" href="text/${id}.xhtml" media-type="application/xhtml+xml" />`);
     spine.push(`    <itemref idref="${id}" />`);
   });
+  if (bibliography && bibliography.entries.length > 0) {
+    manifest.push('    <item id="bibliography" href="text/bibliography.xhtml" media-type="application/xhtml+xml" />');
+    spine.push('    <itemref idref="bibliography" />');
+  }
 
   const opf = `<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="en">
@@ -464,12 +526,18 @@ ${spine.join("\n")}
   book.frontMatter.forEach((page, index) => {
     files[`OEBPS/text/front-matter-${index + 1}.xhtml`] = strToU8(matterXhtml(page, "front"));
   });
+  const bookFootnotes = resolveBookFootnotes(book, options);
   book.chapters.forEach((_, index) => {
-    files[`OEBPS/text/chapter-${index + 1}.xhtml`] = strToU8(chapterXhtml(book, options, index, imagePaths));
+    files[`OEBPS/text/chapter-${index + 1}.xhtml`] = strToU8(
+      chapterXhtml(book, options, index, imagePaths, bookFootnotes)
+    );
   });
   book.backMatter.forEach((page, index) => {
     files[`OEBPS/text/back-matter-${index + 1}.xhtml`] = strToU8(matterXhtml(page, "back"));
   });
+  if (bibliography && bibliography.entries.length > 0) {
+    files["OEBPS/text/bibliography.xhtml"] = strToU8(bibliographyXhtml(bibliography));
+  }
 
   const bytes = zipSync(files);
   return {

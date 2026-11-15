@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { Plus, X } from "@lucide/svelte";
+  import { ArrowLeft, ArrowLeftRight, ArrowRight, Plus, X } from "@lucide/svelte";
+  import { buildChapterHtml } from "$lib/chapter-sections";
   import { markdownToHtml } from "$lib/publish/markdown";
-  import type { DocumentData, ResearchFile } from "$lib/publish/types";
+  import type { ChapterData, DocumentData, ResearchFile, SceneSeparator } from "$lib/publish/types";
   import PdfView from "$lib/PdfView.svelte";
   import { sanitizeHtml } from "$lib/sanitize";
   import { parseSplitTarget, type SplitGroup } from "$lib/split";
+  import TileEditor from "$lib/TileEditor.svelte";
 
   const MAX_TEXT_BYTES = 2 * 1024 * 1024;
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -17,24 +19,48 @@
     groups,
     documents,
     files,
+    chapters,
+    sceneSeparator,
+    isActiveDocument,
     canAdd,
+    canMoveLeft,
+    canMoveRight,
+    canSwap,
     readBytes,
     openExternally,
     openUrl,
     onTarget,
+    onMove,
+    onSwap,
     onAdd,
+    onEditTitle,
+    onEditChapterTitle,
+    onEditContent,
     onClose
   }: {
     target: string;
     groups: SplitGroup[];
     documents: DocumentData[];
     files: ResearchFile[];
+    chapters: ChapterData[];
+    sceneSeparator: SceneSeparator;
+    /** True when this pane shows the document the main editor has open. */
+    isActiveDocument: boolean;
     canAdd: boolean;
+    canMoveLeft: boolean;
+    canMoveRight: boolean;
+    /** True when this pane shows a document that can take the editor's place. */
+    canSwap: boolean;
     readBytes: (file: ResearchFile) => Promise<ArrayBuffer>;
     openExternally: (file: ResearchFile) => void;
     openUrl: (url: string) => void;
     onTarget: (value: string) => void;
+    onMove: (delta: -1 | 1) => void;
+    onSwap: () => void;
     onAdd: () => void;
+    onEditTitle: (id: string, value: string) => void;
+    onEditChapterTitle: (chapterId: string, value: string) => void;
+    onEditContent: (id: string, html: string) => void;
     onClose: () => void;
   } = $props();
 
@@ -45,11 +71,44 @@
   const file = $derived(parsed?.kind === "file"
     ? files.find((item) => item.id === parsed.id) ?? null
     : null);
-  const documentHtml = $derived(document ? sanitizeHtml(document.content) : "");
+  // Scene targets render their whole chapter, scrolled to the scene.
+  const chapterDocs = $derived(document?.chapterId
+    ? documents.filter((doc) => doc.chapterId === document.chapterId && !doc.trashed)
+    : []);
+  const paneChapter = $derived(document?.chapterId
+    ? chapters.find((chapter) => chapter.id === document.chapterId) ?? null
+    : null);
+  const inPaneChapter = $derived(paneChapter !== null && chapterDocs.length > 0);
+  const paneTitle = $derived(inPaneChapter && paneChapter
+    ? paneChapter.title || "Untitled chapter"
+    : (document?.title || "Untitled"));
+  const paneHtml = $derived(inPaneChapter
+    ? sanitizeHtml(buildChapterHtml(chapterDocs.map((doc) => doc.content), sceneSeparator))
+    : (document ? sanitizeHtml(document.content) : ""));
+  const paneKey = $derived(inPaneChapter && paneChapter ? `chapter:${paneChapter.id}` : `doc:${document?.id ?? "none"}`);
+  const scrollSection = $derived(inPaneChapter
+    ? Math.max(0, chapterDocs.findIndex((doc) => doc.id === document?.id))
+    : 0);
   const isPdf = $derived(Boolean(file && (file.mimeType === "application/pdf" || /\.pdf$/i.test(file.fileName))));
   const showPdf = $derived(Boolean(file && isPdf && file.size <= MAX_PDF_BYTES));
 
   let loaded = $state<Loaded | null>(null);
+  let readScroller = $state<HTMLDivElement>();
+  let lastReadScroll: string | undefined = undefined;
+
+  // The read-only mirror follows retargets; later edits must not move it.
+  $effect(() => {
+    const scroller = readScroller;
+    const key = target;
+    const section = scrollSection;
+    if (!scroller || lastReadScroll === key) return;
+    lastReadScroll = key;
+    if (section <= 0) {
+      scroller.scrollTop = 0;
+      return;
+    }
+    scroller.querySelectorAll(".scene-break")[section - 1]?.scrollIntoView({ block: "center" });
+  });
 
   function escapeHtml(value: string): string {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -118,13 +177,32 @@
         </optgroup>
       {/each}
     </select>
-    <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to four reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Edit this in the main editor and show the current text here" title="Swap with the editor" disabled={!canSwap} onclick={onSwap}><ArrowLeftRight size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Move this pane left" title="Move left" disabled={!canMoveLeft} onclick={() => onMove(-1)}><ArrowLeft size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Move this pane right" title="Move right" disabled={!canMoveRight} onclick={() => onMove(1)}><ArrowRight size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to five reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
     <button class="split-button" type="button" aria-label="Close this pane" title="Close this pane" onclick={onClose}><X size={14} aria-hidden="true" /></button>
   </div>
-  <div class="split-pane-body">
+  <div class="split-pane-body" bind:this={readScroller}>
     {#if document}
-      <h2 class="split-title">{document.title || "Untitled"}</h2>
-      <div class="split-content" role="presentation" onclick={handleContentClick}>{@html documentHtml}</div>
+      {#if isActiveDocument}
+        <h2 class="split-title">{paneTitle}</h2>
+        <p class="split-note split-hint">Open in the editor</p>
+        <div class="split-content" role="presentation" onclick={handleContentClick}>{@html paneHtml}</div>
+      {:else}
+        <!-- Keyed by chapter (or document), so a pending save can never land in another document. -->
+        {#key paneKey}
+          {@const documentId = document.id}
+          {@const chapterId = inPaneChapter ? paneChapter?.id : null}
+          <TileEditor
+            title={paneTitle}
+            html={paneHtml}
+            scrollRequest={{ key: target, section: scrollSection }}
+            onTitle={(value) => chapterId ? onEditChapterTitle(chapterId, value) : onEditTitle(documentId, value)}
+            onChange={(html) => onEditContent(documentId, html)}
+          />
+        {/key}
+      {/if}
     {:else if file}
       <h2 class="split-title">{file.title || file.fileName}</h2>
       {#if showPdf}{#key file.id}<PdfView load={() => readBytes(file)} />{/key}{/if}
@@ -141,9 +219,13 @@
 </aside>
 
 <style>
-  .split-pane { display: flex; min-width: 0; max-height: calc(100vh - 88px); flex: 1 0 260px; max-width: 520px; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
-  .split-pane-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .split-pane { display: flex; width: 100%; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .split-pane-header { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
   .split-pane-header select { min-width: 0; flex: 1; padding: 5px 8px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); font-size: 11px; }
+  @media (pointer: coarse) {
+    /* iOS zooms the page when a focused control is smaller than 16px. */
+    .split-pane-header select { font-size: 16px; }
+  }
   .split-button { width: 26px; height: 26px; flex: none; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; }
   .split-button:hover:not(:disabled) { background: var(--control-hover); color: var(--text-primary); }
   .split-button:disabled { opacity: .4; cursor: default; }
@@ -151,7 +233,12 @@
   .split-title { margin: 0 0 10px; color: var(--text-heading); font-size: 15px; }
   .split-content :global(pre) { white-space: pre-wrap; word-break: break-word; }
   .split-content :global(img), .split-image { max-width: 100%; }
+  .split-content :global(.scene-break) { margin: 24px auto; color: var(--text-faint); font-size: 14px; letter-spacing: 6px; text-align: center; }
+  .split-content :global(.scene-break-blank:empty::before) { content: "· · ·"; opacity: .7; }
+  .split-content :global(.scene-break-line::after) { display: block; width: 100px; height: 1px; margin: 0 auto; background: var(--border); content: ""; }
+  .split-content :global(.scene-break-blank) { min-height: 22px; }
   .split-note { color: var(--text-muted); font-size: 11px; }
+  .split-hint { margin: -4px 0 12px; }
   .split-open-button { height: 32px; padding: 0 13px; border: 1px solid var(--border-control); border-radius: 6px; background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 11px; }
   .split-open-button:hover { border-color: var(--accent); color: var(--text-heading); }
 </style>

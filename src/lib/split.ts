@@ -1,5 +1,5 @@
-/** Maximum number of reference panes next to the editor (so five panels in total). */
-export const MAX_SPLIT_PANES = 4;
+/** Maximum number of reference panes next to the editor (so six panels in total). */
+export const MAX_SPLIT_PANES = 5;
 
 export type SplitPaneState = { id: string; target: string };
 export type SplitOption = { value: string; label: string };
@@ -28,6 +28,45 @@ export function removeSplitPane(panes: readonly SplitPaneState[], id: string): S
   return panes.filter((pane) => pane.id !== id);
 }
 
+/**
+ * Opens `target` beside the editor: reuses a pane that already shows it, otherwise fills the first
+ * empty pane, otherwise appends a pane, otherwise replaces the last pane so the action always applies.
+ */
+export function openBeside(
+  panes: readonly SplitPaneState[],
+  target: string,
+  newId: string
+): SplitPaneState[] {
+  if (panes.some((pane) => pane.target === target)) {
+    return [...panes];
+  }
+  const freeIndex = panes.findIndex((pane) => pane.target === "");
+  if (freeIndex !== -1) {
+    return panes.map((pane, index) => (index === freeIndex ? { ...pane, target } : pane));
+  }
+  if (canAddSplitPane(panes)) {
+    return [...panes, { id: newId, target }];
+  }
+  return panes.map((pane, index) => (index === panes.length - 1 ? { ...pane, target } : pane));
+}
+
+/** Swaps a pane with its neighbour, so `delta` of -1 moves it left and 1 moves it right; no-op at the ends. */
+export function moveSplitPane(
+  panes: readonly SplitPaneState[],
+  id: string,
+  delta: -1 | 1
+): SplitPaneState[] {
+  const index = panes.findIndex((pane) => pane.id === id);
+  const neighbour = index + delta;
+  if (index === -1 || neighbour < 0 || neighbour >= panes.length) {
+    return [...panes];
+  }
+  const next = [...panes];
+  next[index] = panes[neighbour];
+  next[neighbour] = panes[index];
+  return next;
+}
+
 export function setSplitTarget(
   panes: readonly SplitPaneState[],
   id: string,
@@ -42,4 +81,25 @@ export function pruneSplitTargets(
   validTargets: ReadonlySet<string>
 ): SplitPaneState[] {
   return panes.map((pane) => (pane.target && !validTargets.has(pane.target) ? { ...pane, target: "" } : pane));
+}
+
+/**
+ * Number of columns that fit `tileCount` tiles into `containerWidth`: at least 1, at most `tileCount`.
+ * Slanted towards balanced rows, so tiles are not left alone in a last row - four tiles in a width
+ * that fits three columns become 2+2 rather than 3+1, while five tiles stay 3+2.
+ */
+export function tileColumns(tileCount: number, containerWidth: number, minTileWidth = 340): number {
+  const tiles = Math.floor(tileCount);
+  if (!Number.isFinite(tiles) || tiles <= 1) {
+    return 1;
+  }
+  const fitting = Math.floor(containerWidth / minTileWidth);
+  const maxColumns = Math.min(tiles, Number.isFinite(fitting) ? fitting : 1);
+  for (let columns = maxColumns; columns > 1; columns -= 1) {
+    const remainder = tiles % columns;
+    if (remainder === 0 || remainder >= columns - 1) {
+      return columns;
+    }
+  }
+  return 1;
 }
