@@ -113,6 +113,7 @@ pasting the authorization code back into ProseCraft.
 - [x] Custom fonts
 - [ ] Custom colorschemes
 - [x] Import Epub as Project
+- [x] Import a Scrivener project (.scriv, as a zip or a folder)
 - [x] Import a folder of Markdown files as a project (manuscript and wiki)
 
 #### Mobile
