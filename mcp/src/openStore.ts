@@ -155,7 +155,14 @@ function documentPayload(fields: Record<string, unknown>): Record<string, unknow
   };
 }
 
-export function serializeMarkdown(fields: Record<string, unknown>, body: string): string {
+/** A Markdown footnote definition line, `[^id]: text`. */
+const FOOTNOTE_DEFINITION = /^\[\^[^\]\s]+\]:/m;
+
+export function serializeMarkdown(allFields: Record<string, unknown>, body: string): string {
+  // When the body carries footnote definitions, they are the footnotes. The
+  // frontmatter copy came from the previous version and may be stale, and the
+  // app prefers it whenever the hash matches, so it is left out.
+  const fields = FOOTNOTE_DEFINITION.test(body) ? { ...allFields, footnotes: undefined } : allFields;
   const hash = hashJson({ fields: documentPayload(fields), body: normalizeBody(body) });
   const entries = Object.entries(fields)
     .filter(([, value]) => value !== undefined)
