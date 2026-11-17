@@ -10,8 +10,11 @@ import {
   dropOrphanSnapshots,
   normalizeSnapshots,
   removeSnapshot,
+  snapshotHtml,
+  snapshotIsMarkdown,
   snapshotsForDocument
 } from "./snapshots";
+import type { DocumentSnapshot } from "./storage/types";
 
 const doc = { id: "doc-1", title: "Opening", content: "<p>Hello</p>" };
 const make = (id: string, now: number, documentId = "doc-1") =>
@@ -76,5 +79,43 @@ describe("snapshots in storage", () => {
     const entries = await fs.listDir("projects");
     const back = await readOpenProject(fs, entries[0].name, 20);
     expect(back.project.snapshots).toEqual([make("s1", 1)]);
+  });
+});
+
+describe("Markdown snapshots from the MCP server", () => {
+  const mcpSnapshot = (extra: Partial<DocumentSnapshot> = {}): DocumentSnapshot => ({
+    id: "s-1",
+    documentId: "doc-1",
+    createdAt: 1,
+    title: "Opening",
+    content: "It was *dark*.\n\nThen it was not.",
+    reason: "manual",
+    note: "Before MCP write",
+    ...extra
+  });
+
+  it("restores them as HTML paragraphs instead of literal Markdown", () => {
+    const html = snapshotHtml(mcpSnapshot({ contentFormat: "markdown" }));
+    expect(html).toContain("<em>dark</em>");
+    expect(html.match(/<p>/g)).toHaveLength(2);
+    expect(html).not.toContain("*");
+  });
+
+  it("recognises the ones written before contentFormat existed by the MCP note", () => {
+    expect(snapshotIsMarkdown(mcpSnapshot())).toBe(true);
+    expect(snapshotHtml(mcpSnapshot())).toContain("<em>dark</em>");
+  });
+
+  it("leaves the app's own HTML snapshots alone", () => {
+    const own = make("s-2", 2);
+    expect(snapshotIsMarkdown(own)).toBe(false);
+    expect(snapshotHtml(own)).toBe("<p>Hello</p>");
+  });
+
+  it("keeps contentFormat when stored snapshots are normalized", () => {
+    const [kept] = normalizeSnapshots([mcpSnapshot({ contentFormat: "markdown" })]);
+    expect(kept.contentFormat).toBe("markdown");
+    const [plain] = normalizeSnapshots([mcpSnapshot({ contentFormat: "html" as never })]);
+    expect(plain.contentFormat).toBeUndefined();
   });
 });

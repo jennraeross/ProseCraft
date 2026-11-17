@@ -8,6 +8,7 @@ import { MemoryFileSystem } from "$lib/storage/sync/memory-fs";
 import { openMarkerText, readOpenProject, writeOpenProject } from "$lib/storage/sync/open-layout";
 import type { DocumentSnapshot, ProjectData, StoredProject } from "$lib/storage/types";
 import { addComment, createWikiPage, resolveComment, setLabel, updateWikiPage, writeScene } from "./safeWrites";
+import { readSnapshot } from "./readTools";
 
 const NOW = 1_700_000_000_000;
 const tempRoots: string[] = [];
@@ -135,6 +136,8 @@ describe("writeScene snapshots", () => {
     expect(snapshots[0].content).toBe("It was dark.");
     expect(snapshots[0].reason).toBe("manual");
     expect(snapshots[0].note).toBe("Before MCP write");
+    expect(snapshots[0].contentFormat).toBe("markdown");
+    expect((await readSnapshot(folder, "project-1", scene.snapshotId!)).contentFormat).toBe("markdown");
     expect(after.revision).toBe((before.revision as number) + 1);
   });
 

@@ -34,6 +34,7 @@ export type DocumentSnapshot = {
   createdAt: number;
   title: string;
   content: string;
+  contentFormat?: "markdown";
   reason: "manual" | "before-restore";
   note?: string;
 };
@@ -237,6 +238,7 @@ async function writeSceneLocked(
       createdAt: now,
       title: typeof prevFields.title === "string" ? prevFields.title : "",
       content: prev.body,
+      contentFormat: "markdown",
       reason: "manual",
       note: SNAPSHOT_NOTE
     };
@@ -339,6 +341,7 @@ async function updateWikiPageLocked(
     createdAt: now,
     title: typeof prevFields.title === "string" ? prevFields.title : "",
     content: prev.body,
+    contentFormat: "markdown",
     reason: "manual",
     note: SNAPSHOT_NOTE
   };

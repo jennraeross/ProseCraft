@@ -1,9 +1,12 @@
+import { markdownToDocument } from "$lib/publish/markdown";
 import type { DocumentData } from "$lib/publish/types";
 import type { DocumentSnapshot } from "$lib/storage/types";
 
 /** Oldest snapshots of a document are dropped once it has more than this many. */
 export const MAX_SNAPSHOTS_PER_DOCUMENT = 10;
 const MAX_NOTE_LENGTH = 120;
+/** The note the MCP server gives the snapshot it takes before overwriting a document. */
+const MCP_SNAPSHOT_NOTE = "Before MCP write";
 
 export function createSnapshot(
   document: Pick<DocumentData, "id" | "title" | "content">,
@@ -75,8 +78,25 @@ export function normalizeSnapshots(value: unknown): DocumentSnapshot[] {
       title: item.title,
       content: item.content,
       reason: item.reason,
+      ...(item.contentFormat === "markdown" ? { contentFormat: "markdown" as const } : {}),
       ...(typeof item.note === "string" && item.note ? { note: item.note.slice(0, MAX_NOTE_LENGTH) } : {})
     });
   }
   return result;
+}
+
+/**
+ * Whether a snapshot's content is Markdown. The MCP server stores the Markdown
+ * body of the file it is about to overwrite. Its snapshots say so with
+ * `contentFormat`; the ones written before that field existed are recognised by
+ * the MCP server's fixed note.
+ */
+export function snapshotIsMarkdown(snapshot: DocumentSnapshot): boolean {
+  return snapshot.contentFormat === "markdown"
+    || (snapshot.contentFormat === undefined && snapshot.reason === "manual" && snapshot.note === MCP_SNAPSHOT_NOTE);
+}
+
+/** A snapshot's content as HTML, for previewing, counting and restoring it. */
+export function snapshotHtml(snapshot: DocumentSnapshot): string {
+  return snapshotIsMarkdown(snapshot) ? markdownToDocument(snapshot.content).html : snapshot.content;
 }

@@ -322,6 +322,7 @@ describe("readSnapshot", () => {
     expect(snapshot.title).toBe("Opening Scene");
     expect(snapshot.content).toContain("It was dark.");
     expect(snapshot.note).toBe("first");
+    expect(snapshot.contentFormat).toBe("html");
   });
 
   it("fails for an unknown snapshot id", async () => {

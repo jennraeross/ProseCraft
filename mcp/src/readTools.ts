@@ -65,12 +65,14 @@ export type SnapshotSummary = {
 export type SnapshotDetail = SnapshotSummary & {
   title: string;
   content: string;
+  /** "markdown" for this server's own "Before MCP write" snapshots, "html" for the app's. */
+  contentFormat: "markdown" | "html";
 };
 
 type StoredFolder = { id: string; title: string; parentId: string | null };
 type StoredLabel = { id: string; name: string; color: string };
 type StoredComment = CommentSummary & { prefix?: string; suffix?: string };
-type StoredSnapshot = SnapshotSummary & { title: string; content: string };
+type StoredSnapshot = SnapshotSummary & { title: string; content: string; contentFormat?: unknown };
 
 export type StoredDocument = {
   id: string;
@@ -343,6 +345,16 @@ export async function readSnapshot(
     createdAt: snapshot.createdAt,
     ...(snapshot.note !== undefined ? { note: snapshot.note } : {}),
     title: snapshot.title,
-    content: snapshot.content
+    content: snapshot.content,
+    contentFormat: snapshotIsMarkdown(snapshot) ? "markdown" : "html"
   };
+}
+
+/**
+ * Mirrors `snapshotIsMarkdown` in src/lib/snapshots.ts: this server's snapshots
+ * hold Markdown and say so; older ones are recognised by their fixed note.
+ */
+function snapshotIsMarkdown(snapshot: StoredSnapshot): boolean {
+  return snapshot.contentFormat === "markdown"
+    || (snapshot.contentFormat === undefined && snapshot.reason === "manual" && snapshot.note === "Before MCP write");
 }
