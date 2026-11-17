@@ -1,3 +1,4 @@
+import { projectKindOf } from "../project-kind";
 import {
   ENTITY_KINDS,
   SCHEMA_VERSION,
@@ -109,6 +110,7 @@ function entityList(kind: StoredEntityKind, project: ProjectData): Array<{ id: s
 export function projectContentKey(project: ProjectData): string {
   return stableStringify({
     id: project.id,
+    kind: projectKindOf(project),
     name: project.name,
     author: project.author,
     documents: project.documents,

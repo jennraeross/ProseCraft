@@ -1,3 +1,4 @@
+import { normalizeFootnotes, numberedFootnotes } from "../footnotes";
 import { sanitizeHtml } from "../sanitize";
 import { hasRichPlaceholders } from "../rich/model";
 import { chapterLabel } from "./chapters";
@@ -7,6 +8,7 @@ import type {
   ChapterData,
   CompiledBook,
   CompiledChapter,
+  CompiledFootnote,
   CompiledMatterPage,
   CompiledScene,
   DocumentData
@@ -22,6 +24,7 @@ type CompileInput = {
   backMatter: MatterPage[];
   chapters: ChapterData[];
   documents: DocumentData[];
+  footnotesRestartPerChapter?: boolean;
 };
 
 function compileMatterPages(pages: MatterPage[]): CompiledMatterPage[] {
@@ -42,16 +45,28 @@ function compileMatterPages(pages: MatterPage[]): CompiledMatterPage[] {
  */
 export function compileBook(input: CompileInput): CompiledBook {
   const compiledChapters: CompiledChapter[] = [];
+  let nextFootnoteNumber = 0;
 
   for (const chapter of input.chapters) {
+    if (input.footnotesRestartPerChapter) nextFootnoteNumber = 0;
     const scenes: CompiledScene[] = [];
     for (const document of input.documents) {
       if (document.space || document.chapterId !== chapter.id || document.trashed) continue;
       const html = sanitizeHtml(document.content ?? "");
-      const text = htmlToPlainText(html);
+      const rawText = htmlToPlainText(html);
       const richContent = hasRichPlaceholders(html);
-      if (!hasVisibleText(text) && !richContent
+      if (!hasVisibleText(rawText) && !richContent
         && !/<img\b[^>]*\bsrc=["']data:image\/(?:png|jpeg|webp);base64,/i.test(html)) continue;
+      const orderedFootnotes = numberedFootnotes(html, normalizeFootnotes(document.footnotes) ?? []);
+      const footnotes: CompiledFootnote[] = orderedFootnotes.map((fn) => ({
+        id: fn.id,
+        html: fn.html,
+        number: ++nextFootnoteNumber
+      }));
+      const footnoteNumbers = new Map(footnotes.map((fn) => [fn.id, fn.number]));
+      const text = footnotes.length > 0
+        ? htmlToPlainText(html, { footnoteNumbers })
+        : rawText;
       // List markers are useful in the plain-text export, but they are not
       // words in the manuscript, so leave them out of the displayed count.
       // Math and diagram source are prose tooling, not manuscript words.
@@ -63,7 +78,8 @@ export function compileBook(input: CompileInput): CompiledBook {
         title: document.title || "Untitled scene",
         html,
         text,
-        words: countWords(countableText)
+        words: countWords(countableText),
+        ...(footnotes.length > 0 ? { footnotes } : {})
       });
     }
 

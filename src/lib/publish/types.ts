@@ -91,6 +91,12 @@ export type PlaceSheet = {
   dangers: string;
 };
 
+/** Definition of a footnote attached to a document. */
+export type FootnoteDef = {
+  id: string;
+  html: string;
+};
+
 export type DocumentData = {
   id: string;
   title: string;
@@ -98,11 +104,15 @@ export type DocumentData = {
   markdownSource?: string;
   chapterId?: string;
   space?: SpaceName;
+  /** Writing mode; absent means prose. */
+  format?: "prose" | "screenplay";
   folderId?: string;
   trashed?: boolean;
   trashedWithChapterId?: string;
   /** Id of a project label (see `ProjectData.labels`). */
   labelId?: string;
+  /** Footnotes referenced in `content`, stored as sanitized inline HTML. */
+  footnotes?: FootnoteDef[];
   /**
    * Legacy structured profiles from the former Characters and Places spaces.
    * They are converted into page content by the Wiki migration and are never
@@ -117,7 +127,7 @@ export type DocumentData = {
   meta?: DocumentMeta;
 };
 
-export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text";
+export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text" | "fountain" | "screenplay-pdf";
 /** Built-in style identifiers. Custom styles use string IDs from `customStyles`. */
 export type StylePreset = BuiltinStyleId;
 export type SceneSeparator = "blank" | "asterisks" | "hash" | "line" | "none";
@@ -164,11 +174,21 @@ export type PublishOptions = {
   pageBreakBeforeChapters: boolean;
   sceneSeparator: SceneSeparator;
   dropCaps: boolean;
+  footnotesRestartPerChapter: boolean;
   subtitle: string;
   copyright: string;
   dedication: string;
   frontMatter: MatterPage[];
   backMatter: MatterPage[];
+};
+
+export type CompiledFootnote = {
+  /** Original footnote ID from `DocumentData.footnotes`. */
+  id: string;
+  /** Sanitized inline HTML of the footnote body. */
+  html: string;
+  /** 1-based number in manuscript compile order. */
+  number: number;
 };
 
 export type CompiledScene = {
@@ -178,6 +198,7 @@ export type CompiledScene = {
   html: string;
   text: string;
   words: number;
+  footnotes?: CompiledFootnote[];
 };
 
 export type CompiledChapter = {
@@ -258,10 +279,24 @@ export const FORMAT_INFO: Record<ExportFormat, {
     extension: "txt",
     formatName: "Plain text document",
     description: "Clean text with no formatting."
+  },
+  fountain: {
+    label: "Fountain",
+    extension: "fountain",
+    formatName: "Fountain screenplay",
+    description: "Plain-text screenplay format for screenwriting apps."
+  },
+  "screenplay-pdf": {
+    label: "Screenplay PDF",
+    extension: "pdf",
+    formatName: "Screenplay PDF",
+    description: "US Letter pages in industry screenplay format."
   }
 };
 
 export const FORMAT_ORDER: ExportFormat[] = ["pdf", "epub", "docx", "markdown", "html", "text"];
+/** Formats that only make sense for projects with screenplay documents. */
+export const SCREENPLAY_FORMAT_ORDER: ExportFormat[] = ["fountain", "screenplay-pdf"];
 
 export function defaultPublishOptions(): PublishOptions {
   return {
@@ -282,6 +317,7 @@ export function defaultPublishOptions(): PublishOptions {
     pageBreakBeforeChapters: true,
     sceneSeparator: "hash",
     dropCaps: true,
+    footnotesRestartPerChapter: false,
     subtitle: "",
     copyright: "",
     dedication: "",
@@ -319,7 +355,7 @@ function normalizeCover(value: unknown, defaults: CoverOptions): CoverOptions {
 export function normalizePublishOptions(value: unknown): PublishOptions {
   const defaults = defaultPublishOptions();
   if (!isRecord(value)) return defaults;
-  const formats = FORMAT_ORDER;
+  const formats = [...FORMAT_ORDER, ...SCREENPLAY_FORMAT_ORDER];
   const customStyles = normalizeCustomStyles(value.customStyles);
   const styleIds = new Set<string>([
     ...BUILTIN_STYLE_IDS,
@@ -342,6 +378,9 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     pageBreakBeforeChapters: typeof value.pageBreakBeforeChapters === "boolean" ? value.pageBreakBeforeChapters : defaults.pageBreakBeforeChapters,
     sceneSeparator: separators.includes(value.sceneSeparator as SceneSeparator) ? value.sceneSeparator as SceneSeparator : defaults.sceneSeparator,
     dropCaps: typeof value.dropCaps === "boolean" ? value.dropCaps : defaults.dropCaps,
+    footnotesRestartPerChapter: typeof value.footnotesRestartPerChapter === "boolean"
+      ? value.footnotesRestartPerChapter
+      : defaults.footnotesRestartPerChapter,
     subtitle: typeof value.subtitle === "string" ? value.subtitle.slice(0, 200) : defaults.subtitle,
     copyright: typeof value.copyright === "string" ? value.copyright.slice(0, 500) : defaults.copyright,
     dedication: typeof value.dedication === "string" ? value.dedication.slice(0, 1000) : defaults.dedication,

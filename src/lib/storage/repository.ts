@@ -1,4 +1,5 @@
 import { getDeviceId } from "./device";
+import { normalizeFootnotes } from "../footnotes";
 import { sanitizeHtml } from "../sanitize";
 import {
   createStoredProject,
@@ -377,10 +378,14 @@ async function mergeIncomingProjects(incoming: StoredProject[]): Promise<ImportR
 function sanitizeStoredProject(project: StoredProject): StoredProject {
   if (typeof document === "undefined") return project;
   const sanitized = { ...project.project };
-  sanitized.documents = project.project.documents.map((document) => ({
-    ...document,
-    content: sanitizeHtml(document.content)
-  }));
+  sanitized.documents = project.project.documents.map((doc) => {
+    const footnotes = normalizeFootnotes(doc.footnotes);
+    return {
+      ...doc,
+      content: sanitizeHtml(doc.content),
+      ...(footnotes !== undefined ? { footnotes } : {})
+    };
+  });
   return { ...project, project: sanitized };
 }
 

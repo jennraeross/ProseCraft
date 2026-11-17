@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sanitizeHtml } from "../sanitize";
-import { htmlToMarkdown, markdownToHtml } from "./markdown";
+import { htmlToMarkdown, markdownToDocument, markdownToHtml } from "./markdown";
 
 const SRC = "data:image/png;base64,AA==";
 
@@ -110,5 +110,63 @@ describe("markdownToHtml image layout", () => {
     expect(back.getAttribute("alt")).toBe("Chart");
     expect(back.getAttribute("data-size")).toBe("small");
     expect(back.getAttribute("data-wrap")).toBe("wrap-left");
+  });
+});
+
+describe("markdown footnotes round trip", () => {
+  it("serializes markers and definitions and parses both back cleanly", () => {
+    const html =
+      `<p>First <em>claim</em><sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>`
+      + ` and second<sup class="footnote-ref" data-footnote-id="fn-2" contenteditable="false"></sup>.</p>`;
+    const footnotes = [
+      {
+        id: "fn-1",
+        html: `See <strong>Source</strong>, <u>Ch. 2</u>, <s>old</s>, `
+          + `<a href="https://example.test/ref">link</a>, and <code>x</code>.`
+      },
+      {
+        id: "fn-2",
+        html: `Line one<br>Line two`
+      }
+    ];
+
+    const md = htmlToMarkdown(html, footnotes);
+    expect(md).toBe(
+      `First _claim_[^fn-1] and second[^fn-2].\n\n`
+      + `[^fn-1]: See **Source**, <u>Ch. 2</u>, ~~old~~, [link](https://example.test/ref), and \`x\`.\n`
+      + `[^fn-2]: Line one  \n    Line two`
+    );
+
+    const parsed = markdownToDocument(md);
+    expect(sanitizeHtml(parsed.html)).toBe(`${html}\n`);
+    expect(parsed.footnotes).toEqual(footnotes);
+  });
+
+  it("omits footnote definitions from markdownToHtml body output", () => {
+    const md = "Body[^fn-a] text.\n\n[^fn-a]: Hidden from body.";
+    const html = sanitizeHtml(markdownToHtml(md));
+    expect(html).toBe(
+      `<p>Body<sup class="footnote-ref" data-footnote-id="fn-a" contenteditable="false"></sup> text.</p>\n`
+    );
+  });
+
+  it("keeps literal footnote syntax inside code and sanitizes hostile definition html", () => {
+    const md = [
+      "Use `[^fn-code]` literally.",
+      "",
+      "```",
+      "[^fn-fence]: not a definition",
+      "```",
+      "",
+      "Real[^fn-1].",
+      "",
+      `[^fn-1]: Note <img src="data:image/png;base64,AA=="> <a href="javascript:alert(1)">bad</a>`
+    ].join("\n");
+
+    const parsed = markdownToDocument(md);
+    expect(parsed.html).toContain("<code>[^fn-code]</code>");
+    expect(parsed.html).toContain("[^fn-fence]: not a definition");
+    expect(parsed.html).toContain(`data-footnote-id="fn-1"`);
+    expect(parsed.footnotes).toEqual([{ id: "fn-1", html: "Note  <a>bad</a>" }]);
   });
 });

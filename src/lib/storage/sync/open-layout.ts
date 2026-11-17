@@ -1,5 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
-import { htmlToMarkdown, markdownToHtml } from "$lib/publish/markdown";
+import { normalizeFootnotes } from "$lib/footnotes";
+import { normalizeProjectKind } from "$lib/project-kind";
+import { htmlToMarkdown, markdownToDocument } from "$lib/publish/markdown";
 import { sanitizeHtml } from "$lib/sanitize";
 import { normalizeMeta } from "$lib/story-meta";
 import type { ChapterData, DocumentData } from "$lib/publish/types";
@@ -88,12 +90,24 @@ function normalizeBody(body: string): string {
 
 /** Makes a document match the Markdown round trip used by the open layout. */
 export function normalizeDocument(document: DocumentData): DocumentData {
-  const body = normalizeBody(document.markdownSource ?? htmlToMarkdown(document.content));
-  return {
+  const body = normalizeBody(
+    document.markdownSource ?? htmlToMarkdown(document.content, document.footnotes)
+  );
+  const parsed = markdownToDocument(body);
+  const footnotes = parsed.footnotes.length > 0
+    ? parsed.footnotes
+    : normalizeFootnotes(document.footnotes);
+  const next: DocumentData = {
     ...document,
-    content: sanitizeHtml(markdownToHtml(body)),
+    content: sanitizeHtml(parsed.html),
     markdownSource: body
   };
+  if (next.format !== "prose" && next.format !== "screenplay") {
+    delete next.format;
+  }
+  if (footnotes !== undefined) next.footnotes = footnotes;
+  else delete next.footnotes;
+  return next;
 }
 
 export function formatYamlValue(value: unknown): string {
@@ -166,10 +180,12 @@ function documentPayload(fields: Record<string, unknown>): Record<string, unknow
     title: fields.title,
     chapterId: fields.chapterId,
     space: fields.space,
+    format: fields.format,
     folderId: fields.folderId,
     trashed: fields.trashed,
     trashedWithChapterId: fields.trashedWithChapterId,
     labelId: fields.labelId,
+    footnotes: fields.footnotes,
     updatedAt: fields.updatedAt,
     revision: fields.revision,
     updatedBy: fields.updatedBy,
@@ -186,10 +202,12 @@ function documentFields(document: DocumentData, meta: EntityMeta): Record<string
     title: document.title,
     chapterId: document.chapterId,
     space: document.space,
+    format: document.format,
     folderId: document.folderId,
     trashed: document.trashed,
     trashedWithChapterId: document.trashedWithChapterId,
     labelId: document.labelId,
+    footnotes: normalizeFootnotes(document.footnotes),
     updatedAt: meta.updatedAt,
     revision: meta.revision,
     updatedBy: meta.updatedBy,
@@ -251,21 +269,31 @@ function decodeDocument(
   const external = storedHash !== expectedHash;
   const finalMeta = external ? bumpMeta(meta, now) : meta;
 
+  const parsedBody = markdownToDocument(parsed.body);
+  const fieldFootnotes = normalizeFootnotes(fields.footnotes);
+  const footnotes = external
+    ? (parsedBody.footnotes.length > 0 ? parsedBody.footnotes : fieldFootnotes)
+    : (fieldFootnotes !== undefined
+      ? fieldFootnotes
+      : (parsedBody.footnotes.length > 0 ? parsedBody.footnotes : undefined));
+
   const record: DocumentData = {
     id: fields.id,
     title: typeof fields.title === "string" ? fields.title : "",
-    content: sanitizeHtml(markdownToHtml(parsed.body)),
+    content: sanitizeHtml(parsedBody.html),
     markdownSource: parsed.body
   };
   if (typeof fields.chapterId === "string") record.chapterId = fields.chapterId;
   else if (fields.chapterId === null) delete record.chapterId;
   if (typeof fields.space === "string") record.space = fields.space as DocumentData["space"];
+  if (fields.format === "prose" || fields.format === "screenplay") record.format = fields.format;
   if (typeof fields.folderId === "string") record.folderId = fields.folderId;
   if (fields.trashed === true) record.trashed = true;
   if (typeof fields.trashedWithChapterId === "string") {
     record.trashedWithChapterId = fields.trashedWithChapterId;
   }
   if (typeof fields.labelId === "string") record.labelId = fields.labelId;
+  if (footnotes !== undefined) record.footnotes = footnotes;
   if (isObject(fields.character)) record.character = fields.character as DocumentData["character"];
   if (isObject(fields.place)) record.place = fields.place as DocumentData["place"];
   if (isObject(fields.meta)) {
@@ -679,6 +707,21 @@ export async function readOpenProject(
     storyboardCards.changedAt
   );
 
+  const normalizedKind = normalizeProjectKind(payload.project.kind);
+  const projectRecord: ProjectData = {
+    ...payload.project,
+    id: payload.id,
+    documents: documents.records,
+    chapters: chapters.records,
+    storyboardRows: storyboardRows.records,
+    storyboardCards: storyboardCards.records
+  };
+  if (normalizedKind) {
+    projectRecord.kind = normalizedKind;
+  } else {
+    delete projectRecord.kind;
+  }
+
   return {
     schemaVersion: typeof payload.schemaVersion === "number" ? payload.schemaVersion : SCHEMA_VERSION,
     id: payload.id,
@@ -687,14 +730,7 @@ export async function readOpenProject(
     revision: external ? payload.revision + 1 : payload.revision,
     updatedBy: external ? "external" : payload.updatedBy,
     deletedAt: payload.deletedAt,
-    project: {
-      ...payload.project,
-      id: payload.id,
-      documents: documents.records,
-      chapters: chapters.records,
-      storyboardRows: storyboardRows.records,
-      storyboardCards: storyboardCards.records
-    },
+    project: projectRecord,
     entities: {
       documents: documents.metas,
       chapters: chapters.metas,
@@ -733,7 +769,8 @@ async function writeIfChanged(
 }
 
 function projectPayload(project: StoredProject): ProjectFilePayload {
-  const { documents, chapters, storyboardRows, storyboardCards, ...rest } = project.project;
+  const { documents, chapters, storyboardRows, storyboardCards, kind, ...rest } = project.project;
+  const normalizedKind = normalizeProjectKind(kind);
   return {
     format: PROJECT_FORMAT,
     version: PROJECT_VERSION,
@@ -746,6 +783,7 @@ function projectPayload(project: StoredProject): ProjectFilePayload {
     deletedAt: project.deletedAt,
     project: {
       ...rest,
+      ...(normalizedKind ? { kind: normalizedKind } : {}),
       documents: [],
       chapters: [],
       storyboardRows: [],
@@ -775,7 +813,9 @@ export async function writeOpenProject(
   for (const document of project.project.documents) {
     const meta = project.entities.documents[document.id];
     if (!meta || meta.deletedAt !== null) continue;
-    const body = normalizeBody(document.markdownSource ?? htmlToMarkdown(document.content));
+    const body = normalizeBody(
+      document.markdownSource ?? htmlToMarkdown(document.content, document.footnotes)
+    );
     const path = `${dir}/${DOCUMENTS_DIR}/${safeName(document.id)}.md`;
     await writeIfChanged(fs, path, serializeMarkdown(documentFields(document, meta), body));
     documentPaths.add(path);

@@ -1,4 +1,5 @@
 import { worksheetToPlainText } from "../rich/calc";
+import { FOOTNOTE_REF_CLASS } from "../sanitize";
 
 const BLOCK_TAGS = new Set([
   "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DIV", "FIGCAPTION", "FIGURE",
@@ -17,6 +18,8 @@ export type PlainTextOptions = {
    * keeps them out of word counts.
    */
   rich?: RichTextMode;
+  /** Optional map of footnote id -> resolved 1-based number to emit `[n]` markers. */
+  footnoteNumbers?: ReadonlyMap<string, number>;
 };
 
 type TextBlock = { text: string; tight: boolean };
@@ -41,6 +44,11 @@ function inlineText(node: Node, options: PlainTextOptions): string {
   if (!(node instanceof HTMLElement)) return "";
   const rich = richRepresentation(node, options.rich ?? "source");
   if (rich !== null) return rich;
+  if (node.tagName === "SUP" && node.classList.contains(FOOTNOTE_REF_CLASS)) {
+    const id = node.getAttribute("data-footnote-id") ?? "";
+    const number = options.footnoteNumbers?.get(id);
+    return number !== undefined ? `[${number}]` : "";
+  }
   if (node.tagName === "BR") return "\n";
   return Array.from(node.childNodes)
     .map((child) => {
@@ -87,6 +95,13 @@ function collectBlocks(root: HTMLElement, options: PlainTextOptions): TextBlock[
 
     if (node.tagName === "BR") {
       buffer += "\n";
+      return;
+    }
+
+    if (node.tagName === "SUP" && node.classList.contains(FOOTNOTE_REF_CLASS)) {
+      const id = node.getAttribute("data-footnote-id") ?? "";
+      const number = options.footnoteNumbers?.get(id);
+      if (number !== undefined) buffer += `[${number}]`;
       return;
     }
 

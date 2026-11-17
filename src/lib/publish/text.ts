@@ -1,3 +1,5 @@
+import { htmlToPlainText } from "./content";
+import { resolveBookFootnotes, sceneFootnoteNumberMap, type ResolvedFootnote } from "./footnotes";
 import { resolveStyleTokens } from "./presets";
 import {
   FORMAT_INFO,
@@ -7,6 +9,15 @@ import {
   type PublishOptions,
   type SceneSeparator
 } from "./types";
+
+function formatNotesBlock(notes: ResolvedFootnote[], uppercase: boolean): string {
+  const heading = uppercase ? "NOTES" : "Notes";
+  const lines = notes.map((note) => {
+    const noteText = htmlToPlainText(note.html);
+    return noteText ? `[${note.number}] ${noteText}` : `[${note.number}]`;
+  });
+  return [heading, ...lines].join("\n");
+}
 
 function separatorText(separator: SceneSeparator): string {
   switch (separator) {
@@ -26,6 +37,8 @@ function separatorText(separator: SceneSeparator): string {
 export function exportText(book: CompiledBook, options: PublishOptions): ExportPayload {
   const tokens = resolveStyleTokens(options.style, options.customStyles);
   const blocks: string[] = [];
+  const bookFootnotes = resolveBookFootnotes(book, options);
+  const restartPerChapter = Boolean(options.footnotesRestartPerChapter);
 
   if (options.includeTitlePage) {
     blocks.push(book.title);
@@ -53,15 +66,29 @@ export function exportText(book: CompiledBook, options: PublishOptions): ExportP
     for (const scene of chapter.scenes) {
       const sceneBlocks: string[] = [];
       if (options.includeSceneTitles) sceneBlocks.push(scene.title);
-      sceneBlocks.push(scene.text);
+      const sceneFootnotes = bookFootnotes.byScene.get(scene);
+      const sceneText = sceneFootnotes
+        ? htmlToPlainText(scene.html, { footnoteNumbers: sceneFootnoteNumberMap(sceneFootnotes) })
+        : scene.text;
+      sceneBlocks.push(sceneText);
       scenes.push(sceneBlocks.filter(Boolean).join("\n\n"));
     }
     const separator = separatorText(options.sceneSeparator);
     blocks.push(scenes.join(separator ? `\n\n${separator}\n\n` : "\n\n"));
+    if (restartPerChapter) {
+      const chapterNotes = bookFootnotes.byChapter.get(chapter) ?? [];
+      if (chapterNotes.length > 0) {
+        blocks.push(formatNotesBlock(chapterNotes, tokens.chapterHeadingUppercase));
+      }
+    }
   }
 
   for (const page of book.backMatter) {
     blocks.push([page.title, page.body].filter(Boolean).join("\n\n"));
+  }
+
+  if (!restartPerChapter && bookFootnotes.all.length > 0) {
+    blocks.push(formatNotesBlock(bookFootnotes.all, tokens.chapterHeadingUppercase));
   }
 
   const text = `${blocks.filter(Boolean).join("\n\n")}\n`;

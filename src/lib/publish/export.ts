@@ -3,6 +3,7 @@ import { resolveCoverImage } from "./cover";
 import { exportHtml } from "./html";
 import { resolveStyleTokens } from "./presets";
 import type { CompiledBook, ExportPayload, ExportFormat, PublishOptions } from "./types";
+import { FORMAT_INFO, slugifyFilename } from "./types";
 
 const COVER_FORMATS: ExportFormat[] = ["pdf", "epub", "docx", "html"];
 const RICH_FORMATS: ExportFormat[] = ["pdf", "epub", "docx", "html"];
@@ -50,6 +51,30 @@ export async function renderExport(
     case "text": {
       const { exportText } = await import("./text");
       return exportText(preparedBook, options);
+    }
+    case "fountain": {
+      const { bookToFountain } = await import("../screenplay/export-fountain");
+      return {
+        blob: new Blob([bookToFountain(preparedBook)], { type: "text/plain;charset=utf-8" }),
+        filename: `${slugifyFilename(book.title)}.${FORMAT_INFO.fountain.extension}`,
+        extension: FORMAT_INFO.fountain.extension,
+        formatName: FORMAT_INFO.fountain.formatName
+      };
+    }
+    case "screenplay-pdf": {
+      const { bookToElements } = await import("../screenplay/export-fountain");
+      const { buildScreenplayPdf } = await import("../screenplay/pdf");
+      const bytes = buildScreenplayPdf({
+        title: preparedBook.title,
+        author: preparedBook.author,
+        elements: bookToElements(preparedBook)
+      });
+      return {
+        blob: new Blob([bytes], { type: "application/pdf" }),
+        filename: `${slugifyFilename(book.title)}.${FORMAT_INFO["screenplay-pdf"].extension}`,
+        extension: FORMAT_INFO["screenplay-pdf"].extension,
+        formatName: FORMAT_INFO["screenplay-pdf"].formatName
+      };
     }
   }
 }

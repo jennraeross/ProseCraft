@@ -43,6 +43,7 @@
   import {
     FORMAT_INFO,
     FORMAT_ORDER,
+    SCREENPLAY_FORMAT_ORDER,
     slugifyFilename,
     type ChapterData,
     type CompiledBook,
@@ -118,6 +119,10 @@
     chapters,
     documents
   }));
+  let hasScreenplayDocuments = $derived(documents.some((document) => document.format === "screenplay"));
+  let formatEntries = $derived(
+    hasScreenplayDocuments ? [...FORMAT_ORDER, ...SCREENPLAY_FORMAT_ORDER] : FORMAT_ORDER
+  );
   let styleEntries = $derived(styleSummaries(options.customStyles));
   let selectedStyle = $derived(resolveStyleTokens(options.style, options.customStyles));
   let canAddStyle = $derived(options.customStyles.length < MAX_CUSTOM_STYLES);
@@ -559,7 +564,7 @@
           <span>{FORMAT_INFO[options.format].extension.toUpperCase()}</span>
         </div>
         <div class="format-grid">
-          {#each FORMAT_ORDER as format (format)}
+          {#each formatEntries as format (format)}
             <button
               type="button"
               class="format-card"

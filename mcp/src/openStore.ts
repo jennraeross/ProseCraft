@@ -15,6 +15,8 @@ export type SceneRecord = {
   chapterId?: string;
   markdown: string;
   meta: EntityMeta;
+  /** Every frontmatter field as stored, including ones this server does not interpret. */
+  fields: Record<string, unknown>;
 };
 
 export type ChapterRecord = {
@@ -23,6 +25,28 @@ export type ChapterRecord = {
   expanded: boolean;
   summary?: string;
   meta: EntityMeta;
+};
+
+/** Filters shared by the listing helpers; `trashed` selects one side. */
+export type ListFilter = {
+  labelId?: string;
+  /** `true` lists only trashed items, `false` or omitted only live ones. */
+  trashed?: boolean;
+};
+
+export type SceneFilter = ListFilter & { chapterId?: string };
+
+export type ChapterListEntry = ChapterRecord & {
+  labelId: string | null;
+  trashed: boolean;
+};
+
+export type SceneListEntry = SceneRecord & {
+  /** `scene` for a document in a chapter, `wiki` for a Wiki page. */
+  space: "scene" | "wiki";
+  folderId: string | null;
+  labelId: string | null;
+  trashed: boolean;
 };
 
 export type WriteSceneInput = {
@@ -60,11 +84,11 @@ function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-function hashJson(value: unknown): string {
+export function hashJson(value: unknown): string {
   return sha256Hex(stableStringify(value));
 }
 
-function normalizeBody(body: string): string {
+export function normalizeBody(body: string): string {
   return body.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
 }
 
@@ -87,7 +111,7 @@ function parseYamlValue(raw: string): unknown {
   return raw;
 }
 
-function parseMarkdown(text: string): { fields: Record<string, unknown>; body: string } {
+export function parseMarkdown(text: string): { fields: Record<string, unknown>; body: string } {
   const normalized = text.replace(/\r\n?/g, "\n");
   if (!normalized.startsWith("---\n")) throw new Error("missing frontmatter");
   const end = normalized.indexOf("\n---\n", 4);
@@ -129,7 +153,7 @@ function documentPayload(fields: Record<string, unknown>): Record<string, unknow
   };
 }
 
-function serializeMarkdown(fields: Record<string, unknown>, body: string): string {
+export function serializeMarkdown(fields: Record<string, unknown>, body: string): string {
   const hash = hashJson({ fields: documentPayload(fields), body: normalizeBody(body) });
   const entries = Object.entries(fields)
     .filter(([, value]) => value !== undefined)
@@ -167,7 +191,7 @@ export async function assertOpenRoot(root: string): Promise<void> {
 
 // Every write goes through a sibling temp file and a rename, so a crash or a
 // full disk leaves the previous content in place instead of a half-written file.
-async function writeFileAtomic(file: string, content: string): Promise<void> {
+export async function writeFileAtomic(file: string, content: string): Promise<void> {
   const temp = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
   try {
     await fs.writeFile(temp, content, "utf8");
@@ -216,7 +240,7 @@ async function releaseWriteLock(lock: WriteLock): Promise<void> {
   }
 }
 
-async function withWriteLock<T>(root: string, run: () => Promise<T>): Promise<T> {
+export async function withWriteLock<T>(root: string, run: () => Promise<T>): Promise<T> {
   const lock = await acquireWriteLock(root);
   try {
     return await run();
@@ -225,7 +249,7 @@ async function withWriteLock<T>(root: string, run: () => Promise<T>): Promise<T>
   }
 }
 
-function assertExpectedRevision(label: string, expected: number | undefined, current: number | undefined): void {
+export function assertExpectedRevision(label: string, expected: number | undefined, current: number | undefined): void {
   if (expected === undefined) return;
   if (current === undefined) {
     throw new Error(`${label} does not exist, so expectedRevision ${expected} cannot match; nothing was written.`);
@@ -237,7 +261,7 @@ function assertExpectedRevision(label: string, expected: number | undefined, cur
   }
 }
 
-type ProjectHeader = {
+export type ProjectHeader = {
   id: string;
   createdAt: number;
   updatedAt: number;
@@ -285,7 +309,7 @@ function assertLiveProject(
   return found;
 }
 
-async function findProjectDir(root: string, projectId: string): Promise<{ dir: string; header: ProjectHeader }> {
+export async function findProjectDir(root: string, projectId: string): Promise<{ dir: string; header: ProjectHeader }> {
   // Fast path: dir name usually equals the id for UUIDs.
   let direct: { dir: string; header: ProjectHeader } | undefined;
   try {
@@ -300,18 +324,28 @@ async function findProjectDir(root: string, projectId: string): Promise<{ dir: s
   throw new Error(`Project not found: ${projectId}`);
 }
 
-export async function listChapters(root: string, projectId: string): Promise<ChapterRecord[]> {
+export async function listChapters(
+  root: string,
+  projectId: string,
+  filter: ListFilter = {}
+): Promise<ChapterListEntry[]> {
   const { dir, header } = await findProjectDir(root, projectId);
-  const out: ChapterRecord[] = [];
+  const out: ChapterListEntry[] = [];
   for (const [id, meta] of Object.entries(header.entities.chapters ?? {})) {
     if (meta.deletedAt !== null) continue;
     const raw = JSON.parse(await fs.readFile(path.join(dir, "chapters", `${safeName(id)}.json`), "utf8"));
     const record = raw?.record ?? {};
+    const labelId = typeof record.labelId === "string" ? record.labelId : null;
+    const trashed = record.trashed === true;
+    if (filter.labelId !== undefined && labelId !== filter.labelId) continue;
+    if (trashed !== (filter.trashed === true)) continue;
     out.push({
       id,
       title: typeof record.title === "string" ? record.title : "",
       expanded: record.expanded === true,
       ...(typeof record.summary === "string" ? { summary: record.summary } : {}),
+      labelId,
+      trashed,
       meta
     });
   }
@@ -322,10 +356,10 @@ export async function listChapters(root: string, projectId: string): Promise<Cha
 export async function listScenes(
   root: string,
   projectId: string,
-  chapterId?: string
-): Promise<SceneRecord[]> {
+  filter: SceneFilter = {}
+): Promise<SceneListEntry[]> {
   const { dir, header } = await findProjectDir(root, projectId);
-  const out: SceneRecord[] = [];
+  const out: SceneListEntry[] = [];
   for (const [id, meta] of Object.entries(header.entities.documents ?? {})) {
     if (meta.deletedAt !== null) continue;
     let parsed: { fields: Record<string, unknown>; body: string };
@@ -337,14 +371,22 @@ export async function listScenes(
       continue;
     }
     const { fields, body } = parsed;
-    if (typeof fields.chapterId === "string" && chapterId && fields.chapterId !== chapterId) continue;
-    if (fields.trashed === true) continue;
+    const labelId = typeof fields.labelId === "string" ? fields.labelId : null;
+    const trashed = fields.trashed === true;
+    if (filter.chapterId !== undefined && fields.chapterId !== filter.chapterId) continue;
+    if (filter.labelId !== undefined && labelId !== filter.labelId) continue;
+    if (trashed !== (filter.trashed === true)) continue;
     out.push({
       id,
       title: typeof fields.title === "string" ? fields.title : "",
       ...(typeof fields.chapterId === "string" ? { chapterId: fields.chapterId } : {}),
+      space: fields.space === "Wiki" ? "wiki" : "scene",
+      folderId: typeof fields.folderId === "string" ? fields.folderId : null,
+      labelId,
+      trashed,
       markdown: body,
-      meta
+      meta,
+      fields
     });
   }
   const order = header.order.documents ?? [];
@@ -377,15 +419,16 @@ export async function readScene(
     title: typeof fields.title === "string" ? fields.title : "",
     ...(typeof fields.chapterId === "string" ? { chapterId: fields.chapterId } : {}),
     markdown: body,
-    meta
+    meta,
+    fields
   };
 }
 
-function bumpMeta(meta: EntityMeta, now: number): EntityMeta {
+export function bumpMeta(meta: EntityMeta, now: number): EntityMeta {
   return { ...meta, updatedAt: Math.max(now, meta.updatedAt + 1), revision: meta.revision + 1, updatedBy: "mcp" };
 }
 
-async function writeProjectHeader(dir: string, header: ProjectHeader): Promise<void> {
+export async function writeProjectHeader(dir: string, header: ProjectHeader): Promise<void> {
   const { hash: _ignored, ...payload } = header as unknown as Record<string, unknown>;
   void _ignored;
   const content = `${JSON.stringify({ ...payload, hash: hashJson(payload) }, null, 2)}\n`;
@@ -442,7 +485,7 @@ async function writeSceneLocked(root: string, projectId: string, input: WriteSce
   header.revision += 1;
   header.updatedBy = "mcp";
   await writeProjectHeader(dir, header);
-  return { id, title: String(fields.title ?? ""), ...(chapterId ? { chapterId } : {}), markdown: normalizeBody(input.markdown), meta };
+  return { id, title: String(fields.title ?? ""), ...(chapterId ? { chapterId } : {}), markdown: normalizeBody(input.markdown), meta, fields };
 }
 
 export async function trashScene(

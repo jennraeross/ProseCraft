@@ -46,6 +46,7 @@
     SlidersHorizontal,
     SpellCheck,
     Square,
+    Superscript,
     Trash2,
     Type,
     Undo2,
@@ -153,6 +154,24 @@
     type MarkdownFile
   } from "$lib/import/markdown-folder";
   import NetworkView from "$lib/NetworkView.svelte";
+  import { parseFountain } from "$lib/screenplay/fountain";
+  import {
+    elementsToHtml,
+    estimatePages,
+    estimateRuntime,
+    htmlToElements
+  } from "$lib/screenplay/layout";
+  import {
+    EDITOR_ELEMENT_TYPES,
+    autoCase,
+    autoDetectType,
+    nextElementType,
+    type EditorElementType,
+    type EditorKey
+  } from "$lib/screenplay/editor-keys";
+  import { convertDocumentToScreenplay } from "$lib/screenplay/convert";
+  import ScreenplayBar from "$lib/ScreenplayBar.svelte";
+  import { isScreenplayProject, projectKindOf, type ProjectKind } from "$lib/project-kind";
   import PublishView from "$lib/PublishView.svelte";
   import TimelineView from "$lib/TimelineView.svelte";
   import { colorSchemeOptions, isColorScheme, type ColorScheme } from "$lib/color-schemes";
@@ -169,7 +188,23 @@
     type RichTextFontPreference,
     type SystemFontFamily
   } from "$lib/editor-fonts";
-  import { sanitizeHtml as cleanHtml } from "$lib/sanitize";
+  import { FOOTNOTE_REF_CLASS, sanitizeHtml as cleanHtml, sanitizeInlineHtml } from "$lib/sanitize";
+  import FootnotePopover from "$lib/FootnotePopover.svelte";
+  import {
+    FOOTNOTE_REF_SELECTOR,
+    addFootnote,
+    decodeBodyUndoValue,
+    encodeBodyUndoValue,
+    extractFootnoteIds,
+    findOrphanFootnotes,
+    footnoteMarkerHtml,
+    numberedFootnotes,
+    pruneOrphanFootnotes,
+    removeFootnote,
+    renumberFootnoteMarkers,
+    updateFootnote,
+    type UndoFootnoteScopeEntry
+  } from "$lib/footnotes";
   import {
     buildChapterHtml,
     isSceneBreakElement,
@@ -213,13 +248,14 @@
     chapterLabel as formatChapterLabel,
     isAutomaticallyNumberedChapter as isAutoNumberedChapter
   } from "$lib/publish/chapters";
-  import { htmlToMarkdown, markdownToHtml } from "$lib/publish/markdown";
+  import { htmlToMarkdown, markdownToDocument, markdownToHtml } from "$lib/publish/markdown";
   import {
     defaultPublishOptions,
     normalizePublishOptions,
     SPACE_NAMES,
     type ChapterData,
     type DocumentData,
+    type FootnoteDef,
     type BinderFolder,
     type LabelDef,
     type PublishOptions,
@@ -300,6 +336,7 @@
   import {
     authenticateGoogleDrive,
     cancelGoogleDriveAuthorization,
+    completeWebRedirectIfPresent,
     exchangeCodeForToken,
     isTokenExpired,
     refreshAccessToken,
@@ -467,6 +504,7 @@
   let epubImportInput = $state<HTMLInputElement>();
   let epubImportBusy = $state(false);
   let markdownFolderInput = $state<HTMLInputElement>();
+  let fountainImportInput = $state<HTMLInputElement>();
   let markdownImportDialog: HTMLDialogElement;
   let markdownImportFiles = $state<MarkdownFile[]>([]);
   let markdownImportFolders = $state<ImportFolder[]>([]);
@@ -500,6 +538,7 @@
   let googleDriveRefreshToken = $state("");
   let googleDriveTokenExpiry = $state(0);
   let googleDriveEmail = $state("");
+  let googleDriveClientKind = $state<"web" | "desktop">("desktop");
   let googleDriveAuthenticated = $state(false);
   let googleDriveAuthCode = $state("");
   let googleDriveCodeVerifier = $state("");
@@ -591,8 +630,11 @@
   let projectSettingsSaved = $state(true);
   let projectName = $state("Untitled Project");
   let authorName = $state("");
+  let activeProjectKind = $state<ProjectKind>("novel");
   let projectNameDraft = $state("Untitled Project");
   let authorNameDraft = $state("");
+  let projectKindDraft = $state<ProjectKind>("novel");
+  let projectKind = $state<ProjectKind>("novel");
   let projects = $state<ProjectData[]>([]);
   let liveProjects = $derived(projects.filter((project) => !project.trashed));
   let activeProjectId = $state("");
@@ -618,7 +660,20 @@
   let compactProgressLayout = $state(initialViewportWidth <= 1050);
   let leftSidebarHovered = $state(false);
   let rightSidebarHovered = $state(false);
-  let rightSidebarTab = $state<"progress" | "comments" | "snapshots">("progress");
+  let rightSidebarTab = $state<"progress" | "comments" | "snapshots" | "footnotes">("progress");
+  let liveEditorHtml = $state("");
+  let knownEditorFootnoteIds = new Set<string>();
+  let footnotePopover = $state<{
+    id: string;
+    docId: string;
+    number: number | null;
+    initialHtml: string;
+    left: number;
+    top: number;
+    dirty: boolean;
+    beforeSelection: CaretSelection;
+  } | null>(null);
+  let footnoteFlashTimer: ReturnType<typeof setTimeout> | undefined;
   // On phones both sidebars are overlay drawers. On tablets the progress
   // sidebar still overlays, but the binder remains part of the layout.
   let mobileDrawerOpen = $derived(
@@ -822,6 +877,18 @@
   });
   let activeDocumentId = $state("welcome");
   let activeDocument = $derived(documents.find((doc) => doc.id === activeDocumentId));
+  let screenplayActive = $derived(
+    Boolean(
+      activeDocument
+      && !activeDocument.space
+      && (isScreenplayProject({ kind: activeProjectKind }) || activeDocument.format === "screenplay")
+    )
+  );
+  let screenplayElementType = $state<EditorElementType>("action");
+  let screenplayPages = $state(0);
+  let screenplayRuntime = $state(0);
+  let screenplayMetricsTimer: ReturnType<typeof setTimeout> | undefined;
+  let editorComposing = false;
   $effect(() => {
     refreshWikiMentionHighlights(documents, activeDocumentId);
   });
@@ -1179,6 +1246,7 @@
     return {
       id: activeProjectId,
       name: projectName,
+      kind: activeProjectKind,
       author: authorName,
       labels: projectLabelList,
       sheetTemplates: projectSheetTemplates,
@@ -1306,6 +1374,7 @@
     openRowMenu = null;
     projectName = project.name;
     authorName = project.author;
+    activeProjectKind = projectKindOf(project);
     projectLabelList = projectLabels(project);
     projectSheetTemplates = [...(project.sheetTemplates ?? [])];
     dismissedSuggestions = [...(project.dismissedSuggestions ?? [])];
@@ -1389,7 +1458,7 @@
         title = active.title;
         clearRichTextFade();
         setEditorContent(active.content);
-        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+        setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content, active.footnotes));
       }
     } else {
       activeDocumentId = "";
@@ -1863,6 +1932,7 @@
     }
 
     syncAnchorToCaret();
+    syncScreenplayElementType();
     updateCommentSelectionPopover();
     if (fadeOtherParagraphs) scheduleRichTextFade();
     // Note: typewriter recentering runs on input (typing), not here, so caret
@@ -2241,6 +2311,7 @@
     showZenInterface();
     projectNameDraft = projectName;
     authorNameDraft = authorName;
+    projectKindDraft = activeProjectKind;
     if (projectSettingsDialog && !projectSettingsDialog.open) projectSettingsDialog.showModal();
   }
 
@@ -2251,6 +2322,7 @@
     try {
       projectName = nextProjectName;
       authorName = authorNameDraft.trim();
+      activeProjectKind = projectKindDraft;
       persistProjectCollection();
       projectSettingsSaved = true;
       projectSettingsDialog.close();
@@ -2273,8 +2345,24 @@
   function createProject() {
     showZenInterface();
     reloadStarterTemplates();
-    selectStarter("blank");
+    selectProjectKind("novel");
     if (starterDialog && !starterDialog.open) starterDialog.showModal();
+  }
+
+  function selectProjectKind(kind: ProjectKind) {
+    projectKind = kind;
+    if (kind === "screenplay") {
+      starterDraft = "blank";
+      starterNotice = "";
+      let blueprint: StarterBlueprint = { folders: [] };
+      for (const moduleId of ["characters", "places", "items"]) {
+        blueprint = addModule(blueprint, moduleId);
+      }
+      starterWorking = blueprint;
+      starterSelectedKeys = [...allBlueprintKeys(blueprint)];
+      return;
+    }
+    selectStarter("blank");
   }
 
   function reloadStarterTemplates() {
@@ -2402,17 +2490,19 @@
     createProjectWithStarter(filterBlueprint(starterWorking, starterSelected));
   }
 
-  function createProjectWithStarter(blueprint: StarterBlueprint) {
+  function createProjectWithStarter(blueprint: StarterBlueprint, kind: ProjectKind = projectKind) {
     showZenInterface();
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const number = liveProjects.length + 1;
+    const screenplay = kind === "screenplay";
     const next: ProjectData = {
       id: crypto.randomUUID(),
       name: number === 1 ? "Untitled Project" : `Untitled Project ${number}`,
+      kind,
       author: "",
       documents: [],
-      chapters: [{ id: crypto.randomUUID(), title: "Chapter 1", expanded: true, summary: "" }],
+      chapters: [{ id: crypto.randomUUID(), title: screenplay ? "Act 1" : "Chapter 1", expanded: true, summary: "" }],
       activeDocumentId: "",
       projectGoal: 50000,
       chapterGoals: {},
@@ -2429,8 +2519,9 @@
     const scene: DocumentData = {
       id: crypto.randomUUID(),
       title: "Scene 1",
-      content: "<p><br></p>",
-      chapterId: chapter.id
+      content: screenplay ? '<p data-sp="scene-heading"></p>' : "<p><br></p>",
+      chapterId: chapter.id,
+      ...(screenplay ? { format: "screenplay" as const } : {})
     };
     next.documents = [scene];
     const starterContent = buildFromBlueprint(blueprint, () => crypto.randomUUID());
@@ -2447,6 +2538,7 @@
     }
     projectNameDraft = projectName;
     authorNameDraft = authorName;
+    projectKindDraft = activeProjectKind;
     projectSettingsDialog?.showModal();
   }
 
@@ -2564,6 +2656,32 @@
       await importEpubData(file.name, new Uint8Array(await file.arrayBuffer()));
     } catch (error) {
       dataStatus = error instanceof Error ? error.message : "Could not read that file.";
+    }
+  }
+
+  function triggerFountainImport() {
+    fountainImportInput?.click();
+  }
+
+  async function handleFountainImport(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    try {
+      const { title: titlePage, elements } = parseFountain(await file.text());
+      const fallbackTitle = file.name.replace(/\.(fountain|txt)$/i, "").trim();
+      const scene = createScene(
+        activeDocument?.chapterId ?? liveChapters[0]?.id ?? createChapter({ focusEditor: false }).id,
+        titlePage.Title?.trim() || fallbackTitle || "Screenplay",
+        { content: elementsToHtml(elements), format: "screenplay", focusEditor: false }
+      );
+      settingsDialog?.close();
+      editor?.focus();
+      dataStatus = `Imported “${scene.title}” as a screenplay scene.`;
+    } catch (error) {
+      console.error("Could not import that screenplay.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not import that screenplay.";
     }
   }
 
@@ -2826,6 +2944,7 @@
       googleDriveRefreshToken,
       googleDriveTokenExpiry,
       googleDriveEmail,
+      googleDriveClientKind,
       lastSynced
     };
   }
@@ -2869,7 +2988,7 @@
       throw new Error("Google Drive session expired. Please reconnect.");
     }
 
-    const result = await refreshAccessToken(tokens.refreshToken);
+    const result = await refreshAccessToken(tokens.refreshToken, state.googleDriveClientKind === "web");
     if (!result.success || !result.tokens) {
       throw new Error(result.error ?? "Could not refresh the Google Drive session.");
     }
@@ -3017,11 +3136,12 @@
     }
   }
 
-  function applyGoogleDriveTokens(tokens: GoogleDriveTokens) {
+  function applyGoogleDriveTokens(tokens: GoogleDriveTokens, clientKind: "web" | "desktop") {
     googleDriveAccessToken = tokens.accessToken;
     googleDriveRefreshToken = tokens.refreshToken ?? "";
     googleDriveTokenExpiry = tokens.expiry;
     googleDriveEmail = tokens.email ?? "";
+    googleDriveClientKind = clientKind;
     googleDriveAuthenticated = true;
     googleDriveAuthCode = "";
     googleDriveCodeVerifier = "";
@@ -3043,7 +3163,7 @@
         syncStatus = message;
       });
       if (result.success && result.tokens) {
-        applyGoogleDriveTokens(result.tokens);
+        applyGoogleDriveTokens(result.tokens, result.usedWebClient ? "web" : "desktop");
         syncStatus = googleDriveReadyMessage();
       } else if (result.cancelled) {
         googleDriveCodeVerifier = "";
@@ -3074,7 +3194,7 @@
     try {
       const result = await exchangeCodeForToken(googleDriveAuthCode);
       if (result.success && result.tokens) {
-        applyGoogleDriveTokens(result.tokens);
+        applyGoogleDriveTokens(result.tokens, result.usedWebClient ? "web" : "desktop");
         syncStatus = googleDriveReadyMessage();
       } else {
         syncStatus = result.error ?? "Failed to exchange authorization code.";
@@ -3108,6 +3228,7 @@
       googleDriveRefreshToken = "";
       googleDriveTokenExpiry = 0;
       googleDriveEmail = "";
+      googleDriveClientKind = "desktop";
       googleDriveAuthenticated = false;
       googleDriveAuthCode = "";
       googleDriveCodeVerifier = "";
@@ -3136,6 +3257,7 @@
     googleDriveRefreshToken = "";
     googleDriveTokenExpiry = 0;
     googleDriveEmail = "";
+    googleDriveClientKind = "desktop";
     googleDriveAuthenticated = false;
     googleDriveAuthCode = "";
     googleDriveCodeVerifier = "";
@@ -3314,16 +3436,35 @@
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const active = documents.find((doc) => doc.id === activeDocumentId);
-    setMarkdownSource(inChapterMode ? chapterMarkdownSource() : (active?.markdownSource ?? htmlToMarkdown(editor.innerHTML)));
+    setMarkdownSource(inChapterMode ? chapterMarkdownSource() : (active?.markdownSource ?? htmlToMarkdown(editor.innerHTML, active?.footnotes)));
     selectEditorImage(null);
+    closeFootnotePopover(false);
     clearRichTextFade();
     markdownEditorMode = true;
+  }
+
+  function applySingleDocumentMarkdown(source: string): string {
+    const parsed = markdownToDocument(source);
+    const html = cleanHtml(parsed.html);
+    documents = documents.map((doc) => {
+      if (doc.id !== activeDocumentId) return doc;
+      const { footnotes: _oldFootnotes, ...rest } = doc;
+      return parsed.footnotes.length > 0
+        ? { ...rest, content: html, markdownSource: source, footnotes: parsed.footnotes }
+        : { ...rest, content: html, markdownSource: source };
+    });
+    return html;
   }
 
   /** Writes the chapter markdown source back to scene documents. */
   function applyMarkdownSourceToDocs() {
     const mdSections = splitChapterMarkdown(markdownSource);
-    writeChapterSections(mdSections.map((section) => cleanHtml(markdownToHtml(section))), mdSections);
+    const parsedSections = mdSections.map((section) => markdownToDocument(section));
+    writeChapterSections(
+      parsedSections.map((section) => cleanHtml(section.html)),
+      mdSections,
+      parsedSections.map((section) => section.footnotes)
+    );
   }
 
   function switchToRichTextEditor() {
@@ -3336,11 +3477,8 @@
         publishOptions.sceneSeparator
       ));
     } else {
-      const html = cleanHtml(markdownToHtml(markdownSource));
+      const html = applySingleDocumentMarkdown(markdownSource);
       setEditorContent(html);
-      documents = documents.map((doc) => doc.id === activeDocumentId
-        ? { ...doc, content: html, markdownSource }
-        : doc);
     }
     markdownEditorMode = false;
     refreshCounts();
@@ -3357,16 +3495,13 @@
 
   function handleMarkdownInput() {
     const previousWordCount = lastEditorWordCount;
-    if (inChapterMode) applyMarkdownSourceToDocs();
-    else {
-      const single = cleanHtml(markdownToHtml(markdownSource));
-      documents = documents.map((doc) => doc.id === activeDocumentId
-        ? { ...doc, content: single, markdownSource }
-        : doc);
+    let html = "";
+    if (inChapterMode && activeChapter) {
+      applyMarkdownSourceToDocs();
+      html = buildChapterHtml(scenesInChapter(activeChapter.id).map((doc) => doc.content), publishOptions.sceneSeparator);
+    } else {
+      html = applySingleDocumentMarkdown(markdownSource);
     }
-    const html = inChapterMode && activeChapter
-      ? buildChapterHtml(scenesInChapter(activeChapter.id).map((doc) => doc.content), publishOptions.sceneSeparator)
-      : cleanHtml(markdownToHtml(markdownSource));
     const text = htmlToPlainText(html, { rich: "omit" });
     wordCount = countWords(text);
     characterCount = text.replace(/\n/g, "").length;
@@ -3661,6 +3796,18 @@
 
   function handleEditorClick(event: MouseEvent) {
     const target = event.target;
+    const footnoteRef = target instanceof Element
+      ? target.closest<HTMLElement>(FOOTNOTE_REF_SELECTOR)
+      : null;
+    if (footnoteRef && editor.contains(footnoteRef)) {
+      event.preventDefault();
+      selectEditorImage(null);
+      hideHarperPopover();
+      hideCommentSelectionPopover();
+      openFootnotePopoverForMarker(footnoteRef);
+      return;
+    }
+    if (footnotePopover) closeFootnotePopover(false);
     const divider = target instanceof Element ? target.closest<HTMLElement>(".scene-break") : null;
     if (divider && editor.contains(divider)) {
       event.preventDefault();
@@ -3928,12 +4075,19 @@
     if (!editor) return;
     editor.innerHTML = html;
     ensureParagraphsAroundRichBlocks(editor);
+    renumberFootnoteMarkers(editor);
+    const cleaned = cleanHtml(html);
+    liveEditorHtml = cleaned;
+    knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
     selectEditorImage(null);
     paintEditorImageWidths();
-    if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), cleanHtml(html));
+    if (!applyingUndoHistory) undoManager.sync(bodyUndoKey(), encodeCurrentBodyUndo(cleaned));
     void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
     refreshWikiMentionHighlights();
+    syncScreenplayElementType();
+    updateScreenplayMetrics();
     hideHarperPopover();
+    if (!applyingUndoHistory) footnotePopover = null;
     scheduleHarperLint();
   }
 
@@ -4347,19 +4501,26 @@
     if (!editor) return;
     if (inChapterMode && activeChapter) {
       if (markdownEditorMode) {
-        const mdSections = splitChapterMarkdown(markdownSource);
-        writeChapterSections(mdSections.map((section) => cleanHtml(markdownToHtml(section))), mdSections);
+        applyMarkdownSourceToDocs();
       } else {
         writeChapterSections(splitChapterHtml(cleanHtml(editor.innerHTML)));
       }
       chapters = chapters.map((chapter) => chapter.id === activeChapter.id ? { ...chapter, title } : chapter);
       persistChapters();
+    } else if (markdownEditorMode) {
+      const parsed = markdownToDocument(markdownSource);
+      const content = cleanHtml(parsed.html);
+      documents = documents.map((doc) => {
+        if (doc.id !== activeDocumentId) return doc;
+        const { footnotes: _oldFootnotes, ...rest } = doc;
+        return parsed.footnotes.length > 0
+          ? { ...rest, title, content, markdownSource, footnotes: parsed.footnotes }
+          : { ...rest, title, content, markdownSource };
+      });
     } else {
-      const content = markdownEditorMode
-        ? cleanHtml(markdownToHtml(markdownSource))
-        : cleanHtml(editor.innerHTML);
+      const content = cleanHtml(editor.innerHTML);
       documents = documents.map((doc) => doc.id === activeDocumentId
-        ? { ...doc, title, content, ...(markdownEditorMode ? { markdownSource } : {}) }
+        ? { ...doc, title, content }
         : doc);
     }
     commitPageState();
@@ -4711,7 +4872,7 @@
     // exactly like the beforeinput handler does; handleInput() records it.
     commitPageState();
     const key = bodyUndoKey();
-    if (!undoManager.has(key)) undoManager.sync(key, cleanHtml(editor.innerHTML));
+    if (!undoManager.has(key)) undoManager.sync(key, encodeCurrentBodyUndo(cleanHtml(editor.innerHTML)));
     const caret = encodeSelection(editor);
     pendingEdit = {
       kind: "other",
@@ -4927,6 +5088,343 @@
     persistNow();
   }
 
+  function footnoteDocs(): DocumentData[] {
+    if (inChapterMode && activeChapter) return scenesInChapter(activeChapter.id);
+    const doc = documents.find((entry) => entry.id === activeDocumentId);
+    return doc ? [doc] : [];
+  }
+
+  const activeFootnoteScope = $derived.by(() => {
+    const docs = footnoteDocs();
+    const defs = docs.flatMap((doc) => doc.footnotes ?? []);
+    const html = !markdownEditorMode
+      ? liveEditorHtml
+      : (inChapterMode && activeChapter
+        ? buildChapterHtml(docs.map((doc) => doc.content), publishOptions.sceneSeparator)
+        : (docs[0]?.content ?? ""));
+    return {
+      docs,
+      defs,
+      html,
+      notes: numberedFootnotes(html, defs),
+      orphans: findOrphanFootnotes(html, defs)
+    };
+  });
+
+  function currentScopeFootnotes(): UndoFootnoteScopeEntry[] {
+    return footnoteDocs().map((doc) => ({ docId: doc.id, footnotes: doc.footnotes }));
+  }
+
+  function encodeCurrentBodyUndo(html: string): string {
+    return encodeBodyUndoValue(html, currentScopeFootnotes());
+  }
+
+  function restoreScopeFootnotes(map: Map<string, FootnoteDef[]>) {
+    const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
+    documents = documents.map((doc) => {
+      if (!scopeIds.has(doc.id)) return doc;
+      const nextNotes = map.get(doc.id);
+      const { footnotes: _old, ...rest } = doc;
+      return nextNotes && nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+    });
+  }
+
+  function removeFootnotesFromScope(ids: readonly string[]) {
+    if (ids.length === 0) return;
+    const drop = new Set(ids);
+    const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
+    documents = documents.map((doc) => {
+      if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
+      const nextNotes = doc.footnotes.filter((fn) => !drop.has(fn.id));
+      if (nextNotes.length === doc.footnotes.length) return doc;
+      const { footnotes: _old, ...rest } = doc;
+      return nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+    });
+  }
+
+  function seedBodyUndoBeforeEdit(): CaretSelection {
+    commitPageState();
+    const key = bodyUndoKey();
+    if (editor && !undoManager.has(key)) {
+      undoManager.sync(key, encodeCurrentBodyUndo(cleanHtml(editor.innerHTML)));
+    }
+    return editor ? encodeSelection(editor) : null;
+  }
+
+  function finishProgrammaticBodyEdit(before: CaretSelection, caretMoved = true) {
+    if (!editor) return;
+    renumberFootnoteMarkers(editor);
+    const cleaned = cleanHtml(editor.innerHTML);
+    liveEditorHtml = cleaned;
+    knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
+    pendingEdit = {
+      kind: "other",
+      caretMoved,
+      before
+    };
+    recordFieldEdit(editor, encodeCurrentBodyUndo(cleaned), encodeSelection(editor));
+    refreshCounts();
+    lastEditorWordCount = wordCount;
+    persist();
+    refreshPageStateBaseline();
+    scheduleHarperLint();
+    refreshWikiMentionHighlights();
+  }
+
+  function docIdForRange(range: Range): string | null {
+    if (!inChapterMode || !activeChapter) return activeDocumentId || null;
+    const docs = scenesInChapter(activeChapter.id);
+    const block = editorTopBlock(range.startContainer);
+    const index = block ? sectionIndexOf(block) : 0;
+    return docs[index]?.id ?? docs[0]?.id ?? activeDocumentId ?? null;
+  }
+
+  function findFootnoteOwner(id: string, marker?: HTMLElement | null): { docId: string; html: string } {
+    const docs = footnoteDocs();
+    if (marker && inChapterMode && activeChapter) {
+      const block = editorTopBlock(marker);
+      const index = block ? sectionIndexOf(block) : -1;
+      const sceneDoc = index >= 0 ? docs[index] : undefined;
+      const hit = sceneDoc?.footnotes?.find((fn) => fn.id === id);
+      if (hit) return { docId: sceneDoc!.id, html: hit.html };
+    }
+    for (const doc of docs) {
+      const hit = doc.footnotes?.find((fn) => fn.id === id);
+      if (hit) return { docId: doc.id, html: hit.html };
+    }
+    if (marker && inChapterMode && activeChapter) {
+      const block = editorTopBlock(marker);
+      const index = block ? sectionIndexOf(block) : 0;
+      const sceneDoc = docs[index] ?? docs[0];
+      if (sceneDoc) return { docId: sceneDoc.id, html: "" };
+    }
+    return { docId: docs[0]?.id ?? activeDocumentId, html: "" };
+  }
+
+  function positionFootnotePopoverForRect(rect: DOMRect): { left: number; top: number } {
+    const width = 330;
+    const estimatedHeight = 190;
+    const showAbove = rect.bottom + estimatedHeight + 16 > window.innerHeight && rect.top > estimatedHeight;
+    return {
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      top: showAbove
+        ? Math.max(8, rect.top - estimatedHeight)
+        : Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - estimatedHeight - 8))
+    };
+  }
+
+  function clearActiveFootnoteMarkerClass() {
+    if (!editor) return;
+    for (const el of editor.querySelectorAll(`sup.${FOOTNOTE_REF_CLASS}.active-footnote`)) {
+      el.classList.remove("active-footnote");
+    }
+  }
+
+  function openFootnotePopoverForMarker(marker: HTMLElement) {
+    if (!editor || markdownEditorMode) return;
+    const id = marker.getAttribute("data-footnote-id") ?? "";
+    if (!id) return;
+    if (footnotePopover && footnotePopover.id !== id) {
+      closeFootnotePopover(false);
+    }
+    if (footnotePopover && footnotePopover.id === id) return;
+    const beforeSelection = seedBodyUndoBeforeEdit();
+    const { docId, html } = findFootnoteOwner(id, marker);
+    const numbers = renumberFootnoteMarkers(editor);
+    clearActiveFootnoteMarkerClass();
+    marker.classList.add("active-footnote");
+    const rect = marker.getBoundingClientRect();
+    footnotePopover = {
+      id,
+      docId,
+      number: numbers.get(id) ?? null,
+      initialHtml: html,
+      ...positionFootnotePopoverForRect(rect),
+      dirty: false,
+      beforeSelection
+    };
+  }
+
+  function placeCaretAfterMarker(marker: HTMLElement) {
+    if (!editor) return;
+    const range = document.createRange();
+    range.setStartAfter(marker);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.focus();
+  }
+
+  function closeFootnotePopover(refocusEditor = false) {
+    const current = footnotePopover;
+    if (!current) return;
+    if (current.dirty && editor && !markdownEditorMode) {
+      finishProgrammaticBodyEdit(current.beforeSelection, true);
+    }
+    const marker = editor?.querySelector<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(current.id)}"]`
+    ) ?? null;
+    footnotePopover = null;
+    clearActiveFootnoteMarkerClass();
+    if (refocusEditor && editor && !markdownEditorMode) {
+      if (marker) placeCaretAfterMarker(marker);
+      else editor.focus();
+    }
+  }
+
+  function repositionFootnotePopover() {
+    const popover = footnotePopover;
+    if (!popover || !editor) return;
+    const marker = editor.querySelector<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(popover.id)}"]`
+    );
+    const rect = marker?.getBoundingClientRect();
+    if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) {
+      closeFootnotePopover(false);
+      return;
+    }
+    const pos = positionFootnotePopoverForRect(rect);
+    popover.left = pos.left;
+    popover.top = pos.top;
+  }
+
+  function handleFootnotePopoverChange(id: string, docId: string, html: string) {
+    const clean = sanitizeInlineHtml(html);
+    documents = documents.map((doc) => {
+      if (doc.id !== docId) return doc;
+      const existing = doc.footnotes ?? [];
+      const hasEntry = existing.some((fn) => fn.id === id);
+      const nextNotes = hasEntry
+        ? updateFootnote(existing, id, clean)
+        : [...existing, { id, html: clean }];
+      return { ...doc, footnotes: nextNotes };
+    });
+    if (footnotePopover && footnotePopover.id === id) {
+      footnotePopover.dirty = true;
+    }
+    persist();
+  }
+
+  function insertFootnoteAtCaret() {
+    if (!editor || markdownEditorMode || !activeDocumentId) return;
+    closeFootnotePopover(false);
+    hideHarperPopover();
+    hideCommentSelectionPopover();
+
+    const before = seedBodyUndoBeforeEdit();
+
+    let range: Range;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0
+      && editor.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      range = selection.getRangeAt(0).cloneRange();
+      range.collapse(false);
+    } else {
+      range = document.createRange();
+      const lastParagraph = editor.querySelector("p:last-of-type") ?? editor.lastElementChild ?? editor;
+      range.selectNodeContents(lastParagraph);
+      range.collapse(false);
+    }
+
+    const targetDocId = docIdForRange(range);
+    const targetDoc = documents.find((doc) => doc.id === targetDocId);
+    if (!targetDoc) return;
+
+    const added = addFootnote(targetDoc.footnotes, "");
+    documents = documents.map((doc) => doc.id === targetDoc.id
+      ? { ...doc, footnotes: added.footnotes }
+      : doc);
+
+    const template = document.createElement("div");
+    template.innerHTML = footnoteMarkerHtml(added.footnote.id);
+    const marker = template.firstElementChild as HTMLElement;
+    range.insertNode(marker);
+
+    const after = document.createRange();
+    after.setStartAfter(marker);
+    after.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(after);
+
+    finishProgrammaticBodyEdit(before, true);
+    openFootnotePopoverForMarker(marker);
+  }
+
+  function removeFootnoteById(id: string, refocusEditor = false) {
+    if (!editor || markdownEditorMode) return;
+    const currentPopover = footnotePopover;
+    if (currentPopover && currentPopover.id === id && currentPopover.dirty) {
+      finishProgrammaticBodyEdit(currentPopover.beforeSelection, true);
+    }
+    footnotePopover = null;
+    clearActiveFootnoteMarkerClass();
+
+    const before = seedBodyUndoBeforeEdit();
+    const markers = Array.from(editor.querySelectorAll<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(id)}"]`
+    ));
+    const first = markers[0] ?? null;
+    if (first && first.parentNode) {
+      const range = document.createRange();
+      range.setStartBefore(first);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    for (const marker of markers) marker.remove();
+
+    removeFootnotesFromScope([id]);
+    finishProgrammaticBodyEdit(before, true);
+    if (refocusEditor) editor.focus();
+  }
+
+  function cleanupOrphanFootnotes() {
+    if (!editor || markdownEditorMode) return;
+    closeFootnotePopover(false);
+    const scope = activeFootnoteScope;
+    if (scope.orphans.length === 0) return;
+    const before = seedBodyUndoBeforeEdit();
+    const scopeIds = new Set(scope.docs.map((doc) => doc.id));
+    documents = documents.map((doc) => {
+      if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
+      const pruned = pruneOrphanFootnotes(scope.html, doc.footnotes);
+      const { footnotes: _old, ...rest } = doc;
+      return pruned.length > 0 ? { ...rest, footnotes: pruned } : rest;
+    });
+    finishProgrammaticBodyEdit(before, true);
+  }
+
+  function flashFootnoteMarker(marker: HTMLElement) {
+    if (footnoteFlashTimer) clearTimeout(footnoteFlashTimer);
+    marker.classList.remove("footnote-flash");
+    void marker.offsetWidth;
+    marker.classList.add("footnote-flash");
+    footnoteFlashTimer = setTimeout(() => {
+      marker.classList.remove("footnote-flash");
+    }, 1250);
+  }
+
+  function goToFootnote(id: string): HTMLElement | null {
+    if (!editor || markdownEditorMode) return null;
+    const marker = editor.querySelector<HTMLElement>(
+      `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(id)}"]`
+    );
+    if (!marker) return null;
+    if (compactProgressLayout) closeSidebarDrawers(false);
+    marker.scrollIntoView({ block: "center" });
+    placeCaretAfterMarker(marker);
+    flashFootnoteMarker(marker);
+    return marker;
+  }
+
+  function editFootnoteFromSidebar(id: string) {
+    const marker = goToFootnote(id);
+    if (!marker) return;
+    void tick().then(() => openFootnotePopoverForMarker(marker));
+  }
+
   function snapshotLabel(snapshot: DocumentSnapshot): string {
     const when = new Date(snapshot.createdAt).toLocaleString();
     return snapshot.reason === "before-restore" ? `${when} (before a restore)` : when;
@@ -4938,7 +5436,7 @@
     if (docs.length > 0 && docs.every((doc) => typeof doc.markdownSource === "string")) {
       return joinChapterMarkdown(docs.map((doc) => doc.markdownSource as string));
     }
-    return joinChapterMarkdown(docs.map((doc) => htmlToMarkdown(doc.content)));
+    return joinChapterMarkdown(docs.map((doc) => htmlToMarkdown(doc.content, doc.footnotes)));
   }
 
   /**
@@ -4947,13 +5445,22 @@
    * emptied and moved to Trash; trashed scenes regaining a section are
    * restored (undo of a merge).
    */
-  function writeChapterSections(sections: string[], markdownSections?: string[]) {
+  function writeChapterSections(
+    sections: string[],
+    markdownSections?: string[],
+    footnoteSections?: FootnoteDef[][]
+  ) {
     const chapterId = activeChapter?.id;
     if (!chapterId) return;
-    writeChapterSectionsFor(chapterId, sections, markdownSections);
+    writeChapterSectionsFor(chapterId, sections, markdownSections, footnoteSections);
   }
 
-  function writeChapterSectionsFor(chapterId: string, sections: string[], markdownSections?: string[]) {
+  function writeChapterSectionsFor(
+    chapterId: string,
+    sections: string[],
+    markdownSections?: string[],
+    footnoteSections?: FootnoteDef[][]
+  ) {
     const live = documents.filter((doc) => doc.chapterId === chapterId && !doc.trashed);
     if (live.length === 0) return;
     const trashed = documents.filter((doc) => doc.chapterId === chapterId && doc.trashed);
@@ -4966,6 +5473,7 @@
     const targets = [...live, ...revived];
     const merged = [...sections];
     const mergedMarkdown = markdownSections ? [...markdownSections] : undefined;
+    const mergedFootnotes = footnoteSections ? footnoteSections.map((list) => [...list]) : undefined;
     while (merged.length > targets.length) {
       const extra = merged.pop() as string;
       merged[merged.length - 1] = `${merged[merged.length - 1]}${extra}`;
@@ -4973,29 +5481,82 @@
         const extraSource = mergedMarkdown.pop() as string;
         mergedMarkdown[mergedMarkdown.length - 1] = `${mergedMarkdown[mergedMarkdown.length - 1]}\n\n${extraSource}`;
       }
+      if (mergedFootnotes) {
+        const extraNotes = mergedFootnotes.pop() ?? [];
+        const tail = mergedFootnotes[mergedFootnotes.length - 1];
+        const seen = new Set(tail.map((fn) => fn.id));
+        for (const fn of extraNotes) {
+          if (!seen.has(fn.id)) {
+            tail.push(fn);
+            seen.add(fn.id);
+          }
+        }
+      }
     }
-    const updates = new Map<string, { content: string; markdownSource: string | undefined }>();
+    const updates = new Map<string, { content: string; markdownSource: string | undefined; footnotes?: FootnoteDef[] }>();
     targets.forEach((target, index) => {
       // Scenes left without a section are emptied and trashed below.
       if (index >= merged.length) return;
       updates.set(target.id, {
         content: cleanHtml(merged[index]),
-        markdownSource: mergedMarkdown ? mergedMarkdown[index] ?? "" : undefined
+        markdownSource: mergedMarkdown ? mergedMarkdown[index] ?? "" : undefined,
+        ...(mergedFootnotes ? { footnotes: mergedFootnotes[index] ?? [] } : {})
       });
     });
+
+    // When editing rich HTML in chapter mode, keep each footnote definition on
+    // the scene that references its marker if a split/merge moved it across scenes.
+    const reassignedFootnotes = new Map<string, FootnoteDef[]>();
+    if (!mergedFootnotes) {
+      const ownerById = new Map<string, { docId: string; def: FootnoteDef }>();
+      for (const doc of targets) {
+        for (const def of doc.footnotes ?? []) {
+          if (!ownerById.has(def.id)) ownerById.set(def.id, { docId: doc.id, def });
+        }
+      }
+      const refDocById = new Map<string, string>();
+      const refsPerDoc = new Map<string, Set<string>>();
+      for (const target of targets) {
+        const update = updates.get(target.id);
+        if (!update) continue;
+        const ids = new Set(extractFootnoteIds(update.content));
+        refsPerDoc.set(target.id, ids);
+        for (const id of ids) {
+          if (!refDocById.has(id)) refDocById.set(id, target.id);
+        }
+      }
+      for (const target of targets) {
+        if (!updates.has(target.id)) continue;
+        reassignedFootnotes.set(target.id, []);
+      }
+      for (const [id, entry] of ownerById) {
+        const currentOwner = updates.has(entry.docId) ? entry.docId : targets[0].id;
+        const staysHere = refsPerDoc.get(currentOwner)?.has(id) ?? false;
+        const destId = staysHere ? currentOwner : (refDocById.get(id) ?? currentOwner);
+        reassignedFootnotes.get(destId)?.push(entry.def);
+      }
+    }
+
     documents = documents.map((doc) => {
       if (doc.chapterId !== chapterId) return doc;
       const update = updates.get(doc.id);
       if (update) {
         if (mergedMarkdown) {
-          return { ...doc, content: update.content, markdownSource: update.markdownSource, trashed: false };
+          const { footnotes: _old, ...rest } = doc;
+          const nextNotes = update.footnotes ?? [];
+          return nextNotes.length > 0
+            ? { ...rest, content: update.content, markdownSource: update.markdownSource, footnotes: nextNotes, trashed: false }
+            : { ...rest, content: update.content, markdownSource: update.markdownSource, trashed: false };
         }
-        if (doc.markdownSource === undefined && !doc.trashed) return { ...doc, content: update.content };
-        const { markdownSource: _dropped, ...rest } = doc;
-        return { ...rest, content: update.content, trashed: false };
+        const nextNotes = reassignedFootnotes.get(doc.id) ?? doc.footnotes ?? [];
+        const { markdownSource: _dropped, footnotes: _old, ...rest } = doc;
+        const base = doc.markdownSource === undefined && !doc.trashed
+          ? { ...rest, content: update.content }
+          : { ...rest, content: update.content, trashed: false };
+        return nextNotes.length > 0 ? { ...base, footnotes: nextNotes } : base;
       }
       if (!doc.trashed) {
-        const { markdownSource: _dropped, ...rest } = doc;
+        const { markdownSource: _dropped, footnotes: _old, ...rest } = doc;
         return { ...rest, content: "<p><br></p>", trashed: true };
       }
       return doc;
@@ -5064,6 +5625,267 @@
       return false;
     }
   }
+
+  function isEditorElementType(value: string | null): value is EditorElementType {
+    return value !== null && (EDITOR_ELEMENT_TYPES as readonly string[]).includes(value);
+  }
+
+  function firstTextNode(root: Node): Text | null {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    return (walker.nextNode() as Text | null) ?? null;
+  }
+
+  function ensureScreenplayParagraph(block: HTMLElement): HTMLParagraphElement | null {
+    if (block.tagName === "P") return block as HTMLParagraphElement;
+    if (block.tagName !== "DIV") return null;
+    if (isSceneBreakElement(block)) return null;
+    if (richKindOf(block)) return null;
+    const saved = encodeSelection(block);
+    const paragraph = document.createElement("p");
+    const attr = (block as HTMLElement).getAttribute("data-sp");
+    if (isEditorElementType(attr)) paragraph.setAttribute("data-sp", attr);
+    while ((block as HTMLElement).firstChild) paragraph.append((block as HTMLElement).firstChild as ChildNode);
+    (block as HTMLElement).replaceWith(paragraph);
+    if (saved) restoreSelection(paragraph, saved);
+    return paragraph;
+  }
+
+  function applyAutoCaseToBlock(block: HTMLElement, type: EditorElementType) {
+    const saved = encodeSelection(block);
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let changed = false;
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode as Text;
+      const nextValue = autoCase(type, textNode.data);
+      if (nextValue !== textNode.data) {
+        textNode.data = nextValue;
+        changed = true;
+      }
+    }
+    if (changed && saved) restoreSelection(block, saved);
+  }
+
+  function currentScreenplayParagraph(): HTMLParagraphElement | null {
+    if (!editor) return null;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0 && editor.contains(selection.anchorNode)) {
+      const block = editorTopBlock(selection.anchorNode);
+      if (block && block.tagName === "P" && !isSceneBreakElement(block)) {
+        return block as HTMLParagraphElement;
+      }
+    }
+    return null;
+  }
+
+  function syncScreenplayElementType() {
+    if (!screenplayActive || !editor) {
+      screenplayElementType = "action";
+      return;
+    }
+    const paragraph = currentScreenplayParagraph();
+    const attr = paragraph?.getAttribute("data-sp") ?? null;
+    screenplayElementType = isEditorElementType(attr) ? attr : "action";
+  }
+
+  function updateScreenplayMetrics() {
+    if (!editor || !screenplayActive) {
+      screenplayPages = 0;
+      screenplayRuntime = 0;
+      return;
+    }
+    const estimate = estimatePages(htmlToElements(editor.innerHTML));
+    screenplayPages = estimate.pages;
+    screenplayRuntime = estimateRuntime(estimate.pages);
+  }
+
+  function scheduleScreenplayMetrics() {
+    if (screenplayMetricsTimer) clearTimeout(screenplayMetricsTimer);
+    if (!screenplayActive) {
+      screenplayPages = 0;
+      screenplayRuntime = 0;
+      return;
+    }
+    screenplayMetricsTimer = setTimeout(() => {
+      screenplayMetricsTimer = undefined;
+      updateScreenplayMetrics();
+    }, 400);
+  }
+
+  function setScreenplayElementType(nextType: EditorElementType) {
+    if (!screenplayActive || !editor || markdownEditorMode) return;
+    let paragraph = currentScreenplayParagraph();
+    if (!paragraph) {
+      const selection = window.getSelection();
+      const rawBlock = selection && selection.rangeCount > 0 && editor.contains(selection.anchorNode)
+        ? editorTopBlock(selection.anchorNode)
+        : editor.querySelector("p");
+      if (rawBlock instanceof HTMLElement) {
+        paragraph = ensureScreenplayParagraph(rawBlock);
+      }
+    }
+    if (!paragraph) return;
+    paragraph.setAttribute("data-sp", nextType);
+    applyAutoCaseToBlock(paragraph, nextType);
+    screenplayElementType = nextType;
+    editor.focus();
+    handleInput();
+  }
+
+  function syncScreenplayTyping() {
+    if (!screenplayActive || !editor || markdownEditorMode || editorComposing) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) return;
+    const rawBlock = editorTopBlock(selection.anchorNode);
+    if (!rawBlock || isSceneBreakElement(rawBlock) || richKindOf(rawBlock)) return;
+    const block = ensureScreenplayParagraph(rawBlock);
+    if (!block) return;
+
+    const rawAttr = block.getAttribute("data-sp");
+    let currentType: EditorElementType = isEditorElementType(rawAttr) ? rawAttr : "action";
+    const detected = autoDetectType(block.textContent ?? "");
+    if (
+      detected === "scene-heading"
+      || detected === "transition"
+    ) {
+      if (currentType === "action" || currentType === "character" || detected === "scene-heading" || detected === "transition") {
+        currentType = detected;
+      }
+    }
+    if (block.getAttribute("data-sp") !== currentType) {
+      block.setAttribute("data-sp", currentType);
+    }
+    applyAutoCaseToBlock(block, currentType);
+    screenplayElementType = currentType;
+  }
+
+  function handleScreenplayKey(event: KeyboardEvent): boolean {
+    if (!screenplayActive || !editor || markdownEditorMode || event.isComposing) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    const isTab = event.key === "Tab";
+    const isEnter = event.key === "Enter" && !event.shiftKey;
+    if (!isTab && !isEnter) return false;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) return false;
+    const rawBlock = editorTopBlock(selection.anchorNode);
+    if (!rawBlock || isSceneBreakElement(rawBlock) || richKindOf(rawBlock)) return false;
+    const block = ensureScreenplayParagraph(rawBlock);
+    if (!block) return false;
+
+    const rawAttr = block.getAttribute("data-sp");
+    let currentType: EditorElementType = isEditorElementType(rawAttr) ? rawAttr : "action";
+
+    if (isTab) {
+      event.preventDefault();
+      const key: EditorKey = event.shiftKey ? "ShiftTab" : "Tab";
+      const empty = (block.textContent ?? "").trim() === "";
+      const nextType = nextElementType(currentType, key, { empty });
+      block.setAttribute("data-sp", nextType);
+      applyAutoCaseToBlock(block, nextType);
+      screenplayElementType = nextType;
+      handleInput();
+      updateScreenplayMetrics();
+      return true;
+    }
+
+    event.preventDefault();
+    if (!selection.isCollapsed) selection.deleteFromDocument();
+    const currentRange = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    if (!currentRange || !block.contains(currentRange.endContainer)) return false;
+
+    const textContent = block.textContent ?? "";
+    const empty = textContent.trim() === "";
+    if (currentType === "action" && !empty) {
+      const detected = autoDetectType(textContent);
+      if (detected) {
+        currentType = detected;
+        applyAutoCaseToBlock(block, currentType);
+      }
+    }
+    block.setAttribute("data-sp", currentType);
+
+    const nextType = nextElementType(currentType, "Enter", { empty });
+    if (empty && nextType !== currentType) {
+      block.setAttribute("data-sp", nextType);
+      screenplayElementType = nextType;
+      const range = document.createRange();
+      range.selectNodeContents(block);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      handleInput();
+      updateScreenplayMetrics();
+      return true;
+    }
+
+    const tailRange = document.createRange();
+    tailRange.setStart(currentRange.endContainer, currentRange.endOffset);
+    tailRange.setEnd(block, block.childNodes.length);
+    const tail = tailRange.extractContents();
+    if ((block.textContent ?? "") === "" && !block.querySelector("br, img")) {
+      block.append(document.createElement("br"));
+    }
+
+    const nextParagraph = document.createElement("p");
+    nextParagraph.setAttribute("data-sp", nextType);
+    nextParagraph.append(tail);
+    if ((nextParagraph.textContent ?? "") === "" && !nextParagraph.querySelector("br, img")) {
+      nextParagraph.append(document.createElement("br"));
+    }
+    block.after(nextParagraph);
+
+    const nextRange = document.createRange();
+    const text = firstTextNode(nextParagraph);
+    if (text) nextRange.setStart(text, 0);
+    else nextRange.setStart(nextParagraph, 0);
+    nextRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+
+    screenplayElementType = nextType;
+    handleInput();
+    updateScreenplayMetrics();
+    return true;
+  }
+
+  async function convertToScreenplay(documentId: string = activeDocumentId) {
+    if (!documentId) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    persistNow();
+    const latest = documents.find((doc) => doc.id === documentId && !doc.trashed && !doc.space);
+    if (!latest || latest.format === "screenplay") return;
+    const confirmed = await confirmDestructiveAction(
+      `Convert “${latest.title || "Untitled scene"}” to screenplay format? A snapshot of the prose version will be saved first.`,
+      { confirmLabel: "Convert" }
+    );
+    if (!confirmed) return;
+
+    snapshots = addSnapshot(snapshots, createSnapshot(latest, {
+      id: crypto.randomUUID(),
+      now: Date.now(),
+      reason: "before-restore",
+      note: "Before screenplay conversion"
+    }));
+    const converted = convertDocumentToScreenplay(latest);
+    documents = documents.map((doc) => doc.id === converted.id ? converted : doc);
+    if (converted.chapterId && activeChapter?.id === converted.chapterId) {
+      renderChapter(converted.id, true);
+    } else if (converted.id === activeDocumentId) {
+      title = converted.title;
+      setEditorContent(converted.content);
+      setMarkdownSource(htmlToMarkdown(converted.content));
+      refreshCounts();
+      lastEditorWordCount = wordCount;
+    }
+    persistNow();
+  }
+
+  $effect(() => {
+    void activeDocumentId;
+    void screenplayActive;
+    syncScreenplayElementType();
+    updateScreenplayMetrics();
+  });
 
   /**
    * Enter on an empty paragraph starts a new scene: the paragraph becomes a
@@ -5213,7 +6035,7 @@
     title = next.title;
     clearRichTextFade();
     setEditorContent(cleanHtml(next.content));
-    setMarkdownSource(next.markdownSource ?? htmlToMarkdown(next.content));
+    setMarkdownSource(next.markdownSource ?? htmlToMarkdown(next.content, next.footnotes));
     refreshCounts();
     lastEditorWordCount = wordCount;
   }
@@ -5324,7 +6146,7 @@
         }
         const content = cleanHtml(current.content);
         setEditorContent(content);
-        setMarkdownSource(htmlToMarkdown(content));
+        setMarkdownSource(htmlToMarkdown(content, current.footnotes));
       }
       refreshCounts();
       lastEditorWordCount = wordCount;
@@ -5335,16 +6157,19 @@
   function createScene(
     chapterId: string,
     sceneTitle = "Untitled scene",
-    options: { focusEditor?: boolean } = {}
+    options: { focusEditor?: boolean; content?: string; format?: DocumentData["format"] } = {}
   ) {
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
+    const format = options.format ?? (isScreenplayProject({ kind: activeProjectKind }) ? "screenplay" : undefined);
+    const defaultContent = format === "screenplay" ? '<p data-sp="scene-heading"></p>' : "<p><br></p>";
     const next: DocumentData = {
       id: crypto.randomUUID(),
       title: sceneTitle,
-      content: "<p><br></p>",
+      content: options.content ?? defaultContent,
       chapterId
     };
+    if (format) next.format = format;
     documents = [...documents, next];
     renderChapter(next.id, options.focusEditor !== false);
     persist();
@@ -7483,12 +8308,21 @@
       return;
     }
     if (event.key === "Escape" && !projectSearchOpen) showZenInterface();
+    if ((event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey
+      && (event.key.toLowerCase() === "f" || event.code === "KeyF")) {
+      if (workspaceView === "writing" && !markdownEditorMode && activeDocumentId
+        && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
+        insertFootnoteAtCaret();
+      }
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openProjectSearch();
       return;
     }
-    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "f") {
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openProjectSearch();
       return;
@@ -7499,14 +8333,33 @@
     }
   }
 
-  function handleInput() {
+  function handleInput(event?: Event) {
     if (editor) {
       // Pasted or restored widgets arrive as source only and need rendering.
       ensureParagraphsAroundRichBlocks(editor);
+      renumberFootnoteMarkers(editor);
       void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
+      if (event instanceof Event && screenplayActive && !markdownEditorMode) {
+        syncScreenplayTyping();
+      }
     }
+    const cleaned = editor ? cleanHtml(editor.innerHTML) : "";
+    liveEditorHtml = cleaned;
+    const nextFootnoteIds = new Set(extractFootnoteIds(cleaned));
+    if (!applyingUndoHistory) {
+      const removedFootnoteIds = [...knownEditorFootnoteIds].filter((id) => !nextFootnoteIds.has(id));
+      if (removedFootnoteIds.length > 0) {
+        removeFootnotesFromScope(removedFootnoteIds);
+        if (footnotePopover && removedFootnoteIds.includes(footnotePopover.id)) {
+          footnotePopover = null;
+        }
+      }
+    } else {
+      footnotePopover = null;
+    }
+    knownEditorFootnoteIds = nextFootnoteIds;
     if (!applyingUndoHistory && undoManager.has(bodyUndoKey())) {
-      recordFieldEdit(editor, cleanHtml(editor.innerHTML), encodeSelection(editor));
+      recordFieldEdit(editor, encodeCurrentBodyUndo(cleaned), encodeSelection(editor));
     }
     const previousWordCount = lastEditorWordCount;
     const chapterId = inChapterMode ? activeChapter?.id : undefined;
@@ -7522,6 +8375,7 @@
     persist();
     hideHarperPopover();
     scheduleHarperLint();
+    scheduleScreenplayMetrics();
     scheduleRichTextTypewriter();
     if (fadeOtherParagraphs) scheduleRichTextFade();
   }
@@ -7533,7 +8387,7 @@
   const undoManager = new UndoManager<FieldSelection>();
   // Text in these props has its own field history or is not a page action.
   const undoIgnoredProps = {
-    documents: ["content", "title", "markdownSource", "folderId"],
+    documents: ["content", "title", "markdownSource", "folderId", "footnotes"],
     chapters: ["expanded"]
   };
   const anonymousUndoKeys = new WeakMap<Element, string>();
@@ -7631,7 +8485,9 @@
     try {
       if (target === editor) {
         const focused = document.activeElement === editor;
-        setEditorContent(value);
+        const decoded = decodeBodyUndoValue(value);
+        restoreScopeFootnotes(decoded.footnotes);
+        setEditorContent(decoded.html);
         handleInput();
         if (focused) {
           restoreSelection(editor, selection as CaretSelection);
@@ -7661,6 +8517,7 @@
   }
 
   function runFieldHistory(target: NativeTextField | HTMLElement, direction: "undo" | "redo") {
+    if (target === editor) closeFootnotePopover(false);
     commitPageState();
     const key = undoKeyFor(target);
     if (target !== editor) undoManager.sync(key, (target as NativeTextField).value);
@@ -7675,6 +8532,7 @@
   }
 
   function runPageHistory(direction: "undo" | "redo") {
+    closeFootnotePopover(false);
     if (saveTimer) {
       clearTimeout(saveTimer);
       persistNow();
@@ -7736,7 +8594,7 @@
       : null;
     if (!direction) return;
     const element = event.target instanceof Element ? event.target : null;
-    if (element?.closest(".cm-editor")) return;
+    if (element?.closest(".cm-editor, .footnote-popover")) return;
     const target = undoTextTarget(event.target);
     if (target) {
       event.preventDefault();
@@ -7762,7 +8620,7 @@
     const key = undoKeyFor(target);
     const caret = target === editor ? encodeSelection(editor) : nativeSelection(target as NativeTextField);
     if (target === editor) {
-      if (!undoManager.has(key)) undoManager.sync(key, cleanHtml(editor.innerHTML));
+      if (!undoManager.has(key)) undoManager.sync(key, encodeCurrentBodyUndo(cleanHtml(editor.innerHTML)));
     } else {
       undoManager.sync(key, (target as NativeTextField).value);
     }
@@ -8031,7 +8889,7 @@
           if (!renderChapter(active.id)) {
             title = active.title;
             setEditorContent(active.content);
-            setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content));
+            setMarkdownSource(active.markdownSource ?? htmlToMarkdown(active.content, active.footnotes));
           }
         } else {
           activeDocumentId = "";
@@ -8374,11 +9232,22 @@
     // The proofreading popover re-anchors instead: typewriter mode scrolls on
     // every caret move, which would otherwise dismiss it instantly.
     window.addEventListener("scroll", repositionHarperPopover, true);
+    window.addEventListener("scroll", repositionFootnotePopover, true);
+    const handleOutsideFootnotePointer = (event: PointerEvent) => {
+      if (!footnotePopover) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(`.footnote-popover, ${FOOTNOTE_REF_SELECTOR}`)) return;
+      closeFootnotePopover(false);
+    };
+    window.addEventListener("pointerdown", handleOutsideFootnotePointer);
     return () => {
       window.removeEventListener("resize", handleViewportResize);
       document.removeEventListener("selectionchange", handleRichTextSelectionChange);
       window.removeEventListener("scroll", hideCommentSelectionPopover, true);
       window.removeEventListener("scroll", repositionHarperPopover, true);
+      if (screenplayMetricsTimer) clearTimeout(screenplayMetricsTimer);
+      window.removeEventListener("scroll", repositionFootnotePopover, true);
+      window.removeEventListener("pointerdown", handleOutsideFootnotePointer);
       keepCommentPreview();
     };
   });
@@ -8393,6 +9262,7 @@
       googleDriveRefreshToken = savedSync.googleDriveRefreshToken;
       googleDriveTokenExpiry = savedSync.googleDriveTokenExpiry;
       googleDriveEmail = savedSync.googleDriveEmail;
+      googleDriveClientKind = savedSync.googleDriveClientKind;
       googleDriveAuthenticated = Boolean(googleDriveAccessToken) && !isTokenExpired({
         accessToken: googleDriveAccessToken,
         refreshToken: googleDriveRefreshToken,
@@ -8423,6 +9293,23 @@
         desktopRuntime = false;
         syncProviderType = "googledrive";
       });
+    // Complete a Google Drive web authorization that redirected back to the
+    // app (PWA flow). No-op unless the URL carries a response for a flow this
+    // device started.
+    void (async () => {
+      try {
+        const result = await completeWebRedirectIfPresent();
+        if (!result) return;
+        if (result.success && result.tokens) {
+          applyGoogleDriveTokens(result.tokens, "web");
+          syncStatus = googleDriveReadyMessage();
+        } else if (result.error) {
+          syncStatus = result.error;
+        }
+      } catch (error) {
+        console.error("Could not complete Google Drive authorization.", error);
+      }
+    })();
   });
 
   onMount(() => {
@@ -9180,6 +10067,9 @@
           <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxScene.id); closeContextMenu(); }}>Open scene</button>
           <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxScene.id)); closeContextMenu(); }}>Open beside</button>
           <button type="button" role="menuitem" onclick={() => { const scene = documents.find((doc) => doc.id === ctxScene.id); closeContextMenu(); if (scene) startSceneRename(scene); }}>Rename scene</button>
+          {#if ctxScene.format !== "screenplay"}
+            <button type="button" role="menuitem" onclick={() => { const id = ctxScene.id; closeContextMenu(); void convertToScreenplay(id); }}>Convert this scene to screenplay</button>
+          {/if}
           {@const ctxSceneList = ctxScene.chapterId ? scenesInChapter(ctxScene.chapterId) : []}
           {@const ctxSceneIndex = ctxSceneList.findIndex((entry) => entry.id === ctxScene.id)}
           <button type="button" role="menuitem" disabled={ctxSceneIndex <= 0} onclick={() => { moveScene(ctxScene.id, -1); closeContextMenu(); }}>Move up</button>
@@ -9475,6 +10365,23 @@
         {/if}
 
         <div class="editor-tools">
+        {#if screenplayActive && !markdownEditorMode}
+          <div class="screenplay-bar-row">
+            <ScreenplayBar
+              type={screenplayElementType}
+              pages={screenplayPages}
+              runtimeMinutes={screenplayRuntime}
+              onchange={setScreenplayElementType}
+            />
+            {#if activeDocument && !activeDocument.space && activeDocument.format !== "screenplay"}
+              <button
+                type="button"
+                class="screenplay-convert-button"
+                onclick={() => void convertToScreenplay(activeDocument.id)}
+              >Convert this scene to screenplay</button>
+            {/if}
+          </div>
+        {/if}
         {#if !markdownEditorMode}
         <div class="toolbar" role="toolbar" aria-label="Text formatting">
           <label class="sr-only" for="block-style">Text style</label>
@@ -9501,6 +10408,7 @@
           <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><ImagePlus size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><MessageSquareText size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert footnote" title="Insert footnote" onpointerdown={(event) => event.preventDefault()} onclick={insertFootnoteAtCaret}><Superscript size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
@@ -9599,6 +10507,7 @@
           class="editor-content"
           class:editor-content-hidden={markdownEditorMode}
           class:fade-other-paragraphs={fadeOtherParagraphs}
+          class:screenplay-editor={screenplayActive}
           bind:this={editor}
           contenteditable="true"
           role="textbox"
@@ -9607,6 +10516,11 @@
           aria-multiline="true"
           spellcheck="true"
           onbeforeinput={handleEditorBeforeInput}
+          oncompositionstart={() => { editorComposing = true; }}
+          oncompositionend={() => {
+            editorComposing = false;
+            if (screenplayActive && !markdownEditorMode) handleInput(new Event("input"));
+          }}
           onfocus={() => scheduleRichTextFade(true)}
           onblur={() => {
             clearRichTextFade();
@@ -9619,6 +10533,7 @@
           onpointermove={handleEditorPointerMove}
           onpointerleave={() => { wikiMentionPreview = null; hideCommentPreviewSoon(); }}
           onkeydown={(event) => {
+            if (screenplayActive && handleScreenplayKey(event)) return;
             if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
               if (handleChapterEnter(event)) return;
             }
@@ -9712,6 +10627,19 @@
               <span>Comment</span>
             </button>
           </div>
+        {/if}
+
+        {#if footnotePopover && !markdownEditorMode}
+          <FootnotePopover
+            footnoteId={footnotePopover.id}
+            number={activeFootnoteScope.notes.find((note) => note.id === footnotePopover!.id)?.number ?? footnotePopover.number}
+            initialHtml={footnotePopover.initialHtml}
+            left={footnotePopover.left}
+            top={footnotePopover.top}
+            onChange={(html) => footnotePopover && handleFootnotePopoverChange(footnotePopover.id, footnotePopover.docId, html)}
+            onRemove={() => footnotePopover && removeFootnoteById(footnotePopover.id, true)}
+            onClose={() => closeFootnotePopover(true)}
+          />
         {/if}
 
         {#if harperPopover}
@@ -10065,6 +10993,7 @@
         <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "progress"} aria-selected={rightSidebarTab === "progress"} onclick={() => (rightSidebarTab = "progress")}>Progress</button>
         <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "comments"} aria-selected={rightSidebarTab === "comments"} onclick={() => (rightSidebarTab = "comments")}>Comments</button>
         <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "snapshots"} aria-selected={rightSidebarTab === "snapshots"} onclick={() => (rightSidebarTab = "snapshots")}>Snapshots</button>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "footnotes"} aria-selected={rightSidebarTab === "footnotes"} onclick={() => (rightSidebarTab = "footnotes")}>Footnotes</button>
         <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => closeSidebarDrawers()}><X size={15} aria-hidden="true" /></button>
       </div>
 
@@ -10221,7 +11150,7 @@
           </ul>
         {/if}
       </section>
-      {:else}
+      {:else if rightSidebarTab === "snapshots"}
       <div class="progress-header"><div><span class="progress-eyebrow">VERSIONS</span><h2>Snapshots</h2></div></div>
       <section class="progress-section">
         <div class="section-title"><strong>Save this version</strong></div>
@@ -10255,6 +11184,65 @@
               </li>
             {/each}
           </ul>
+        {/if}
+      </section>
+      {:else}
+      <div class="progress-header"><div><span class="progress-eyebrow">NOTES</span><h2>Footnotes</h2></div></div>
+      <section class="progress-section">
+        <div class="section-title">
+          <strong>{inChapterMode ? "This chapter" : "This document"}</strong>
+          <span>{activeFootnoteScope.notes.length}</span>
+        </div>
+        {#if markdownEditorMode}
+          <p class="data-help">Switch back to the rich text editor to jump to or edit footnote popovers.</p>
+        {/if}
+        {#if activeFootnoteScope.notes.length === 0}
+          <p class="empty-progress">No footnotes yet. Place the cursor in the text and use Insert footnote to add one.</p>
+        {:else}
+          <ul class="footnote-list">
+            {#each activeFootnoteScope.notes as note (note.id)}
+              <li class="footnote-item">
+                <div class="footnote-item-head">
+                  <span class="footnote-badge">{note.number}</span>
+                  {#if note.missingDefinition}
+                    <span class="footnote-empty">Missing definition</span>
+                  {:else if !htmlToPlainText(note.html).trim()}
+                    <span class="footnote-empty">Empty footnote</span>
+                  {:else}
+                    <div class="footnote-preview">{@html sanitizeInlineHtml(note.html)}</div>
+                  {/if}
+                </div>
+                <div class="footnote-actions">
+                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => goToFootnote(note.id)}>Go to</button>
+                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => editFootnoteFromSidebar(note.id)}>Edit</button>
+                  <button class="side-action danger" type="button" disabled={markdownEditorMode} aria-label="Remove footnote {note.number}" onclick={() => removeFootnoteById(note.id)}>Remove</button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+      <section class="progress-section">
+        <div class="section-title">
+          <strong>Unused definitions</strong>
+          <span>{activeFootnoteScope.orphans.length}</span>
+        </div>
+        {#if activeFootnoteScope.orphans.length > 0}
+          <p class="section-subtitle">These footnote definitions no longer have a marker in the text.</p>
+          <ul class="footnote-orphan-list">
+            {#each activeFootnoteScope.orphans as orphan (orphan.id)}
+              <li class="footnote-orphan-item">{htmlToPlainText(orphan.html).trim() || "Empty footnote"}</li>
+            {/each}
+          </ul>
+          <button
+            class="data-button footnote-cleanup-button"
+            type="button"
+            disabled={markdownEditorMode}
+            onclick={cleanupOrphanFootnotes}
+          >Clean up {activeFootnoteScope.orphans.length} orphan{activeFootnoteScope.orphans.length === 1 ? "" : "s"}</button>
+        {:else}
+          <p class="data-help">All footnote definitions are referenced in the text.</p>
+          <button class="data-button footnote-cleanup-button" type="button" disabled>Clean up orphans</button>
         {/if}
       </section>
       {/if}
@@ -10506,9 +11494,15 @@
             onclick={triggerMarkdownFolderImport}
             disabled={markdownImportBusy}
           >Import Markdown folder…</button>
+          <button
+            type="button"
+            class="data-button"
+            onclick={triggerFountainImport}
+          >Import Fountain screenplay…</button>
         </div>
         <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
         <p class="data-help">Creates a new project from a folder of Markdown files (for example an Obsidian vault). You choose which folders are the manuscript and which become wiki pages.</p>
+        <p class="data-help">Adds a Fountain or plain-text screenplay to the open project as a screenplay scene.</p>
       </div>
       <div class="data-group">
         <span class="data-group-label">Device sync</span>
@@ -10634,13 +11628,13 @@
                   : "Google Drive is connected. The access token will be refreshed when you sync."}
               </p>
             {:else if googleDriveCodeVerifier}
-              <p class="data-help">Google will redirect to a local address that may show a “can’t open the page” error. That is expected. Copy the entire address bar, or just the <code>code=</code> value, and paste it below.</p>
+              <p class="data-help">Complete the approval in the browser — you will return here automatically. If a code is shown instead (older desktop builds), copy the entire address bar, or just the <code>code=</code> value, and paste it below.</p>
               {#if googleDriveAuthUrl}
                 <div class="data-actions">
                   <a class="data-button data-link" href={googleDriveAuthUrl} target="_blank" rel="noreferrer">Open authorization page</a>
                 </div>
               {/if}
-              <p class="data-help">On a phone, switch back to ProseCraft after approving access. If the code expired, choose Cancel and start again.</p>
+              <p class="data-help">If the code expired, choose Cancel and start again.</p>
               <input
                 class="preference-select"
                 type="text"
@@ -10745,6 +11739,14 @@
         {...{ webkitdirectory: true }}
         bind:this={markdownFolderInput}
         onchange={handleMarkdownFolder}
+      />
+      <input
+        id="fountain-import-input"
+        class="data-file-input"
+        type="file"
+        accept=".fountain,.txt,text/plain"
+        bind:this={fountainImportInput}
+        onchange={handleFountainImport}
       />
       {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
     </section>
@@ -10900,7 +11902,39 @@
       <div><span class="settings-kicker">PROSECRAFT</span><h2>Start from</h2></div>
       <button class="close-settings" aria-label="Close starter selection" type="button" onclick={() => starterDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
-    <div class="settings-body starter-body">
+    <div class="settings-body starter-body" class:starter-body-screenplay={projectKind === "screenplay"}>
+      <section class="starter-kind" aria-label="What are you writing?">
+        <div class="preference-heading"><strong>What are you writing?</strong><span>Choose the format for new scenes in this project.</span></div>
+        <div class="starter-kind-cards" role="radiogroup" aria-label="What are you writing?">
+          <label class="starter-kind-card" class:selected={projectKind === "novel"}>
+            <input
+              type="radio"
+              name="project-kind"
+              value="novel"
+              checked={projectKind === "novel"}
+              onchange={() => selectProjectKind("novel")}
+            />
+            <span class="starter-copy">
+              <strong>Novel or story</strong>
+              <span>Chapters and prose scenes, with genre templates.</span>
+            </span>
+          </label>
+          <label class="starter-kind-card" class:selected={projectKind === "screenplay"}>
+            <input
+              type="radio"
+              name="project-kind"
+              value="screenplay"
+              checked={projectKind === "screenplay"}
+              onchange={() => selectProjectKind("screenplay")}
+            />
+            <span class="starter-copy">
+              <strong>Screenplay</strong>
+              <span>Acts, industry script formatting, and Fountain/PDF export.</span>
+            </span>
+          </label>
+        </div>
+      </section>
+      {#if projectKind !== "screenplay"}
       <section class="starter-presets" aria-label="Wiki template">
         <div class="preference-heading"><strong>Wiki template</strong><span>Adds starter folders and template pages to the new project.</span></div>
         <div class="starter-options" role="radiogroup" aria-label="Starter">
@@ -10949,6 +11983,7 @@
           </div>
         {/if}
       </section>
+      {/if}
       <section class="starter-customise" aria-label="Customise">
         <div class="preference-heading">
           <strong>Customise</strong>
@@ -11048,6 +12083,12 @@
         <input id="project-name" class="preference-select" type="text" bind:value={projectNameDraft} maxlength="100" required />
         <label class="preference-label project-author-label" for="author-name">Author name</label>
         <input id="author-name" class="preference-select" type="text" bind:value={authorNameDraft} maxlength="100" />
+        <label class="preference-label project-author-label" for="project-kind">Project type</label>
+        <select id="project-kind" class="preference-select" bind:value={projectKindDraft}>
+          <option value="novel">Novel</option>
+          <option value="screenplay">Screenplay</option>
+        </select>
+        <p class="project-kind-note">Existing scenes keep their format; new scenes use the new type.</p>
       </section>
       <section class="preference-section">
         <div class="preference-heading"><strong>Labels</strong><span>Rename, recolour or remove the labels used on scenes and chapters</span></div>
@@ -11796,8 +12837,8 @@
   .progress-sidebar.peek { transform: translateX(100%); pointer-events: none; }
   .progress-sidebar.peek.peek-open { transform: translateX(0); pointer-events: auto; box-shadow: var(--shadow-panel-left); }
   .progress-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 0 3px 19px; }
-  .sidebar-tabs { display: flex; align-items: center; gap: 5px; margin-bottom: 14px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
-  .sidebar-tab { height: 26px; flex: 1; padding: 0 6px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
+  .sidebar-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-bottom: 14px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+  .sidebar-tab { height: 26px; flex: 1 1 auto; min-width: 0; padding: 0 5px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
   .sidebar-tab:hover { color: var(--text-primary); }
   .sidebar-tab.active { background: var(--selected-bg); color: var(--selected-text); font-weight: 600; }
   .sidebar-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -12015,9 +13056,120 @@
   .editor-content :global(h1) { color: var(--text-heading); font-size: calc(30px * var(--editor-scale)); font-weight: 500; line-height: 1.35; }
   .editor-content :global(h3) { color: var(--text-heading); font-size: calc(19px * var(--editor-scale)); font-weight: 500; }
   .editor-content :global(p) { margin: 0 0 18px; }
+  .screenplay-bar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .screenplay-bar-row :global(.screenplay-bar) { flex: 1 1 220px; }
+  .screenplay-convert-button {
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border-control);
+    border-radius: 7px;
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .screenplay-convert-button:hover { border-color: var(--accent); color: var(--text-heading); }
+  .screenplay-convert-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .editor-content.screenplay-editor {
+    max-width: 38rem;
+    margin: 0 auto;
+    font-family: "Courier Prime", "Courier New", Courier, monospace;
+    font-size: calc(12pt * var(--editor-scale));
+    line-height: 1.35;
+    color: var(--text-body);
+  }
+  .editor-content.screenplay-editor :global(p) {
+    width: 100%;
+    min-height: 1.35em;
+    margin: 0 0 1em;
+    font-family: "Courier Prime", "Courier New", Courier, monospace;
+    font-size: calc(12pt * var(--editor-scale));
+    line-height: 1.35;
+    color: var(--text-body);
+    text-align: left;
+    box-sizing: border-box;
+  }
+  .editor-content :global(p[data-sp]) {
+    min-height: 1.35em;
+    margin: 0 0 1em;
+    font-family: "Courier Prime", "Courier New", Courier, monospace;
+    font-size: calc(12pt * var(--editor-scale));
+    line-height: 1.35;
+    color: var(--text-body);
+    box-sizing: border-box;
+  }
+  .editor-content :global(p[data-sp="scene-heading"]) {
+    margin-top: 1.5em;
+    color: var(--text-heading);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .editor-content :global(p[data-sp="action"]) {
+    width: 100%;
+    margin-left: 0;
+  }
+  .editor-content :global(p[data-sp="character"]) {
+    margin-top: 1em;
+    margin-bottom: 0;
+    margin-left: 37%;
+    width: 63%;
+    color: var(--text-heading);
+    text-transform: uppercase;
+  }
+  .editor-content :global(p[data-sp="dialogue"]) {
+    margin-top: 0;
+    margin-bottom: 1em;
+    margin-left: 25%;
+    width: 55%;
+  }
+  .editor-content :global(p[data-sp="parenthetical"]) {
+    margin-top: 0;
+    margin-bottom: 0;
+    margin-left: 31%;
+    width: 35%;
+  }
+  .editor-content :global(p[data-sp="transition"]) {
+    margin-top: 1em;
+    width: 100%;
+    margin-left: 0;
+    color: var(--text-heading);
+    text-align: right;
+    text-transform: uppercase;
+  }
   .editor-content :global(blockquote) { margin: 26px 0; padding: 2px 0 2px 17px; border-left: 2px solid var(--accent-soft); color: var(--quote); font-style: italic; }
   .editor-content :global(ul), .editor-content :global(ol) { padding-left: 24px; }
   .editor-content :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
+  .editor-content :global(sup.footnote-ref) {
+    display: inline-block;
+    min-width: 1.05em;
+    margin: 0 1px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    color: var(--accent-strong);
+    font-size: 0.72em;
+    font-weight: 600;
+    line-height: 1.25;
+    text-align: center;
+    vertical-align: super;
+    cursor: pointer;
+    user-select: none;
+  }
+  .editor-content :global(sup.footnote-ref::after) {
+    content: attr(data-num);
+  }
+  .editor-content :global(sup.footnote-ref:hover),
+  .editor-content :global(sup.footnote-ref.active-footnote) {
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+  .editor-content :global(sup.footnote-ref.footnote-flash) {
+    animation: footnote-flash 1.2s ease-out;
+  }
+  @keyframes footnote-flash {
+    0% { box-shadow: 0 0 0 3px var(--accent); background: color-mix(in srgb, var(--accent) 42%, transparent); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
   .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
   .editor-content :global(img[data-size="small"]) { width: 25%; height: auto; max-width: 100%; }
@@ -12227,7 +13379,16 @@
   .starter-dialog[open] { display: flex; flex-direction: column; }
   .starter-dialog form { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; max-height: inherit; }
   .starter-dialog .settings-body { min-height: 0; flex: 1 1 auto; overflow: hidden; }
-  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; gap: 20px; min-width: 0; }
+  .starter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); align-items: stretch; gap: 0 20px; min-width: 0; }
+  .starter-body.starter-body-screenplay { grid-template-columns: minmax(0, 1fr); }
+  .starter-kind { grid-column: 1 / -1; padding: 14px 0 12px; border-bottom: 1px solid var(--border-soft); }
+  .starter-kind-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .starter-kind-card { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border-control); border-radius: 8px; cursor: pointer; }
+  .starter-kind-card:hover { border-color: var(--accent); background: var(--hover-bg); }
+  .starter-kind-card.selected { border-color: var(--accent); background: var(--selected-bg, var(--control-bg)); }
+  .starter-kind-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .starter-kind-card input { margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--accent); }
+  .project-kind-note { margin: 6px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
   .starter-presets, .starter-customise { min-width: 0; min-height: 0; overflow-y: auto; padding: 17px 0; }
   .starter-subheading { margin-top: 16px; }
   .starter-template { display: flex; align-items: center; gap: 6px; }
@@ -12441,7 +13602,19 @@
   .progress-sidebar .comment-body { font-size: 12px; }
   .progress-sidebar .comment-meta { font-size: 9px; }
   .progress-sidebar .comment-actions,
-  .progress-sidebar .snapshot-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+  .progress-sidebar .snapshot-actions,
+  .progress-sidebar .footnote-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+  .footnote-list,
+  .footnote-orphan-list { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 10px; list-style: none; }
+  .progress-sidebar .footnote-item { padding: 12px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow-card); display: flex; flex-direction: column; gap: 6px; }
+  .footnote-item-head { display: flex; align-items: flex-start; gap: 8px; }
+  .footnote-badge { display: inline-grid; min-width: 20px; height: 20px; padding: 0 5px; place-items: center; flex: 0 0 auto; border-radius: 5px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); font-size: 10px; font-weight: 700; }
+  .footnote-preview { min-width: 0; flex: 1; color: var(--text-body); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  .footnote-preview :global(a) { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+  .footnote-empty { color: var(--text-muted); font-size: 11px; font-style: italic; }
+  .footnote-orphan-list { gap: 6px; margin-bottom: 10px; }
+  .footnote-orphan-item { padding: 7px 9px; border: 1px dashed var(--border-control); border-radius: 6px; color: var(--text-muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+  .footnote-cleanup-button { width: 100%; height: 30px; font-size: 10px; }
   .side-action { padding: 2px 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; font-weight: 600; }
   .side-action:hover:not(:disabled) { color: var(--text-heading); text-decoration: underline; text-underline-offset: 2px; }
   .side-action:disabled { opacity: .4; cursor: default; }
@@ -12699,6 +13872,7 @@
     .toolbar { padding-right: 4px; padding-left: 4px; }
     .toolbar-divider { margin: 0 1px; }
     .starter-module-grid { grid-template-columns: minmax(0, 1fr); }
+    .starter-kind-cards { grid-template-columns: minmax(0, 1fr); }
     .starter-save { flex-direction: column; align-items: stretch; }
     .starter-save input[type="text"], .starter-add-button { width: 100%; flex: none; }
     .starter-dialog .settings-footer > span { flex: 1 1 100%; }
