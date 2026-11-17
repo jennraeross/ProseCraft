@@ -149,6 +149,48 @@ describe("encrypted single-file sync", () => {
 });
 
 describe("open-folder sync", () => {
+  it("counts moving a whole project to the trash as a change", () => {
+    const original = storedProject(1_000);
+    const trashed = stampProject(original, { ...original.project, trashed: true }, "device-a", 2_000);
+    expect(trashed.revision).toBeGreaterThan(original.revision);
+    expect(trashed.updatedAt).toBe(2_000);
+
+    const { trashed: _restored, ...restoredData } = trashed.project;
+    const restored = stampProject(trashed, restoredData, "device-a", 3_000);
+    expect(restored.revision).toBeGreaterThan(trashed.revision);
+  });
+
+  it("moves a project to the trash on the other device too", async () => {
+    const fs = new MemoryFileSystem();
+    const provider = () => new OpenFolderSyncProvider(fs);
+    const onA = await provider().sync("", [storedProject(1_000)], {}, 1_000, "device-a");
+    const onB = await provider().sync("", [], {}, 1_100, "device-b");
+
+    const trashed = stampProject(onA.projects[0], { ...onA.projects[0].project, trashed: true }, "device-a", 2_000);
+    await provider().sync("", [trashed], onA.lastSynced, 2_000, "device-a");
+    const afterB = await provider().sync("", onB.projects, onB.lastSynced, 3_000, "device-b");
+
+    expect(afterB.projects.find((project) => project.id === "project-1")?.project.trashed).toBe(true);
+  });
+
+  it("keeps a project in the trash when another device edited it meanwhile", async () => {
+    const fs = new MemoryFileSystem();
+    const first = await new OpenFolderSyncProvider(fs)
+      .sync("", [storedProject(1_000)], {}, 1_000, "device-a");
+    const synced = first.projects[0];
+
+    // Device B edits the project and syncs first.
+    const edited = stampProject(synced, { ...synced.project, author: "Someone Else" }, "device-b", 2_000);
+    await new OpenFolderSyncProvider(fs).sync("", [edited], first.lastSynced, 2_000, "device-b");
+
+    // Device A moved the same project to the trash and syncs afterwards.
+    const trashed = stampProject(synced, { ...synced.project, trashed: true }, "device-a", 3_000);
+    const result = await new OpenFolderSyncProvider(fs)
+      .sync("", [trashed], first.lastSynced, 3_000, "device-a");
+
+    expect(result.projects.find((project) => project.id === "project-1")?.project.trashed).toBe(true);
+  });
+
   it("round-trips recoverable project, chapter, and scene trash state", async () => {
     const fs = new MemoryFileSystem();
     const project = storedProject();
