@@ -160,6 +160,19 @@ describe("open-folder sync", () => {
     expect(restored.revision).toBeGreaterThan(trashed.revision);
   });
 
+  it("moves a project to the trash on the other device too", async () => {
+    const fs = new MemoryFileSystem();
+    const provider = () => new OpenFolderSyncProvider(fs);
+    const onA = await provider().sync("", [storedProject(1_000)], {}, 1_000, "device-a");
+    const onB = await provider().sync("", [], {}, 1_100, "device-b");
+
+    const trashed = stampProject(onA.projects[0], { ...onA.projects[0].project, trashed: true }, "device-a", 2_000);
+    await provider().sync("", [trashed], onA.lastSynced, 2_000, "device-a");
+    const afterB = await provider().sync("", onB.projects, onB.lastSynced, 3_000, "device-b");
+
+    expect(afterB.projects.find((project) => project.id === "project-1")?.project.trashed).toBe(true);
+  });
+
   it("keeps a project in the trash when another device edited it meanwhile", async () => {
     const fs = new MemoryFileSystem();
     const first = await new OpenFolderSyncProvider(fs)
