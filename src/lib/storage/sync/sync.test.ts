@@ -512,6 +512,43 @@ describe("encrypted-folder sync", () => {
     expect(reopened.projects).toHaveLength(1);
     expect(reopened.projects[0].project.name).toBe("Test Novel");
   });
+
+  it("keeps files it did not write, such as another sync tool's conflict copies", async () => {
+    const fs = new MemoryFileSystem();
+    const first = await new FolderSyncProvider(fs)
+      .sync(PASSPHRASE, [storedProject()], {}, 1_000, "device-a");
+    const copies = [
+      "projects/project-1/documents/doc-1 (conflict 2026-11-17 14.32 Laptop).enc",
+      "projects/project-1/documents/doc-1.sync-conflict-20261117-143200-ABCDEFG.enc",
+      "projects/project-1/chapters/chapter-1 (conflicted copy).enc"
+    ];
+    for (const copy of copies) {
+      await fs.writeText(copy, await fs.readText("projects/project-1/documents/doc-1.enc"));
+    }
+
+    await new FolderSyncProvider(fs)
+      .sync(PASSPHRASE, first.projects, first.lastSynced, 2_000, "device-a");
+
+    for (const copy of copies) expect(await fs.exists(copy)).toBe(true);
+  });
+
+  it("still removes the files of deleted entities", async () => {
+    const fs = new MemoryFileSystem();
+    const original = storedProject(1_000);
+    await new FolderSyncProvider(fs).sync(PASSPHRASE, [original], {}, 1_000, "device-a");
+    expect(await fs.exists("projects/project-1/documents/doc-1.enc")).toBe(true);
+
+    const withoutDocument: ProjectData = {
+      ...projectFixture(),
+      activeDocumentId: "doc-2",
+      documents: projectFixture().documents.filter((doc) => doc.id !== "doc-1")
+    };
+    const updated = stampProject(original, withoutDocument, "device-a", 2_000);
+    await new FolderSyncProvider(fs).sync(PASSPHRASE, [updated], {}, 2_000, "device-a");
+
+    expect(await fs.exists("projects/project-1/documents/doc-1.enc")).toBe(false);
+    expect(await fs.exists("projects/project-1/documents/doc-2.enc")).toBe(true);
+  });
 });
 
 describe("sync state", () => {

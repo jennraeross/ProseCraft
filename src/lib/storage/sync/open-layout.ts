@@ -870,19 +870,32 @@ export async function writeOpenProject(
   // entity files that have not been written yet.
   await writeIfChanged(fs, `${dir}/${PROJECT_FILE}`, content);
 
-  await pruneEntityDir(fs, `${dir}/${DOCUMENTS_DIR}`, documentPaths, ".md");
-  await pruneEntityDir(fs, `${dir}/${CHAPTERS_DIR}`, chapterPaths, ".json");
+  await pruneEntityDir(fs, `${dir}/${DOCUMENTS_DIR}`, documentPaths, deletedIds(project, "documents"), ".md");
+  await pruneEntityDir(fs, `${dir}/${CHAPTERS_DIR}`, chapterPaths, deletedIds(project, "chapters"), ".json");
 }
 
+function deletedIds(project: StoredProject, kind: "documents" | "chapters"): string[] {
+  return Object.entries(project.entities[kind])
+    .filter(([, meta]) => meta.deletedAt !== null)
+    .map(([id]) => id);
+}
+
+/**
+ * Removes the files of entities this project records as deleted. Any other
+ * file is left alone: when the folder is itself synced by another tool, it may
+ * hold that tool's conflict copies, which can be the only copy of an edit.
+ */
 async function pruneEntityDir(
   fs: SyncFileSystem,
   dir: string,
   keep: Set<string>,
+  deleted: string[],
   extension: string
 ): Promise<void> {
+  const removable = new Set(deleted.map((id) => `${dir}/${safeName(id)}${extension}`));
   for (const entry of await fs.listDir(dir)) {
-    if (entry.isDirectory || !entry.name.endsWith(extension)) continue;
+    if (entry.isDirectory) continue;
     const path = `${dir}/${entry.name}`;
-    if (!keep.has(path)) await fs.remove(path);
+    if (removable.has(path) && !keep.has(path)) await fs.remove(path);
   }
 }

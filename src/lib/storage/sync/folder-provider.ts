@@ -6,6 +6,7 @@ import {
   VAULT_FILE,
   encodeProjectFiles,
   entityDir,
+  entityFileName,
   projectDirName,
   readProjectFiles
 } from "./layout";
@@ -88,7 +89,7 @@ export class FolderSyncProvider implements SyncProvider {
       for (const file of files) {
         await this.fs.writeText(file.path, file.content);
       }
-      await this.prune(dir, new Set(files.map((file) => file.path)));
+      await this.prune(dir, project);
     }
   }
 
@@ -108,15 +109,23 @@ export class FolderSyncProvider implements SyncProvider {
     return syncViaProvider(this, passphrase, local, lastSynced, now, deviceId);
   }
 
-  private async prune(dir: string, keep: Set<string>): Promise<void> {
+  /**
+   * Removes the files of entities this project records as deleted. Any other
+   * file is left alone: when the folder is itself synced by another tool, it
+   * may hold that tool's conflict copies (`doc (conflict …).enc`,
+   * `doc.sync-conflict-….enc`), which can be the only copy of an edit.
+   */
+  private async prune(dir: string, project: StoredProject): Promise<void> {
     for (const kind of ENTITY_KINDS) {
       const sub = `${dir}/${entityDir(kind)}`;
+      const deleted = new Set(
+        Object.entries(project.entities[kind])
+          .filter(([, meta]) => meta.deletedAt !== null)
+          .map(([id]) => entityFileName(id))
+      );
       for (const entry of await this.fs.listDir(sub)) {
-        if (entry.isDirectory) continue;
-        const path = `${sub}/${entry.name}`;
-        if (entry.name.endsWith(".enc") && !keep.has(path)) {
-          await this.fs.remove(path);
-        }
+        if (entry.isDirectory || !deleted.has(entry.name)) continue;
+        await this.fs.remove(`${sub}/${entry.name}`);
       }
     }
   }
