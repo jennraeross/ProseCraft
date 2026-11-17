@@ -166,6 +166,29 @@ describe("writeScene", () => {
     expect(document?.markdownSource).toContain("cartographer");
   });
 
+  it("produces the app's hash for screenplay scenes and scenes with footnotes", async () => {
+    const data = projectFixture();
+    data.documents = data.documents.map((document) =>
+      document.id === "doc-1"
+        ? { ...document, format: "screenplay", footnotes: [{ id: "fn-1", html: "A note." }] }
+        : document
+    );
+    const folder = await makeRoot(createStoredProject(data, "device-a", NOW));
+
+    const scene = await writeScene(folder, "project-1", {
+      sceneId: "doc-1",
+      markdown: "INT. LIGHTHOUSE - NIGHT"
+    });
+
+    const reread = await readOpenProject(await loadFolder(folder), "project-1", NOW + 1_000);
+    const meta = reread.entities.documents["doc-1"];
+    expect(meta.updatedBy).toBe("mcp");
+    expect(meta.revision).toBe(scene.meta.revision);
+    const document = reread.project.documents.find((entry) => entry.id === "doc-1");
+    expect(document?.format).toBe("screenplay");
+    expect(document?.footnotes).toEqual([{ id: "fn-1", html: "A note." }]);
+  });
+
   it("keeps place profiles and trash markers", async () => {
     const folder = await makeRoot(storedFixture());
 
