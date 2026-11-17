@@ -89,7 +89,7 @@ export class FolderSyncProvider implements SyncProvider {
       for (const file of files) {
         await this.fs.writeText(file.path, file.content);
       }
-      await this.prune(dir, project);
+      await this.prune(dir, new Set(files.map((file) => file.path)));
     }
   }
 
@@ -110,23 +110,33 @@ export class FolderSyncProvider implements SyncProvider {
   }
 
   /**
-   * Removes the files of entities this project records as deleted. Any other
-   * file is left alone: when the folder is itself synced by another tool, it
-   * may hold that tool's conflict copies (`doc (conflict …).enc`,
-   * `doc.sync-conflict-….enc`), which can be the only copy of an edit.
+   * Removes the files this layout wrote for entities that are no longer live.
+   * A file counts as ours only when its name is exactly the one this layout
+   * gives the entity id in its envelope. Anything else is left alone: when the
+   * folder is itself synced by another tool, it may hold that tool's conflict
+   * copies (`doc-1 (conflict …).enc`, `doc-1.sync-conflict-….enc`), which repeat
+   * the original's id under another name and can be the only copy of an edit.
    */
-  private async prune(dir: string, project: StoredProject): Promise<void> {
+  private async prune(dir: string, keep: Set<string>): Promise<void> {
     for (const kind of ENTITY_KINDS) {
       const sub = `${dir}/${entityDir(kind)}`;
-      const deleted = new Set(
-        Object.entries(project.entities[kind])
-          .filter(([, meta]) => meta.deletedAt !== null)
-          .map(([id]) => entityFileName(id))
-      );
       for (const entry of await this.fs.listDir(sub)) {
-        if (entry.isDirectory || !deleted.has(entry.name)) continue;
-        await this.fs.remove(`${sub}/${entry.name}`);
+        if (entry.isDirectory || !entry.name.endsWith(".enc")) continue;
+        const path = `${sub}/${entry.name}`;
+        if (keep.has(path)) continue;
+        const id = await this.envelopeId(path);
+        if (id !== null && entityFileName(id) === entry.name) await this.fs.remove(path);
       }
+    }
+  }
+
+  /** The entity id in an encrypted file's (plain-text) envelope, if it can be read. */
+  private async envelopeId(path: string): Promise<string | null> {
+    try {
+      const id = (JSON.parse(await this.fs.readText(path)) as { id?: unknown }).id;
+      return typeof id === "string" && id ? id : null;
+    } catch {
+      return null;
     }
   }
 }

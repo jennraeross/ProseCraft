@@ -870,32 +870,41 @@ export async function writeOpenProject(
   // entity files that have not been written yet.
   await writeIfChanged(fs, `${dir}/${PROJECT_FILE}`, content);
 
-  await pruneEntityDir(fs, `${dir}/${DOCUMENTS_DIR}`, documentPaths, deletedIds(project, "documents"), ".md");
-  await pruneEntityDir(fs, `${dir}/${CHAPTERS_DIR}`, chapterPaths, deletedIds(project, "chapters"), ".json");
+  await pruneEntityDir(fs, `${dir}/${DOCUMENTS_DIR}`, documentPaths, ".md");
+  await pruneEntityDir(fs, `${dir}/${CHAPTERS_DIR}`, chapterPaths, ".json");
 }
 
-function deletedIds(project: StoredProject, kind: "documents" | "chapters"): string[] {
-  return Object.entries(project.entities[kind])
-    .filter(([, meta]) => meta.deletedAt !== null)
-    .map(([id]) => id);
+/** The id a document (`.md`) or chapter (`.json`) file says it holds, if it can be read. */
+function storedEntityId(text: string, extension: string): string | null {
+  try {
+    const id = extension === ".md"
+      ? parseMarkdown(text).fields.id
+      : (JSON.parse(text) as { record?: { id?: unknown } }).record?.id;
+    return typeof id === "string" && id ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Removes the files of entities this project records as deleted. Any other
- * file is left alone: when the folder is itself synced by another tool, it may
- * hold that tool's conflict copies, which can be the only copy of an edit.
+ * Removes the files this layout wrote for entities that are no longer live. A
+ * file counts as ours only when its name is exactly the one this layout gives
+ * the id stored inside it. Anything else is left alone: when the folder is
+ * itself synced by another tool, it may hold that tool's conflict copies
+ * (`doc-1 (conflict …).md`, `doc-1.sync-conflict-….md`), which repeat the
+ * original's id under another name and can be the only copy of an edit.
  */
 async function pruneEntityDir(
   fs: SyncFileSystem,
   dir: string,
   keep: Set<string>,
-  deleted: string[],
   extension: string
 ): Promise<void> {
-  const removable = new Set(deleted.map((id) => `${dir}/${safeName(id)}${extension}`));
   for (const entry of await fs.listDir(dir)) {
-    if (entry.isDirectory) continue;
+    if (entry.isDirectory || !entry.name.endsWith(extension)) continue;
     const path = `${dir}/${entry.name}`;
-    if (removable.has(path) && !keep.has(path)) await fs.remove(path);
+    if (keep.has(path)) continue;
+    const id = storedEntityId(await fs.readText(path), extension);
+    if (id !== null && `${safeName(id)}${extension}` === entry.name) await fs.remove(path);
   }
 }
