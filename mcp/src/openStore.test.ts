@@ -166,6 +166,56 @@ describe("writeScene", () => {
     expect(document?.markdownSource).toContain("cartographer");
   });
 
+  it("produces the app's hash for screenplay scenes and scenes with footnotes", async () => {
+    const data = projectFixture();
+    data.documents = data.documents.map((document) =>
+      document.id === "doc-1"
+        ? { ...document, format: "screenplay", footnotes: [{ id: "fn-1", html: "A note." }] }
+        : document
+    );
+    const folder = await makeRoot(createStoredProject(data, "device-a", NOW));
+
+    const scene = await writeScene(folder, "project-1", {
+      sceneId: "doc-1",
+      markdown: "INT. LIGHTHOUSE - NIGHT"
+    });
+
+    const reread = await readOpenProject(await loadFolder(folder), "project-1", NOW + 1_000);
+    const meta = reread.entities.documents["doc-1"];
+    expect(meta.updatedBy).toBe("mcp");
+    expect(meta.revision).toBe(scene.meta.revision);
+    const document = reread.project.documents.find((entry) => entry.id === "doc-1");
+    expect(document?.format).toBe("screenplay");
+    expect(document?.footnotes).toEqual([{ id: "fn-1", html: "A note." }]);
+  });
+
+  it("takes footnotes from the new body when it has footnote definitions", async () => {
+    const data = projectFixture();
+    data.documents = data.documents.map((document) =>
+      document.id === "doc-1"
+        ? {
+          ...document,
+          content: '<p>It was dark.<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup></p>',
+          footnotes: [{ id: "fn-1", html: "A note." }]
+        }
+        : document
+    );
+    const folder = await makeRoot(createStoredProject(data, "device-a", NOW));
+
+    await writeScene(folder, "project-1", {
+      sceneId: "doc-1",
+      markdown: "It was dark.[^fn-1] And cold.[^fn-2]\n\n[^fn-1]: An edited note.\n[^fn-2]: A second note."
+    });
+
+    const reread = await readOpenProject(await loadFolder(folder), "project-1", NOW + 1_000);
+    expect(reread.entities.documents["doc-1"].updatedBy).toBe("mcp");
+    const document = reread.project.documents.find((entry) => entry.id === "doc-1");
+    expect(document?.footnotes).toEqual([
+      { id: "fn-1", html: "An edited note." },
+      { id: "fn-2", html: "A second note." }
+    ]);
+  });
+
   it("keeps place profiles and trash markers", async () => {
     const folder = await makeRoot(storedFixture());
 
