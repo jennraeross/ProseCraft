@@ -135,6 +135,7 @@ describe("writeScene snapshots", () => {
     expect(snapshots[0].content).toBe("It was dark.");
     expect(snapshots[0].reason).toBe("manual");
     expect(snapshots[0].note).toBe("Before MCP write");
+    expect(snapshots[0].contentFormat).toBe("markdown");
     expect(after.revision).toBe((before.revision as number) + 1);
   });
 

@@ -132,6 +132,7 @@
     dropOrphanSnapshots,
     normalizeSnapshots,
     removeSnapshot,
+    snapshotHtml,
     snapshotsForDocument
   } from "$lib/snapshots";
   import { patchTileDocument, type TileDocumentPatch } from "$lib/tile-editing";
@@ -5191,7 +5192,7 @@
       now: Date.now(),
       reason: "before-restore"
     }));
-    const restored = cleanHtml(snapshot.content);
+    const restored = cleanHtml(snapshotHtml(snapshot));
     documents = documents.map((doc) => {
       if (doc.id !== snapshot.documentId) return doc;
       const { markdownSource: _discarded, ...rest } = doc;
@@ -11508,7 +11509,7 @@
               <li class="snapshot-item">
                 <div class="snapshot-meta">
                   <strong>{snapshotLabel(snapshot)}</strong>
-                  <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                  <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshotHtml(snapshot)))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
                 </div>
                 <div class="snapshot-actions">
                   <button class="side-action" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
@@ -11516,7 +11517,7 @@
                   <button class="side-action danger" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
                 </div>
                 {#if snapshotPreviewId === snapshot.id}
-                  <div class="snapshot-preview">{@html cleanHtml(snapshot.content)}</div>
+                  <div class="snapshot-preview">{@html cleanHtml(snapshotHtml(snapshot))}</div>
                 {/if}
               </li>
             {/each}
@@ -12615,7 +12616,7 @@
             <li class="snapshot-item">
               <div class="snapshot-meta">
                 <strong>{snapshotLabel(snapshot)}</strong>
-                <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshotHtml(snapshot)))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
               </div>
               <div class="snapshot-actions">
                 <button class="data-button" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
@@ -12623,7 +12624,7 @@
                 <button class="data-button danger-button" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
               </div>
               {#if snapshotPreviewId === snapshot.id}
-                <div class="snapshot-preview">{@html cleanHtml(snapshot.content)}</div>
+                <div class="snapshot-preview">{@html cleanHtml(snapshotHtml(snapshot))}</div>
               {/if}
             </li>
           {/each}

@@ -35,6 +35,8 @@ export type DocumentSnapshot = {
   createdAt: number;
   title: string;
   content: string;
+  /** Markdown snapshots (written by the MCP server) say so; without it, content is HTML. */
+  contentFormat?: "markdown";
   note?: string;
   reason: "manual" | "before-restore";
 };
