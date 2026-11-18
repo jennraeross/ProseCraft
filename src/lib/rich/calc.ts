@@ -454,7 +454,8 @@ function valueBeforeParentheses(node: Node, scope: Scope, locals: Map<string, Qu
 function evaluate(node: Node, scope: Scope, locals: Map<string, Quantity>, depth: number): Quantity {
   switch (node.type) {
     case "number":
-      return { value: node.value, dims: DIMENSIONLESS };
+      // A literal too large for a double ("1e400") is Infinity.
+      return finite({ value: node.value, dims: DIMENSIONLESS });
     case "ident": {
       if (readsAsUnit(node, (name) => locals.has(name) || scope.variables.has(name))) {
         return unitNamed(node.name)!;
@@ -723,7 +724,7 @@ function formatResult(
     throw new CalcError(`The result is in ${plainUnit(result.dims)}, which can't be shown in ${unitText}.`);
   }
   if (unit.value === 0) throw new CalcError(`${unitText} can't be used as a display unit.`);
-  const value = result.value / unit.value;
+  const value = finite({ value: result.value / unit.value, dims: result.dims }).value;
   const unitLatex = toLatex(unitNode, classify);
   const glue = unitText === "°" ? "" : "\\,";
   return {
