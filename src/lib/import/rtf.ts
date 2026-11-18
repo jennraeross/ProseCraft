@@ -16,6 +16,18 @@ type RtfState = {
 
 const DEFAULT_CODEPAGE = "windows-1252";
 
+/**
+ * Code pages whose `windows-N` name is not a TextDecoder label: Japanese,
+ * Simplified and Traditional Chinese, Mac Roman and UTF-8.
+ */
+const CODEPAGE_LABELS: Record<string, string> = {
+  "932": "shift_jis",
+  "936": "gbk",
+  "950": "big5",
+  "10000": "macintosh",
+  "65001": "utf-8"
+};
+
 function stateCopy(state: RtfState): RtfState {
   return { ...state };
 }
@@ -132,6 +144,8 @@ export function rtfToHtml(rtf: string | Uint8Array): string {
   }
 
   function appendByte(byte: number): void {
+    // Pending \uN text came first; keep the order.
+    flushCodeUnits();
     byteBuffer.push(byte);
   }
 
@@ -160,7 +174,7 @@ export function rtfToHtml(rtf: string | Uint8Array): string {
 
   function setCodepage(next: string): void {
     flushText();
-    codepage = next === "65001" ? "utf-8" : `windows-${next}`;
+    codepage = Object.hasOwn(CODEPAGE_LABELS, next) ? CODEPAGE_LABELS[next] : `windows-${next}`;
     try {
       decoder = new TextDecoder(codepage);
     } catch {
@@ -227,6 +241,7 @@ export function rtfToHtml(rtf: string | Uint8Array): string {
         appendHtml("<br>");
         return;
       case "tab":
+        flushText();
         appendText("\t");
         return;
       default:
@@ -332,6 +347,7 @@ export function rtfToHtml(rtf: string | Uint8Array): string {
           case "{":
           case "}":
           case "\\":
+            flushText();
             appendText(next);
             break;
           default:
@@ -456,6 +472,7 @@ export function rtfToHtml(rtf: string | Uint8Array): string {
           case 0x7b:
           case 0x7d:
           case 0x5c:
+            flushText();
             appendText(String.fromCharCode(next));
             break;
           default:
