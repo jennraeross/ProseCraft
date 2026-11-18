@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScreenplayElement } from "./fountain";
-import { SCREENPLAY_PDF, buildScreenplayPdf, screenplayLines } from "./pdf";
+import { unzlibSync } from "fflate";
+import { SCREENPLAY_PDF, buildScreenplayPdf, screenplayLines, screenplayPageLabel } from "./pdf";
 
 const action = (text: string): ScreenplayElement => ({ type: "action", text });
 
@@ -32,6 +33,26 @@ describe("screenplay PDF", () => {
     expect(pageCount(onePage)).toBe(2);
     const twoPages = buildScreenplayPdf({ title: "The Last Lighthouse", author: "", elements: paragraphs(29) });
     expect(pageCount(twoPages)).toBe(3);
+  });
+
+  it("numbers script pages from 1, leaving out the title page and the first number", () => {
+    expect(screenplayPageLabel(1)).toBeNull();
+    expect(screenplayPageLabel(2)).toBe("2.");
+    const script = buildScreenplayPdf({ title: "The Last Lighthouse", author: "", elements: paragraphs(60) });
+    expect(pageCount(script)).toBe(4);
+    // Byte for byte (the "latin1" decoder is windows-1252, which changes some bytes).
+    const raw = Array.from(script, (byte) => String.fromCharCode(byte)).join("");
+    const drawn = [...raw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)]
+      .map((m) => {
+        try {
+          return Array.from(unzlibSync(Uint8Array.from(m[1], (c) => c.charCodeAt(0))), (b) => String.fromCharCode(b)).join("");
+        } catch {
+          return m[1];
+        }
+      })
+      .join("\n");
+    const labels = [...drawn.matchAll(/\((\d+)\.\) Tj/g)].map((m) => m[1]);
+    expect(labels).toEqual(["2", "3"]);
   });
 
   it("wraps long dialogue inside the dialogue column", () => {
