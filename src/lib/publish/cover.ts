@@ -85,6 +85,8 @@ type FittedText = {
   size: number;
   lines: string[];
   lineHeight: number;
+  /** The canvas font the lines were fitted in; drawing sets it again. */
+  font: string;
 };
 
 const generatedCoverCache = new Map<string, Promise<CompiledCover>>();
@@ -401,7 +403,7 @@ function fitText(
   maxLines: number,
   lineRatio: number
 ): FittedText {
-  if (!text.trim()) return { size: maxSize, lines: [], lineHeight: 0 };
+  if (!text.trim()) return { size: maxSize, lines: [], lineHeight: 0, font: context.font };
 
   for (let size = maxSize; size >= minSize; size -= 4) {
     setCanvasFont(context, size, family, weight, style);
@@ -416,7 +418,7 @@ function fitText(
       && lines.length <= maxLines
       && lines.length * lineHeight <= maxHeight
     ) {
-      return { size, lines, lineHeight };
+      return { size, lines, lineHeight, font: context.font };
     }
   }
 
@@ -424,7 +426,8 @@ function fitText(
   return {
     size: minSize,
     lines: wrapText(context, text, maxWidth).slice(0, maxLines),
-    lineHeight: minSize * lineRatio
+    lineHeight: minSize * lineRatio,
+    font: context.font
   };
 }
 
@@ -437,6 +440,8 @@ function drawFittedText(
   color: string
 ): number {
   if (fitted.lines.length === 0) return 0;
+  // Another text may have been fitted since (the subtitle is fitted before the title is drawn).
+  context.font = fitted.font;
   context.fillStyle = color;
   context.textAlign = align;
   const blockHeight = fitted.lines.length * fitted.lineHeight;
