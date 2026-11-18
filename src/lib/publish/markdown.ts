@@ -148,6 +148,10 @@ function markdownService(): TurndownService {
       return cites ? formatPandocCitations(cites) : "";
     }
   });
+  service.addRule("table", {
+    filter: "table",
+    replacement: (_content, node) => tableMarkdown(node as HTMLTableElement)
+  });
   service.addRule("underline", {
     filter: "u",
     replacement: (content) => `<u>${content}</u>`
@@ -157,6 +161,51 @@ function markdownService(): TurndownService {
     replacement: (content) => `~~${content}~~`
   });
   return service;
+}
+
+/** Elements that make a cell more than a line of text, which a pipe table can't hold. */
+const CELL_BLOCKS = "p, h1, h2, h3, ul, ol, li, blockquote, pre, hr, table, div, br";
+
+/**
+ * A table as Markdown. Turndown has no table rule, so without this every cell
+ * came out as a paragraph of its own and the table was lost on the way back
+ * (the Markdown editor, Markdown export, open-folder sync). A table with a
+ * header row of `th` cells, the same number of `td` cells in every other row,
+ * and only inline content (no blocks or line breaks) in its cells becomes a
+ * GFM pipe table, which marked reads back as the same table. Any other table
+ * is kept as HTML, which marked passes through and the sanitizer keeps.
+ */
+function tableMarkdown(table: HTMLTableElement): string {
+  const cells = Array.from(table.rows).map((row) => Array.from(row.cells));
+  const width = cells[0]?.length ?? 0;
+  const pipeTable =
+    width > 0
+    && cells[0].every((cell) => cell.nodeName === "TH")
+    && cells.slice(1).every((row) => row.length === width && row.every((cell) => cell.nodeName === "TD"))
+    && cells.flat().every((cell) =>
+      !cell.querySelector(CELL_BLOCKS)
+      // Turndown leaves code as it is, so a pipe in it can't be escaped for the table.
+      && Array.from(cell.querySelectorAll("code")).every((code) => !code.textContent?.includes("|")));
+  if (pipeTable) {
+    const lines = cells.map((row) => row.map((cell) => markdownService().turndown(cell.innerHTML).trim()));
+    if (lines.every((row) => row.every((text) => !text.includes("\n")))) {
+      const line = (row: string[]) => `| ${row.map((text) => text.replace(/\|/g, "\\|")).join(" | ")} |`;
+      const [header, ...body] = lines;
+      return `\n\n${[line(header), line(header.map(() => "---")), ...body.map(line)].join("\n")}\n\n`;
+    }
+  }
+  const kept = table.cloneNode(true) as HTMLElement;
+  // Placeholders are stored by their attributes alone; whatever is inside them (the marker
+  // Turndown was given to see, or a rendered equation from the editor) is left out.
+  for (const element of [
+    ...kept.querySelectorAll(`sup.${FOOTNOTE_REF_CLASS}, ${CITE_REF_SELECTOR}`),
+    ...richPlaceholders(kept)
+  ]) {
+    element.replaceChildren();
+  }
+  // A blank line would end marked's HTML block in the middle of the table.
+  const html = kept.outerHTML.replace(/\n(?=[ \t]*\n)/g, "&#10;");
+  return `\n\n${html}\n\n`;
 }
 
 function configureMarked(): void {
