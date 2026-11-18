@@ -185,11 +185,20 @@ function renderTitlePage(doc: jsPDF, script: ScreenplayScript) {
   }
 }
 
-function renderPage(doc: jsPDF, lines: ScriptLine[], pageNumber: number) {
+/**
+ * The number printed at the top right of a script page. The title page isn't
+ * counted, and the first page carries no number, as in standard format.
+ */
+export function screenplayPageLabel(scriptPage: number): string | null {
+  return scriptPage > 1 ? `${scriptPage}.` : null;
+}
+
+function renderPage(doc: jsPDF, lines: ScriptLine[], scriptPage: number) {
   doc.setFont("courier", "normal");
   doc.setFontSize(SCREENPLAY_PDF.fontSize);
   const pageNumberY = SCREENPLAY_PDF.topMargin - LINE_HEIGHT;
-  doc.text(`${pageNumber}.`, TEXT_RIGHT, pageNumberY, { align: "right" });
+  const label = screenplayPageLabel(scriptPage);
+  if (label) doc.text(label, TEXT_RIGHT, pageNumberY, { align: "right" });
   lines.forEach((line, index) => {
     if (line.text === "") return;
     doc.setFont("courier", line.bold ? "bold" : "normal");
@@ -213,9 +222,9 @@ export function buildScreenplayPdf(script: ScreenplayScript): Uint8Array<ArrayBu
   });
 
   renderTitlePage(doc, script);
-  for (const lines of paginateScreenplay(screenplayLines(script.elements))) {
+  paginateScreenplay(screenplayLines(script.elements)).forEach((lines, index) => {
     doc.addPage();
-    renderPage(doc, lines, doc.getNumberOfPages());
-  }
+    renderPage(doc, lines, index + 1);
+  });
   return new Uint8Array(doc.output("arraybuffer"));
 }
