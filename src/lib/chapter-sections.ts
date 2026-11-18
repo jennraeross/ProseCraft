@@ -28,15 +28,27 @@ export function sceneBreakGlyph(separator: SceneSeparator): string {
   }
 }
 
-/** A divider block. Atomic in the editor (never typed into, clicked through). */
-export function sceneBreakHtml(separator: SceneSeparator): string {
+/** Scene ids a divider may carry (`data-scene-id`). */
+const SCENE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isValidSceneId(id: string): boolean {
+  return SCENE_ID_PATTERN.test(id);
+}
+
+/**
+ * A divider block. Atomic in the editor (never typed into, clicked through).
+ * With `sceneId`, it names the scene that starts after it, so a chapter save
+ * can tell which scene each section belongs to.
+ */
+export function sceneBreakHtml(separator: SceneSeparator, sceneId?: string): string {
   const extra = separator === "line"
     ? " scene-break-line"
     : separator === "blank" || separator === "none"
       ? " scene-break-blank"
       : "";
   const inner = separator === "line" ? "" : escapeGlyph(sceneBreakGlyph(separator));
-  return `<div class="${SCENE_BREAK_CLASS}${extra}" contenteditable="false">${inner}</div>`;
+  const id = sceneId && isValidSceneId(sceneId) ? ` data-scene-id="${sceneId}"` : "";
+  return `<div class="${SCENE_BREAK_CLASS}${extra}"${id} contenteditable="false">${inner}</div>`;
 }
 
 export function isSceneBreakElement(node: Node | null | undefined): node is HTMLElement {
@@ -49,10 +61,55 @@ function ensureSectionHtml(html: string): string {
   return html.trim() ? html : "<p><br></p>";
 }
 
-/** Joins per-scene HTML into one chapter document with dividers between. */
-export function buildChapterHtml(sections: string[], separator: SceneSeparator): string {
+/**
+ * Joins per-scene HTML into one chapter document with dividers between. With
+ * `sceneIds` (one per section), each divider names the scene after it.
+ */
+export function buildChapterHtml(
+  sections: string[],
+  separator: SceneSeparator,
+  sceneIds?: readonly string[]
+): string {
   if (sections.length === 0) return "<p><br></p>";
-  return sections.map(ensureSectionHtml).join(sceneBreakHtml(separator));
+  return sections
+    .map((section, index) => (index > 0 ? sceneBreakHtml(separator, sceneIds?.[index]) : "")
+      + ensureSectionHtml(section))
+    .join("");
+}
+
+/**
+ * The scene each section of chapter HTML belongs to, from its top-level
+ * dividers: "" for the first section and for a divider without an id.
+ */
+export function chapterSceneIds(html: string): string[] {
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  const ids = [""];
+  for (const child of Array.from(parsed.body.childNodes)) {
+    if (isSceneBreakElement(child)) ids.push(child.getAttribute("data-scene-id") ?? "");
+  }
+  return ids;
+}
+
+/**
+ * Which scene each section goes to, by the ids its dividers carry: the first
+ * section stays with the first live scene, and each later one goes to the scene
+ * its divider names, live or trashed (a merge undone). So deleting a divider
+ * joins the scene after it to the one before, and the other scenes keep their
+ * text. `null` when the ids can't say (a divider without one, from a paste or
+ * an older undo step, an unknown or repeated id): then sections go by position.
+ */
+export function chapterSectionTargets(
+  liveIds: readonly string[],
+  trashedIds: readonly string[],
+  sceneIds: readonly string[] | undefined,
+  sectionCount: number
+): string[] | null {
+  if (!sceneIds || sceneIds.length !== sectionCount || liveIds.length === 0) return null;
+  const known = new Set([...liveIds, ...trashedIds]);
+  const targets = [liveIds[0], ...sceneIds.slice(1)];
+  if (targets.slice(1).some((id) => !id || !known.has(id))) return null;
+  if (new Set(targets).size !== targets.length) return null;
+  return targets;
 }
 
 function sectionHtml(nodes: Node[], doc: Document): string {

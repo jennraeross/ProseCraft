@@ -83,7 +83,7 @@
     ? paneChapter.title || "Untitled chapter"
     : (document?.title || "Untitled"));
   const paneHtml = $derived(inPaneChapter
-    ? sanitizeHtml(buildChapterHtml(chapterDocs.map((doc) => doc.content), sceneSeparator))
+    ? sanitizeHtml(buildChapterHtml(chapterDocs.map((doc) => doc.content), sceneSeparator, chapterDocs.map((doc) => doc.id)))
     : (document ? sanitizeHtml(document.content) : ""));
   const paneKey = $derived(inPaneChapter && paneChapter ? `chapter:${paneChapter.id}` : `doc:${document?.id ?? "none"}`);
   const scrollSection = $derived(inPaneChapter

@@ -216,6 +216,8 @@
   } from "$lib/footnotes";
   import {
     buildChapterHtml,
+    chapterSceneIds,
+    chapterSectionTargets,
     isSceneBreakElement,
     joinChapterMarkdown,
     sceneBreakHtml,
@@ -3616,7 +3618,8 @@
       applyMarkdownSourceToDocs();
       setEditorContent(buildChapterHtml(
         scenesInChapter(activeChapter.id).map((doc) => doc.content),
-        publishOptions.sceneSeparator
+        publishOptions.sceneSeparator,
+        scenesInChapter(activeChapter.id).map((doc) => doc.id)
       ));
     } else {
       const html = applySingleDocumentMarkdown(markdownSource);
@@ -3640,7 +3643,11 @@
     let html = "";
     if (inChapterMode && activeChapter) {
       applyMarkdownSourceToDocs();
-      html = buildChapterHtml(scenesInChapter(activeChapter.id).map((doc) => doc.content), publishOptions.sceneSeparator);
+      html = buildChapterHtml(
+        scenesInChapter(activeChapter.id).map((doc) => doc.content),
+        publishOptions.sceneSeparator,
+        scenesInChapter(activeChapter.id).map((doc) => doc.id)
+      );
     } else {
       html = applySingleDocumentMarkdown(markdownSource);
     }
@@ -4662,7 +4669,8 @@
       if (markdownEditorMode) {
         applyMarkdownSourceToDocs();
       } else {
-        writeChapterSections(splitChapterHtml(cleanHtml(editor.innerHTML)));
+        const cleaned = cleanHtml(editor.innerHTML);
+        writeChapterSections(splitChapterHtml(cleaned), undefined, undefined, chapterSceneIds(cleaned));
       }
       chapters = chapters.map((chapter) => chapter.id === activeChapter.id ? { ...chapter, title } : chapter);
       persistChapters();
@@ -5203,7 +5211,8 @@
       activeDocumentId = snapshot.documentId;
       setEditorContent(buildChapterHtml(
         scenesInChapter(activeChapter.id).map((doc) => doc.content),
-        publishOptions.sceneSeparator
+        publishOptions.sceneSeparator,
+        scenesInChapter(activeChapter.id).map((doc) => doc.id)
       ));
       setMarkdownSource(chapterMarkdownSource());
       scrollToScene(snapshot.documentId);
@@ -5805,37 +5814,60 @@
   }
 
   /**
-   * Writes chapter sections back to scene documents in order. Surplus
-   * sections fold into the last scene; scenes left without a section are
-   * emptied and moved to Trash; trashed scenes regaining a section are
+   * Writes chapter sections back to scene documents. With the scene ids the
+   * dividers carry, each section goes to its own scene; otherwise in order.
+   * Surplus sections fold into the last scene; scenes left without a section
+   * are emptied and moved to Trash; trashed scenes regaining a section are
    * restored (undo of a merge).
    */
   function writeChapterSections(
     sections: string[],
     markdownSections?: string[],
-    footnoteSections?: FootnoteDef[][]
+    footnoteSections?: FootnoteDef[][],
+    sceneIds?: string[]
   ) {
     const chapterId = activeChapter?.id;
     if (!chapterId) return;
-    writeChapterSectionsFor(chapterId, sections, markdownSections, footnoteSections);
+    writeChapterSectionsFor(chapterId, sections, markdownSections, footnoteSections, sceneIds);
   }
 
   function writeChapterSectionsFor(
     chapterId: string,
     sections: string[],
     markdownSections?: string[],
-    footnoteSections?: FootnoteDef[][]
+    footnoteSections?: FootnoteDef[][],
+    sceneIds?: string[]
   ) {
     const live = documents.filter((doc) => doc.chapterId === chapterId && !doc.trashed);
     if (live.length === 0) return;
     const trashed = documents.filter((doc) => doc.chapterId === chapterId && doc.trashed);
+    const byIds = chapterSectionTargets(
+      live.map((doc) => doc.id),
+      trashed.map((doc) => doc.id),
+      sceneIds,
+      sections.length
+    );
     const revived: DocumentData[] = [];
-    for (let index = live.length; index < sections.length; index++) {
-      const donor = trashed.find((doc) => !revived.some((entry) => entry.id === doc.id));
-      if (!donor) break;
-      revived.push(donor);
+    if (byIds) {
+      for (const id of byIds) {
+        const donor = trashed.find((doc) => doc.id === id);
+        if (donor) revived.push(donor);
+      }
+    } else {
+      for (let index = live.length; index < sections.length; index++) {
+        const donor = trashed.find((doc) => !revived.some((entry) => entry.id === doc.id));
+        if (!donor) break;
+        revived.push(donor);
+      }
     }
-    const targets = [...live, ...revived];
+    // By ids, the scenes no section names come last: like surplus scenes, they
+    // are trashed below and their footnotes follow their markers.
+    const targets = byIds
+      ? [
+        ...byIds.map((id) => [...live, ...revived].find((doc) => doc.id === id) as DocumentData),
+        ...live.filter((doc) => !byIds.includes(doc.id))
+      ]
+      : [...live, ...revived];
     const merged = [...sections];
     const mergedMarkdown = markdownSections ? [...markdownSections] : undefined;
     const mergedFootnotes = footnoteSections ? footnoteSections.map((list) => [...list]) : undefined;
@@ -5926,6 +5958,19 @@
       }
       return doc;
     });
+    if (byIds) {
+      // A scene cut and pasted elsewhere in the chapter keeps its new place:
+      // the chapter's scenes take the dividers' order, in the slots they held.
+      const slots = documents.flatMap((doc, index) => (byIds.includes(doc.id) ? [index] : []));
+      const ordered = byIds.map((id) => documents.find((doc) => doc.id === id) as DocumentData);
+      if (slots.some((slot, index) => documents[slot].id !== ordered[index].id)) {
+        const next = [...documents];
+        slots.forEach((slot, index) => {
+          next[slot] = ordered[index];
+        });
+        documents = next;
+      }
+    }
   }
 
   function scrollToScene(docId: string) {
@@ -6278,7 +6323,7 @@
     documents = [...documents.slice(0, at), next, ...documents.slice(at)];
     activeDocumentId = next.id;
     const dividerTemplate = document.createElement("div");
-    dividerTemplate.innerHTML = sceneBreakHtml(publishOptions.sceneSeparator);
+    dividerTemplate.innerHTML = sceneBreakHtml(publishOptions.sceneSeparator, next.id);
     const divider = dividerTemplate.firstElementChild as HTMLElement;
     (block as HTMLElement).replaceWith(divider);
     let target = significantSibling(divider, "next");
@@ -6378,7 +6423,8 @@
     clearRichTextFade();
     setEditorContent(buildChapterHtml(
       scenesInChapter(chapter.id).map((doc) => doc.content),
-      publishOptions.sceneSeparator
+      publishOptions.sceneSeparator,
+      scenesInChapter(chapter.id).map((doc) => doc.id)
     ));
     setMarkdownSource(chapterMarkdownSource());
     refreshCounts();
@@ -6493,7 +6539,8 @@
       if (inChapterMode && activeChapter) {
         setEditorContent(buildChapterHtml(
           scenesInChapter(activeChapter.id).map((doc) => doc.content),
-          publishOptions.sceneSeparator
+          publishOptions.sceneSeparator,
+          scenesInChapter(activeChapter.id).map((doc) => doc.id)
         ));
         setMarkdownSource(chapterMarkdownSource());
       } else {
@@ -7677,7 +7724,8 @@
     const doc = documents.find((entry) => entry.id === id);
     if (patch.content !== undefined && doc?.chapterId
       && chapters.some((chapter) => chapter.id === doc.chapterId)) {
-      writeChapterSectionsFor(doc.chapterId, splitChapterHtml(cleanHtml(patch.content)));
+      const cleaned = cleanHtml(patch.content);
+      writeChapterSectionsFor(doc.chapterId, splitChapterHtml(cleaned), undefined, undefined, chapterSceneIds(cleaned));
       persist();
       return;
     }
@@ -8024,7 +8072,8 @@
     }
     setEditorContent(buildChapterHtml(
       scenesInChapter(activeChapter.id).map((doc) => doc.content),
-      publishOptions.sceneSeparator
+      publishOptions.sceneSeparator,
+      scenesInChapter(activeChapter.id).map((doc) => doc.id)
     ));
     refreshCounts();
     if (scrollToId) scrollToScene(scrollToId);
@@ -8053,8 +8102,13 @@
       node.remove();
       node = next;
     }
+    // The section's divider goes too (the one before it, or after the first),
+    // so the scenes after it keep their own sections.
+    const divider = index > 0 ? breaks[index - 1] : end;
+    const after: Node | null = divider === end ? end?.nextSibling ?? null : end;
+    divider?.remove();
     if (caretInside && selection) {
-      let host: Node | null = end;
+      let host: Node | null = after;
       while (host && ((host.nodeType === Node.TEXT_NODE && !(host.textContent ?? "").trim())
         || isSceneBreakElement(host))) {
         host = host.nextSibling;
