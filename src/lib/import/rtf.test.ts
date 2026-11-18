@@ -66,6 +66,12 @@ describe("rtfToHtml", () => {
     expect(rtfToHtml("{\\rtf1\\ansi\\ansicpg1252 \\'e9\\{\\par}")).toBe("<p>\u00e9{</p>");
   });
 
+  it("keeps tabs and escaped braces in place in bytes, as scrivener passes them", () => {
+    const bytes = (text: string) => new TextEncoder().encode(text);
+    expect(rtfToHtml(bytes("{\\rtf1\\ansi Name:\\tab Mara\\par}"))).toBe("<p>Name:\tMara</p>");
+    expect(rtfToHtml(bytes("{\\rtf1\\ansi a \\{b\\} c\\\\\\par}"))).toBe("<p>a {b} c\\</p>");
+  });
+
   it("decodes \\uNNNN escapes, including negative UTF-16 values", () => {
     expect(rtfToHtml("{\\rtf1\\ansi \\u228?\\par}")).toBe("<p>\u00e4</p>");
     expect(rtfToHtml("{\\rtf1\\ansi \\uc0\\u228?\\par}")).toBe("<p>\u00e4?</p>");
