@@ -211,6 +211,7 @@
     removeFootnote,
     renumberFootnoteMarkers,
     updateFootnote,
+    withFootnotes,
     type UndoFootnoteScopeEntry
   } from "$lib/footnotes";
   import {
@@ -5258,9 +5259,7 @@
     const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
     documents = documents.map((doc) => {
       if (!scopeIds.has(doc.id)) return doc;
-      const nextNotes = map.get(doc.id);
-      const { footnotes: _old, ...rest } = doc;
-      return nextNotes && nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+      return withFootnotes(doc, map.get(doc.id));
     });
   }
 
@@ -5270,10 +5269,7 @@
     const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
     documents = documents.map((doc) => {
       if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
-      const nextNotes = doc.footnotes.filter((fn) => !drop.has(fn.id));
-      if (nextNotes.length === doc.footnotes.length) return doc;
-      const { footnotes: _old, ...rest } = doc;
-      return nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+      return withFootnotes(doc, doc.footnotes.filter((fn) => !drop.has(fn.id)));
     });
   }
 
@@ -5286,12 +5282,28 @@
     return editor ? encodeSelection(editor) : null;
   }
 
+  /**
+   * The rich editor's content is now newer than any Markdown source of the
+   * scene (or the chapter's scenes), so the source is dropped; otherwise the
+   * open sync folder or the Markdown editor would bring the old text back.
+   */
+  function dropEditedMarkdownSource() {
+    const chapterId = inChapterMode ? activeChapter?.id : undefined;
+    documents = documents.map((doc) => {
+      if (doc.markdownSource === undefined) return doc;
+      if (chapterId ? doc.chapterId !== chapterId : doc.id !== activeDocumentId) return doc;
+      const { markdownSource: _markdownSource, ...withoutMarkdownSource } = doc;
+      return withoutMarkdownSource;
+    });
+  }
+
   function finishProgrammaticBodyEdit(before: CaretSelection, caretMoved = true) {
     if (!editor) return;
     renumberFootnoteMarkers(editor);
     const cleaned = cleanHtml(editor.innerHTML);
     liveEditorHtml = cleaned;
     knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
+    dropEditedMarkdownSource();
     pendingEdit = {
       kind: "other",
       caretMoved,
@@ -5434,7 +5446,7 @@
       const nextNotes = hasEntry
         ? updateFootnote(existing, id, clean)
         : [...existing, { id, html: clean }];
-      return { ...doc, footnotes: nextNotes };
+      return withFootnotes(doc, nextNotes);
     });
     if (footnotePopover && footnotePopover.id === id) {
       footnotePopover.dirty = true;
@@ -5469,7 +5481,7 @@
 
     const added = addFootnote(targetDoc.footnotes, "");
     documents = documents.map((doc) => doc.id === targetDoc.id
-      ? { ...doc, footnotes: added.footnotes }
+      ? withFootnotes(doc, added.footnotes)
       : doc);
 
     const template = document.createElement("div");
@@ -5525,9 +5537,7 @@
     const scopeIds = new Set(scope.docs.map((doc) => doc.id));
     documents = documents.map((doc) => {
       if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
-      const pruned = pruneOrphanFootnotes(scope.html, doc.footnotes);
-      const { footnotes: _old, ...rest } = doc;
-      return pruned.length > 0 ? { ...rest, footnotes: pruned } : rest;
+      return withFootnotes(doc, pruneOrphanFootnotes(scope.html, doc.footnotes));
     });
     finishProgrammaticBodyEdit(before, true);
   }
@@ -8715,13 +8725,7 @@
       recordFieldEdit(editor, encodeCurrentBodyUndo(cleaned), encodeSelection(editor));
     }
     const previousWordCount = lastEditorWordCount;
-    const chapterId = inChapterMode ? activeChapter?.id : undefined;
-    documents = documents.map((doc) => {
-      if (doc.markdownSource === undefined) return doc;
-      if (chapterId ? doc.chapterId !== chapterId : doc.id !== activeDocumentId) return doc;
-      const { markdownSource: _markdownSource, ...withoutMarkdownSource } = doc;
-      return withoutMarkdownSource;
-    });
+    dropEditedMarkdownSource();
     refreshCounts();
     trackActivity(wordCount - previousWordCount);
     lastEditorWordCount = wordCount;
