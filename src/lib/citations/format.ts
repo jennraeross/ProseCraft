@@ -647,8 +647,10 @@ export function computeDisambiguation(
   locale: CitationLocale = "en"
 ): Record<string, string> {
   const template = getStyleTemplate(style);
+  // No prototype, so an item id such as "constructor" finds nothing inherited.
+  const suffixes: Record<string, string> = Object.create(null);
   if (!template.inText.disambiguateYear) {
-    return {};
+    return suffixes;
   }
   const terms = LOCALE_TERMS[locale];
   const sorted = sortBibliographyItems(items, template, terms, locale);
@@ -670,7 +672,6 @@ export function computeDisambiguation(
     }
   }
 
-  const suffixes: Record<string, string> = {};
   for (const bucket of groups.values()) {
     if (bucket.length <= 1) continue;
     bucket.forEach((item, idx) => {

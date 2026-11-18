@@ -106,6 +106,11 @@ describe("Zotero mapping helpers", () => {
     expect(() => mapZoteroCslJson("{not json")).toThrowError(ZoteroError);
   });
 
+  it("maps an item type named like an Object member to document", () => {
+    const items = mapZoteroCslJson(JSON.stringify([{ itemType: "constructor", title: "Z", key: "ABCD1234" }]));
+    expect(items.map((item) => item.type)).toEqual(["document"]);
+  });
+
   it("keeps the Zotero key as id when copying into project citations if unique", () => {
     const [first, second] = mapZoteroCslJson(ZOTERO_CSLJSON_FIXTURE);
     const added = mergeImportedCitations([], [first]);

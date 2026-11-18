@@ -434,7 +434,8 @@ function buildNumericIndices(
   markers: readonly HTMLElement[],
   lookup: { byId: Map<string, CslItem>; byCiteKey: Map<string, CslItem> }
 ): Record<string, number> {
-  const indices: Record<string, number> = {};
+  // No prototype, so an item id such as "constructor" finds nothing inherited.
+  const indices: Record<string, number> = Object.create(null);
   let nextIndex = 1;
   for (const element of markers) {
     const cites = parseCiteData(element.getAttribute("data-cites"));

@@ -459,6 +459,6 @@ export function parseMonthNumber(raw: string): number | undefined {
     const num = Number.parseInt(cleaned, 10);
     return num >= 1 && num <= 12 ? num : undefined;
   }
-  return MONTH_NAMES[cleaned];
+  return Object.hasOwn(MONTH_NAMES, cleaned) ? MONTH_NAMES[cleaned] : undefined;
 }
 

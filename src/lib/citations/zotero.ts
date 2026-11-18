@@ -195,7 +195,7 @@ function resolveZoteroCslType(raw: Record<string, unknown>): string | undefined 
   }
   if (typeof raw.itemType === "string" && raw.itemType.trim()) {
     const normalized = raw.itemType.trim().toLowerCase();
-    return ZOTERO_TYPE_MAP[normalized] ?? "document";
+    return Object.hasOwn(ZOTERO_TYPE_MAP, normalized) ? ZOTERO_TYPE_MAP[normalized] : "document";
   }
   return undefined;
 }

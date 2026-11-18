@@ -188,6 +188,31 @@ describe("renderCitationLabels and comment anchor stability", () => {
   });
 });
 
+describe("renderCitationLabels with ids named like Object members", () => {
+  it("labels a source whose id is constructor like any other", () => {
+    const named = (id: string, family: string): CslItem => ({
+      id,
+      type: "book",
+      author: [{ family, given: "A" }],
+      title: family,
+      issued: { "date-parts": [[2020]] }
+    });
+    const library = [
+      named("constructor", "Doe"), named("__proto__", "Roe"), named("toString", "Moe"), named("other", "Poe")
+    ];
+    const root = document.createElement("div");
+    root.innerHTML = `<p>${citeMarkerHtml([{ id: "other" }])} ${citeMarkerHtml([{ id: "constructor" }])}`
+      + ` ${citeMarkerHtml([{ id: "__proto__" }])} ${citeMarkerHtml([{ id: "toString" }])}</p>`;
+    const labels = () => Array.from(root.querySelectorAll("span.cite-ref"))
+      .map((el) => el.getAttribute("data-label"));
+
+    renderCitationLabels(root, library, "apa7", "en");
+    expect(labels()).toEqual(["(Poe, 2020)", "(Doe, 2020)", "(Roe, 2020)", "(Moe, 2020)"]);
+    renderCitationLabels(root, library, "ieee", "en");
+    expect(labels()).toEqual(["[1]", "[2]", "[3]", "[4]"]);
+  });
+});
+
 describe("Pandoc syntax helpers", () => {
   it("formats and parses single, suppress-author, multi-item, and locator/affix clusters", () => {
     const cases: Array<{ items: Parameters<typeof formatPandocCitations>[0]; expected: string }> = [
