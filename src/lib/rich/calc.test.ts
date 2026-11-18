@@ -79,6 +79,16 @@ describe("calculation worksheets", () => {
     expect(line.kind === "error" && line.message).toMatch(/can't be shown in m/);
   });
 
+  it("reports a number too large to hold instead of showing Infinity", () => {
+    const result = lines("x := 1e400\n1e400 =\ny := 2");
+    expect(result[0].kind === "error" && result[0].message).toMatch(/undefined or infinite/);
+    expect(result[1].kind === "error" && result[1].message).toMatch(/undefined or infinite/);
+    expect(result[2].kind).toBe("math");
+    expect(worksheetToPlainText("x := 1e400\nx =")).not.toContain("Infinity");
+    const shown = lines("1e308 kg = gm\n1e300 m = 1e-300 m");
+    expect(shown.every((line) => line.kind === "error" && /undefined or infinite/.test(line.message))).toBe(true);
+  });
+
   it("stops runaway recursion", () => {
     const result = lines("f(x) := f(x) + 1\nf(1) =");
     expect(result[1].kind === "error" && result[1].message).toMatch(/too deep/);
