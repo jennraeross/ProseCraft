@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { sanitizeHtml } from "./sanitize";
 import {
   buildChapterHtml,
+  chapterSceneIds,
+  chapterSectionTargets,
   joinChapterMarkdown,
   sceneBreakHtml,
   sectionIsBlank,
@@ -66,5 +69,37 @@ describe("splitChapterMarkdown / joinChapterMarkdown", () => {
 
   it("tolerates whitespace around markers", () => {
     expect(splitChapterMarkdown("a\n  <!-- scene-break -->  \nb")).toEqual(["a", "b"]);
+  });
+});
+
+describe("scene ids on dividers", () => {
+  it("names the scene after each divider and reads the ids back", () => {
+    const html = buildChapterHtml(["<p>A</p>", "<p>B</p>", "<p>C</p>"], "hash", ["a", "b", "c"]);
+    expect(html).toBe(
+      '<p>A</p><div class="scene-break" data-scene-id="b" contenteditable="false">#</div><p>B</p>'
+      + '<div class="scene-break" data-scene-id="c" contenteditable="false">#</div><p>C</p>'
+    );
+    expect(chapterSceneIds(html)).toEqual(["", "b", "c"]);
+    expect(splitChapterHtml(html)).toEqual(["<p>A</p>", "<p>B</p>", "<p>C</p>"]);
+    expect(chapterSceneIds(sanitizeHtml(html))).toEqual(["", "b", "c"]);
+    expect(sceneBreakHtml("hash", 'x" onclick="y')).not.toContain("data-scene-id");
+  });
+
+  it("sends each section to its own scene when the ids say so", () => {
+    // The divider before B deleted: A takes A+B, C keeps C, B is left out.
+    expect(chapterSectionTargets(["a", "b", "c"], [], ["", "c"], 2)).toEqual(["a", "c"]);
+    // Undoing it brings B back from the trash in its place.
+    expect(chapterSectionTargets(["a", "c"], ["b"], ["", "b", "c"], 3)).toEqual(["a", "b", "c"]);
+    // A new scene from Enter on an empty paragraph.
+    expect(chapterSectionTargets(["a", "n", "b"], [], ["", "n", "b"], 3)).toEqual(["a", "n", "b"]);
+  });
+
+  it("falls back to positions when the ids can't say", () => {
+    expect(chapterSectionTargets(["a", "b"], [], undefined, 2)).toBeNull();
+    expect(chapterSectionTargets(["a", "b"], [], ["", ""], 2)).toBeNull();
+    expect(chapterSectionTargets(["a", "b"], [], ["", "zz"], 2)).toBeNull();
+    expect(chapterSectionTargets(["a", "b"], [], ["", "b", "b"], 3)).toBeNull();
+    expect(chapterSectionTargets(["a", "b"], [], ["", "a"], 2)).toBeNull();
+    expect(chapterSectionTargets(["a", "b"], [], ["", "b"], 3)).toBeNull();
   });
 });

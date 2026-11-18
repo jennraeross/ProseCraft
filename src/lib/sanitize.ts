@@ -1,3 +1,4 @@
+import { isValidSceneId } from "./chapter-sections";
 import { normalizeCiteDataAttr } from "./citations/cite-marker";
 import { applyImageLayout, readImageLayout } from "./image-layout";
 import { normalizedRichPlaceholder, richKindOf } from "./rich/model";
@@ -78,6 +79,8 @@ function cleanNode(node: Node, inlineOnly = false): Node | null {
       .concat(node.classList.contains("scene-break-line") ? ["scene-break-line"] : [])
       .concat(node.classList.contains("scene-break-blank") ? ["scene-break-blank"] : [])
       .join(" ");
+    const sceneId = node.getAttribute("data-scene-id");
+    if (sceneId && isValidSceneId(sceneId)) clean.setAttribute("data-scene-id", sceneId);
     clean.setAttribute("contenteditable", "false");
     for (const child of Array.from(node.childNodes)) {
       const cleanChild = cleanNode(child, inlineOnly);
