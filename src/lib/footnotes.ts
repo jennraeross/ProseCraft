@@ -177,6 +177,25 @@ export function updateFootnote(
   return (footnotes ?? []).map((fn) => (fn.id === id ? { ...fn, html: clean } : fn));
 }
 
+/**
+ * Immutably gives a document a new footnote list (none when empty). A stored
+ * `markdownSource` holds the footnote definitions too, and the open sync folder
+ * writes and reads that source, so it is dropped when the list changes;
+ * otherwise the next sync would bring the old definitions back.
+ */
+export function withFootnotes<T extends { footnotes?: FootnoteDef[]; markdownSource?: string }>(
+  doc: T,
+  footnotes: readonly FootnoteDef[] | undefined
+): T {
+  const next = footnotes ?? [];
+  const current = doc.footnotes ?? [];
+  const same = next.length === current.length
+    && next.every((fn, index) => fn.id === current[index].id && fn.html === current[index].html);
+  if (same) return doc;
+  const { footnotes: _old, markdownSource: _source, ...rest } = doc;
+  return (next.length > 0 ? { ...rest, footnotes: [...next] } : rest) as T;
+}
+
 /** Immutably removes a footnote definition by id. */
 export function removeFootnote(
   footnotes: readonly FootnoteDef[] | undefined,
