@@ -411,7 +411,9 @@ fn research_read_markdown(
     if destination
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_none_or(|extension| !extension.eq_ignore_ascii_case("md"))
+        .is_none_or(|extension| {
+            !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown")
+        })
     {
         return Err("Only Markdown research files can be previewed.".to_string());
     }
@@ -1301,6 +1303,18 @@ mod tests {
                 "research/docs/notes.txt".into()
             )
             .is_err()
+        );
+        // The editor previews `.markdown` files too (`openResearchFile`).
+        let long_extension = folder.join("draft.markdown");
+        std::fs::write(&long_extension, "# Draft\n").unwrap();
+        assert_eq!(
+            research_read_markdown(
+                root.to_string_lossy().to_string(),
+                "project".into(),
+                "research/docs/draft.markdown".into()
+            )
+            .unwrap(),
+            "# Draft\n"
         );
 
         std::fs::remove_dir_all(root).unwrap();
