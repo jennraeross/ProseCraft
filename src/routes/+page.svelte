@@ -3571,8 +3571,37 @@
     await tick();
   }
 
+  /**
+   * A screenplay scene can't go through markdown: its elements (`data-sp`)
+   * would come back as plain paragraphs. So a chapter holding one has no
+   * markdown editor.
+   */
+  function chapterHasScreenplayScene(chapterId: string | undefined): boolean {
+    return Boolean(chapterId)
+      && scenesInChapter(chapterId as string).some((doc) => doc.format === "screenplay");
+  }
+
+  /**
+   * Brings the markdown editor up to date with the chapter's scenes. If the
+   * chapter now holds a screenplay scene (restored or moved in), the editor
+   * goes back to rich text instead, without writing the markdown back.
+   */
+  function syncChapterMarkdownSource() {
+    if (markdownEditorMode && activeChapter && chapterHasScreenplayScene(activeChapter.id)) {
+      markdownEditorMode = false;
+      setEditorContent(buildChapterHtml(
+        scenesInChapter(activeChapter.id).map((doc) => doc.content),
+        publishOptions.sceneSeparator
+      ));
+      refreshCounts();
+      return;
+    }
+    setMarkdownSource(chapterMarkdownSource());
+  }
+
   function switchToMarkdownEditor() {
     if (!markdownEditorEnabled || markdownEditorMode) return;
+    if (inChapterMode && chapterHasScreenplayScene(activeChapter?.id)) return;
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const active = documents.find((doc) => doc.id === activeDocumentId);
@@ -3599,6 +3628,8 @@
 
   /** Writes the chapter markdown source back to scene documents. */
   function applyMarkdownSourceToDocs() {
+    // Never through markdown: a screenplay scene's elements would be lost.
+    if (chapterHasScreenplayScene(activeChapter?.id)) return;
     const mdSections = splitChapterMarkdown(markdownSource);
     const parsedSections = mdSections.map((section) => markdownToDocument(section));
     writeChapterSections(
@@ -5204,7 +5235,7 @@
         scenesInChapter(activeChapter.id).map((doc) => doc.content),
         publishOptions.sceneSeparator
       ));
-      setMarkdownSource(chapterMarkdownSource());
+      syncChapterMarkdownSource();
       scrollToScene(snapshot.documentId);
     } else {
       setEditorContent(restored);
@@ -6365,12 +6396,14 @@
     if (!chapter) return false;
     activeDocumentId = anchorId;
     title = chapter.title;
+    // Leave the markdown editor without writing anything back (see chapterHasScreenplayScene).
+    if (markdownEditorMode && chapterHasScreenplayScene(chapter.id)) markdownEditorMode = false;
     clearRichTextFade();
     setEditorContent(buildChapterHtml(
       scenesInChapter(chapter.id).map((doc) => doc.content),
       publishOptions.sceneSeparator
     ));
-    setMarkdownSource(chapterMarkdownSource());
+    syncChapterMarkdownSource();
     refreshCounts();
     lastEditorWordCount = wordCount;
     scrollToScene(anchorId);
@@ -6485,7 +6518,7 @@
           scenesInChapter(activeChapter.id).map((doc) => doc.content),
           publishOptions.sceneSeparator
         ));
-        setMarkdownSource(chapterMarkdownSource());
+        syncChapterMarkdownSource();
       } else {
         const current = nextDocuments.find((doc) => doc.id === activeDocumentId);
         if (!current) {
@@ -8009,7 +8042,7 @@
   function refreshChapterView(scrollToId?: string | null) {
     if (!inChapterMode || !activeChapter) return;
     if (markdownEditorMode) {
-      setMarkdownSource(chapterMarkdownSource());
+      syncChapterMarkdownSource();
       return;
     }
     setEditorContent(buildChapterHtml(
@@ -8434,7 +8467,7 @@
         refreshCounts();
       }
     } else if (inActiveChapter && markdownEditorMode) {
-      setMarkdownSource(chapterMarkdownSource());
+      syncChapterMarkdownSource();
     }
     persist();
   }
@@ -10752,7 +10785,15 @@
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
           {#if markdownEditorEnabled}
-            <button class="tool-button tool-button-wide" aria-label="Markdown editor" title="Markdown editor" onpointerdown={(event) => event.preventDefault()} onclick={toggleEditorMode}>MD</button>
+            {@const screenplayChapter = inChapterMode && chapterHasScreenplayScene(activeChapter?.id)}
+            <button
+              class="tool-button tool-button-wide"
+              aria-label="Markdown editor"
+              title={screenplayChapter ? "Not available in a chapter with screenplay scenes" : "Markdown editor"}
+              disabled={screenplayChapter}
+              onpointerdown={(event) => event.preventDefault()}
+              onclick={toggleEditorMode}
+            >MD</button>
           {/if}
         </div>
         {/if}
