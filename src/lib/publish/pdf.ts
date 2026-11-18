@@ -1,4 +1,5 @@
 import { jsPDF } from "jspdf";
+import { resolveBookCitations } from "../citations/bibliography";
 import { resolveBookFootnotes, type ResolvedFootnote } from "./footnotes";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens, type PresetTokens } from "./presets";
@@ -72,6 +73,8 @@ function pdfImageFormat(mediaType: string): string {
 }
 
 export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPayload {
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  book = resolvedBook;
   const tokens = resolveStyleTokens(options.style, options.customStyles);
   const pdfFont = tokens.pdfFont;
   const pageWidth = tokens.page.widthPt;
@@ -915,6 +918,33 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       beginBody();
     }
     renderMatterPage(page);
+  }
+
+  if (bibliography && bibliography.entries.length > 0) {
+    if (bodyStarted) {
+      newBodyPage();
+    } else {
+      beginBody();
+    }
+    renderParagraph(plainRuns(bibliography.heading), {
+      size: bodySize * 1.5,
+      lineHeight: bodySize * 1.8,
+      firstIndent: 0,
+      bold: true,
+      align: "center",
+      spacingAfter: bodySize * 0.8
+    });
+    const hangingIndent = bodySize * 1.8;
+    for (const entry of bibliography.entries) {
+      renderParagraph(inlineRunsFromHtml(entry.html), {
+        size: bodySize,
+        lineHeight: bodyLine,
+        firstIndent: -hangingIndent,
+        leftIndent: hangingIndent,
+        justify: false,
+        spacingAfter: bodySize * 0.5
+      });
+    }
   }
 
   renderTableOfContents();

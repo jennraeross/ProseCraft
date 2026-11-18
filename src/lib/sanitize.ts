@@ -1,3 +1,5 @@
+import { isValidSceneId } from "./chapter-sections";
+import { normalizeCiteDataAttr } from "./citations/cite-marker";
 import { applyImageLayout, readImageLayout } from "./image-layout";
 import { normalizedRichPlaceholder, richKindOf } from "./rich/model";
 
@@ -18,6 +20,7 @@ const inlineSafeTags = new Set([
 ]);
 export const FOOTNOTE_REF_CLASS = "footnote-ref";
 export const FOOTNOTE_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+export const CITE_REF_CLASS = "cite-ref";
 export const MAX_EMBEDDED_IMAGE_BYTES = 1_500_000;
 
 /** Returns true when `id` is a valid, safe footnote identifier. */
@@ -57,6 +60,16 @@ function cleanNode(node: Node, inlineOnly = false): Node | null {
     return clean;
   }
 
+  if (node.tagName === "SPAN" && node.classList.contains(CITE_REF_CLASS)) {
+    const dataCites = normalizeCiteDataAttr(node.getAttribute("data-cites"));
+    if (!dataCites) return null;
+    const clean = document.createElement("span");
+    clean.className = CITE_REF_CLASS;
+    clean.setAttribute("data-cites", dataCites);
+    clean.setAttribute("contenteditable", "false");
+    return clean;
+  }
+
   if (node.tagName === "DIV" && node.classList.contains("scene-break")) {
     if (inlineOnly) return null;
     // Chapter dividers persist as structural markers with their glyph, so
@@ -66,6 +79,8 @@ function cleanNode(node: Node, inlineOnly = false): Node | null {
       .concat(node.classList.contains("scene-break-line") ? ["scene-break-line"] : [])
       .concat(node.classList.contains("scene-break-blank") ? ["scene-break-blank"] : [])
       .join(" ");
+    const sceneId = node.getAttribute("data-scene-id");
+    if (sceneId && isValidSceneId(sceneId)) clean.setAttribute("data-scene-id", sceneId);
     clean.setAttribute("contenteditable", "false");
     for (const child of Array.from(node.childNodes)) {
       const cleanChild = cleanNode(child, inlineOnly);

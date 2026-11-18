@@ -1,3 +1,4 @@
+import { bibliographyHeading, hasBookBibliography } from "../citations/bibliography";
 import { matterPageLabel } from "./matter";
 import type { CompiledBook, PublishOptions } from "./types";
 
@@ -11,7 +12,8 @@ export type ManuscriptSectionKind =
   | "contents"
   | "front-matter"
   | "chapter"
-  | "back-matter";
+  | "back-matter"
+  | "bibliography";
 
 export type ManuscriptSection = {
   id: string;
@@ -97,6 +99,14 @@ export function listManuscriptSections(
       kind: "back-matter",
       label: matterPageLabel(page),
       matterId: page.id
+    });
+  }
+  if (hasBookBibliography(book, options)) {
+    sections.push({
+      id: "back-bibliography",
+      group: "back",
+      kind: "bibliography",
+      label: bibliographyHeading(options.citationLocale ?? "en")
     });
   }
 

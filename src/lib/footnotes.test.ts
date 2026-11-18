@@ -16,7 +16,8 @@ import {
   removeFootnote,
   removeFootnoteRefFromHtml,
   renumberFootnoteMarkers,
-  updateFootnote
+  updateFootnote,
+  withFootnotes
 } from "./footnotes";
 import type { FootnoteDef } from "./publish/types";
 import { isValidFootnoteId } from "./sanitize";
@@ -116,6 +117,23 @@ describe("immutable footnote CRUD helpers", () => {
     const removed = removeFootnote(updated, "fn-1");
     expect(updated).toHaveLength(2);
     expect(removed).toEqual([{ id: "fn-2", html: "Updated <b>text</b>" }]);
+  });
+
+  it("drops a document's markdown source when its footnotes change", () => {
+    const doc = {
+      id: "doc-1",
+      content: "<p>Text</p>",
+      markdownSource: "Text[^fn-1]\n\n[^fn-1]: Old",
+      footnotes: [{ id: "fn-1", html: "Old" }]
+    };
+    expect(withFootnotes(doc, [{ id: "fn-1", html: "Old" }])).toBe(doc);
+    expect(withFootnotes(doc, [{ id: "fn-1", html: "New" }])).toEqual({
+      id: "doc-1",
+      content: "<p>Text</p>",
+      footnotes: [{ id: "fn-1", html: "New" }]
+    });
+    expect(withFootnotes(doc, [])).toEqual({ id: "doc-1", content: "<p>Text</p>" });
+    expect(doc.markdownSource).toBe("Text[^fn-1]\n\n[^fn-1]: Old");
   });
 
   it("removes only the targeted footnote marker from HTML", () => {

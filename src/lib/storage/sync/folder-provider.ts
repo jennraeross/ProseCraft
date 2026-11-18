@@ -6,6 +6,7 @@ import {
   VAULT_FILE,
   encodeProjectFiles,
   entityDir,
+  entityFileName,
   projectDirName,
   readProjectFiles
 } from "./layout";
@@ -108,16 +109,34 @@ export class FolderSyncProvider implements SyncProvider {
     return syncViaProvider(this, passphrase, local, lastSynced, now, deviceId);
   }
 
+  /**
+   * Removes the files this layout wrote for entities that are no longer live.
+   * A file counts as ours only when its name is exactly the one this layout
+   * gives the entity id in its envelope. Anything else is left alone: when the
+   * folder is itself synced by another tool, it may hold that tool's conflict
+   * copies (`doc-1 (conflict …).enc`, `doc-1.sync-conflict-….enc`), which repeat
+   * the original's id under another name and can be the only copy of an edit.
+   */
   private async prune(dir: string, keep: Set<string>): Promise<void> {
     for (const kind of ENTITY_KINDS) {
       const sub = `${dir}/${entityDir(kind)}`;
       for (const entry of await this.fs.listDir(sub)) {
-        if (entry.isDirectory) continue;
+        if (entry.isDirectory || !entry.name.endsWith(".enc")) continue;
         const path = `${sub}/${entry.name}`;
-        if (entry.name.endsWith(".enc") && !keep.has(path)) {
-          await this.fs.remove(path);
-        }
+        if (keep.has(path)) continue;
+        const id = await this.envelopeId(path);
+        if (id !== null && entityFileName(id) === entry.name) await this.fs.remove(path);
       }
+    }
+  }
+
+  /** The entity id in an encrypted file's (plain-text) envelope, if it can be read. */
+  private async envelopeId(path: string): Promise<string | null> {
+    try {
+      const id = (JSON.parse(await this.fs.readText(path)) as { id?: unknown }).id;
+      return typeof id === "string" && id ? id : null;
+    } catch {
+      return null;
     }
   }
 }

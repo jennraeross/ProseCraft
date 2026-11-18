@@ -1,3 +1,6 @@
+import type { CslItem } from "../citations/csl";
+import type { FormattedBibliographyEntry } from "../citations/format";
+import { STYLES, type CitationLocale, type CitationStyleId } from "../citations/styles";
 import { isEmbeddedImageSrc } from "../sanitize";
 import type { DocumentMeta } from "../story-meta";
 import { normalizeMatterPages, type MatterPage } from "./matter";
@@ -175,6 +178,9 @@ export type PublishOptions = {
   sceneSeparator: SceneSeparator;
   dropCaps: boolean;
   footnotesRestartPerChapter: boolean;
+  citationStyle?: CitationStyleId;
+  citationLocale?: CitationLocale;
+  includeBibliography?: boolean;
   subtitle: string;
   copyright: string;
   dedication: string;
@@ -216,6 +222,13 @@ export type CompiledMatterPage = {
   blank?: boolean;
 };
 
+export type CompiledBibliography = {
+  heading: string;
+  style: CitationStyleId;
+  locale: CitationLocale;
+  entries: FormattedBibliographyEntry[];
+};
+
 export type CompiledBook = {
   title: string;
   subtitle: string;
@@ -227,6 +240,10 @@ export type CompiledBook = {
   chapters: CompiledChapter[];
   words: number;
   scenes: number;
+  /** Project citation library available at export time. */
+  citations?: CslItem[];
+  /** Formatted bibliography produced when citations are present and enabled. */
+  bibliography?: CompiledBibliography;
   /** Attached at preview/export time; generated covers are never persisted. */
   cover?: CompiledCover;
 };
@@ -318,6 +335,9 @@ export function defaultPublishOptions(): PublishOptions {
     sceneSeparator: "hash",
     dropCaps: true,
     footnotesRestartPerChapter: false,
+    citationStyle: "apa7",
+    citationLocale: "en",
+    includeBibliography: true,
     subtitle: "",
     copyright: "",
     dedication: "",
@@ -365,6 +385,13 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     ? value.style
     : defaults.style;
   const separators: SceneSeparator[] = ["blank", "asterisks", "hash", "line", "none"];
+  const citationStyleIds = new Set<string>(STYLES.map((entry) => entry.id));
+  const citationStyle = typeof value.citationStyle === "string" && citationStyleIds.has(value.citationStyle)
+    ? value.citationStyle as CitationStyleId
+    : defaults.citationStyle;
+  const citationLocale: CitationLocale = value.citationLocale === "de" || value.citationLocale === "en"
+    ? value.citationLocale
+    : (defaults.citationLocale ?? "en");
   return {
     format: formats.includes(value.format as ExportFormat) ? value.format as ExportFormat : defaults.format,
     style,
@@ -381,6 +408,11 @@ export function normalizePublishOptions(value: unknown): PublishOptions {
     footnotesRestartPerChapter: typeof value.footnotesRestartPerChapter === "boolean"
       ? value.footnotesRestartPerChapter
       : defaults.footnotesRestartPerChapter,
+    citationStyle,
+    citationLocale,
+    includeBibliography: typeof value.includeBibliography === "boolean"
+      ? value.includeBibliography
+      : defaults.includeBibliography,
     subtitle: typeof value.subtitle === "string" ? value.subtitle.slice(0, 200) : defaults.subtitle,
     copyright: typeof value.copyright === "string" ? value.copyright.slice(0, 500) : defaults.copyright,
     dedication: typeof value.dedication === "string" ? value.dedication.slice(0, 1000) : defaults.dedication,

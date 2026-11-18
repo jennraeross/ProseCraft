@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { citeMarkerHtml, parseCiteData } from "../citations/cite-marker";
 import { sanitizeHtml } from "../sanitize";
 import { htmlToMarkdown, markdownToDocument, markdownToHtml } from "./markdown";
 
@@ -168,5 +169,64 @@ describe("markdown footnotes round trip", () => {
     expect(parsed.html).toContain("[^fn-fence]: not a definition");
     expect(parsed.html).toContain(`data-footnote-id="fn-1"`);
     expect(parsed.footnotes).toEqual([{ id: "fn-1", html: "Note  <a>bad</a>" }]);
+  });
+});
+
+describe("markdown citations round trip", () => {
+  function extractCites(html: string) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return Array.from(doc.querySelectorAll("span.cite-ref")).map((el) =>
+      parseCiteData(el.getAttribute("data-cites"))
+    );
+  }
+
+  it("round-trips single, suppress-author, multi-item, and locator/prefix/suffix citations", () => {
+    const m1 = citeMarkerHtml([
+      { id: "key", locator: "42", label: "page", prefix: "see ", suffix: "and passim" }
+    ]);
+    const m2 = citeMarkerHtml([{ id: "key", suppressAuthor: true }]);
+    const m3 = citeMarkerHtml([
+      { id: "a" },
+      { id: "b", locator: "2", label: "chapter" }
+    ]);
+    const html = `<p>Claim ${m1}, author ${m2}, and cluster ${m3}.</p>`;
+
+    const md = htmlToMarkdown(html);
+    expect(md).toBe(
+      "Claim [see @key, p. 42 and passim], author [-@key], and cluster [@a; @b, ch. 2]."
+    );
+
+    const reparsed = sanitizeHtml(markdownToHtml(md));
+    expect(reparsed).toBe(`${html}\n`);
+    expect(extractCites(reparsed)).toEqual(extractCites(html));
+    expect(htmlToMarkdown(reparsed)).toBe(md);
+  });
+
+  it("round-trips citations inside footnote definitions", () => {
+    const bodyCite = citeMarkerHtml([{ id: "popper-1959", locator: "42", label: "page", prefix: "see " }]);
+    const noteCite = citeMarkerHtml([{ id: "a" }, { id: "b", locator: "2", label: "chapter" }]);
+    const html =
+      `<p>Body${bodyCite}<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>.</p>`;
+    const footnotes = [
+      { id: "fn-1", html: `Further details in ${noteCite}.` }
+    ];
+
+    const md = htmlToMarkdown(html, footnotes);
+    expect(md).toBe(
+      "Body[see @popper-1959, p. 42][^fn-1].\n\n[^fn-1]: Further details in [@a; @b, ch. 2]."
+    );
+
+    const parsed = markdownToDocument(md);
+    expect(sanitizeHtml(parsed.html)).toBe(`${html}\n`);
+    expect(parsed.footnotes).toEqual(footnotes);
+  });
+
+  it("leaves code spans, links, and emails untouched", () => {
+    const md = "Keep `[see @key]` in code, [@label](https://example.test), and [mail@example.test].";
+    const html = sanitizeHtml(markdownToHtml(md));
+    expect(html).toContain("<code>[see @key]</code>");
+    expect(html).toContain('<a href="https://example.test">@label</a>');
+    expect(html).toContain("mail@example.test");
+    expect(html).not.toContain("cite-ref");
   });
 });

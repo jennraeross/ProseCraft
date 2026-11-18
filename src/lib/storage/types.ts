@@ -1,3 +1,4 @@
+import type { CslItem } from "../citations/csl";
 import type {
   ChapterData,
   DocumentData,
@@ -35,6 +36,8 @@ export type DocumentSnapshot = {
   createdAt: number;
   title: string;
   content: string;
+  /** Markdown snapshots (written by the MCP server) say so; without it, content is HTML. */
+  contentFormat?: "markdown";
   note?: string;
   reason: "manual" | "before-restore";
 };
@@ -131,6 +134,8 @@ export type ProjectData = {
   sheetTemplates?: SheetTemplate[];
   /** Ids of relation suggestions the author dismissed. */
   dismissedSuggestions?: string[];
+  /** Project bibliography library stored as CSL-JSON items. */
+  citations?: CslItem[];
 };
 
 /** Bumped whenever the persisted envelope changes shape. */

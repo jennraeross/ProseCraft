@@ -1,4 +1,5 @@
 import { strToU8, zipSync, type Zippable } from "fflate";
+import { resolveBookCitations, type BookBibliography } from "../citations/bibliography";
 import { markDropCapParagraph } from "./content";
 import { decodeEmbeddedImage } from "./embedded-image";
 import { resolveBookFootnotes, type BookFootnotes } from "./footnotes";
@@ -113,6 +114,17 @@ function matterXhtml(page: CompiledMatterPage, placement: "front" | "back"): str
   );
 }
 
+function bibliographyXhtml(bibliography: BookBibliography): string {
+  const entries = bibliography.entries
+    .map((entry) => `  <p class="bibliography-entry">${htmlToXhtml(entry.html)}</p>`)
+    .join("\n");
+  return xhtmlPage(
+    bibliography.heading,
+    `<section class="matter-page back-matter bibliography" epub:type="bibliography">\n  <h1 class="matter-title">${escapeXml(bibliography.heading)}</h1>\n${entries}\n</section>`,
+    "back-matter-page bibliography-page"
+  );
+}
+
 function chapterXhtml(
   book: CompiledBook,
   options: PublishOptions,
@@ -207,6 +219,12 @@ h1, h2, h3, p, div, blockquote, ul, ol, li { margin-top: 0; }
   margin: 0 0 ${tokens.paragraphSpacingEm}em;
   text-align: ${tokens.justify ? "justify" : "left"};
   text-indent: 0;
+}
+.bibliography p.bibliography-entry {
+  margin: 0 0 0.7em;
+  padding-left: 2em;
+  text-indent: -2em;
+  text-align: left;
 }
 .contents-page { margin-top: 8%; }
 .contents-page .toc-list { margin: 0; padding: 0; list-style: none; }
@@ -377,6 +395,8 @@ ${points}
 }
 
 export async function exportEpub(book: CompiledBook, options: PublishOptions): Promise<ExportPayload> {
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  book = resolvedBook;
   const identifier = bookIdentifier();
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const files: Zippable = {};
@@ -452,6 +472,10 @@ export async function exportEpub(book: CompiledBook, options: PublishOptions): P
     manifest.push(`    <item id="${id}" href="text/${id}.xhtml" media-type="application/xhtml+xml" />`);
     spine.push(`    <itemref idref="${id}" />`);
   });
+  if (bibliography && bibliography.entries.length > 0) {
+    manifest.push('    <item id="bibliography" href="text/bibliography.xhtml" media-type="application/xhtml+xml" />');
+    spine.push('    <itemref idref="bibliography" />');
+  }
 
   const opf = `<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="en">
@@ -511,6 +535,9 @@ ${spine.join("\n")}
   book.backMatter.forEach((page, index) => {
     files[`OEBPS/text/back-matter-${index + 1}.xhtml`] = strToU8(matterXhtml(page, "back"));
   });
+  if (bibliography && bibliography.entries.length > 0) {
+    files["OEBPS/text/bibliography.xhtml"] = strToU8(bibliographyXhtml(bibliography));
+  }
 
   const bytes = zipSync(files);
   return {

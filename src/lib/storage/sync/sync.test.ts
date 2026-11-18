@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { citeMarkerHtml } from "$lib/citations/cite-marker";
+import { updateFootnote, withFootnotes } from "$lib/footnotes";
 import { createStoredProject, projectsHaveSameContent, stampProject } from "../schema";
 import type { ProjectData, StoredProject } from "../types";
 import type { DocumentMeta } from "../../story-meta";
@@ -149,6 +151,48 @@ describe("encrypted single-file sync", () => {
 });
 
 describe("open-folder sync", () => {
+  it("counts moving a whole project to the trash as a change", () => {
+    const original = storedProject(1_000);
+    const trashed = stampProject(original, { ...original.project, trashed: true }, "device-a", 2_000);
+    expect(trashed.revision).toBeGreaterThan(original.revision);
+    expect(trashed.updatedAt).toBe(2_000);
+
+    const { trashed: _restored, ...restoredData } = trashed.project;
+    const restored = stampProject(trashed, restoredData, "device-a", 3_000);
+    expect(restored.revision).toBeGreaterThan(trashed.revision);
+  });
+
+  it("moves a project to the trash on the other device too", async () => {
+    const fs = new MemoryFileSystem();
+    const provider = () => new OpenFolderSyncProvider(fs);
+    const onA = await provider().sync("", [storedProject(1_000)], {}, 1_000, "device-a");
+    const onB = await provider().sync("", [], {}, 1_100, "device-b");
+
+    const trashed = stampProject(onA.projects[0], { ...onA.projects[0].project, trashed: true }, "device-a", 2_000);
+    await provider().sync("", [trashed], onA.lastSynced, 2_000, "device-a");
+    const afterB = await provider().sync("", onB.projects, onB.lastSynced, 3_000, "device-b");
+
+    expect(afterB.projects.find((project) => project.id === "project-1")?.project.trashed).toBe(true);
+  });
+
+  it("keeps a project in the trash when another device edited it meanwhile", async () => {
+    const fs = new MemoryFileSystem();
+    const first = await new OpenFolderSyncProvider(fs)
+      .sync("", [storedProject(1_000)], {}, 1_000, "device-a");
+    const synced = first.projects[0];
+
+    // Device B edits the project and syncs first.
+    const edited = stampProject(synced, { ...synced.project, author: "Someone Else" }, "device-b", 2_000);
+    await new OpenFolderSyncProvider(fs).sync("", [edited], first.lastSynced, 2_000, "device-b");
+
+    // Device A moved the same project to the trash and syncs afterwards.
+    const trashed = stampProject(synced, { ...synced.project, trashed: true }, "device-a", 3_000);
+    const result = await new OpenFolderSyncProvider(fs)
+      .sync("", [trashed], first.lastSynced, 3_000, "device-a");
+
+    expect(result.projects.find((project) => project.id === "project-1")?.project.trashed).toBe(true);
+  });
+
   it("round-trips recoverable project, chapter, and scene trash state", async () => {
     const fs = new MemoryFileSystem();
     const project = storedProject();
@@ -346,6 +390,145 @@ describe("open-folder sync", () => {
       ]);
   });
 
+  it("keeps a footnote edited in the app after an open folder sync", async () => {
+    const fs = new MemoryFileSystem();
+    const fixture = projectFixture();
+    const withFootnote: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((document) => document.id === "doc-1"
+        ? {
+          ...document,
+          content: `<p>Text<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>.</p>`,
+          footnotes: [{ id: "fn-1", html: "Old note." }]
+        }
+        : document)
+    };
+    const first = await new OpenFolderSyncProvider(fs)
+      .sync("", [createStoredProject(withFootnote, "device-a", 1_000)], {}, 1_000, "device-a");
+    // The synced scene now carries its Markdown, footnote definition included.
+    expect(first.projects[0].project.documents[0].markdownSource).toContain("[^fn-1]: Old note.");
+
+    // Editing the footnote's text, as the footnote popover does.
+    const edited = stampProject(first.projects[0], {
+      ...first.projects[0].project,
+      documents: first.projects[0].project.documents.map((doc) => doc.id === "doc-1"
+        ? withFootnotes(doc, updateFootnote(doc.footnotes, "fn-1", "New note."))
+        : doc)
+    }, "device-a", 2_000);
+    const second = await new OpenFolderSyncProvider(fs)
+      .sync("", [edited], first.lastSynced, 2_000, "device-a");
+
+    const expected = [{ id: "fn-1", html: "New note." }];
+    expect(second.projects[0].project.documents[0].footnotes).toEqual(expected);
+    expect(await fs.readText("projects/project-1/documents/doc-1.md")).toContain("[^fn-1]: New note.");
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    expect(reopened.projects[0].project.documents.find((doc) => doc.id === "doc-1")?.footnotes)
+      .toEqual(expected);
+  });
+
+  it("round-trips citations in project.json through the open folder layout", async () => {
+    const fs = new MemoryFileSystem();
+    const citations: ProjectData["citations"] = [
+      {
+        id: "muller2021",
+        type: "book",
+        title: "Über die Methode",
+        author: [{ family: "Müller", given: "Hans" }],
+        issued: { "date-parts": [[2021]] },
+        publisher: "Suhrkamp",
+        "publisher-place": "Berlin",
+        ISBN: "978-3-518-12345-6",
+        citeKey: "muller2021"
+      },
+      {
+        id: "doe2023",
+        type: "article-journal",
+        title: "Citation Sync",
+        author: [{ family: "Doe", given: "Jane" }],
+        "container-title": "Journal of Writing Tools",
+        issued: { "date-parts": [[2023, 5]] },
+        volume: "12",
+        issue: "2",
+        page: "44-58",
+        DOI: "10.1000/jw.2023.44"
+      }
+    ];
+    const withCitations: ProjectData = {
+      ...projectFixture(),
+      citations
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync(
+      "",
+      [createStoredProject(withCitations, "device-a", 1_000)],
+      {},
+      1_000,
+      "device-a"
+    );
+
+    const rawProjectJson = JSON.parse(await fs.readText("projects/project-1/project.json"));
+    expect(rawProjectJson.project.citations).toEqual(citations);
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    expect(reopened.projects[0].project.citations).toEqual(citations);
+    expect(projectsHaveSameContent(first.projects[0].project, reopened.projects[0].project)).toBe(true);
+    expect(
+      projectsHaveSameContent(reopened.projects[0].project, {
+        ...reopened.projects[0].project,
+        citations: citations.slice(0, 1)
+      })
+    ).toBe(false);
+
+    const second = await new OpenFolderSyncProvider(fs)
+      .sync("", [first.projects[0]], first.lastSynced, 1_100, "device-a");
+    expect(second.conflicts).toBe(0);
+  });
+
+  it("round-trips inline citation markers in document bodies and footnotes via the open folder layout", async () => {
+    const fs = new MemoryFileSystem();
+    const bodyMarker = citeMarkerHtml([
+      { id: "muller2021", locator: "42", label: "page", prefix: "see " }
+    ]);
+    const noteMarker = citeMarkerHtml([
+      { id: "doe2023", suppressAuthor: true },
+      { id: "muller2021", locator: "2", label: "chapter" }
+    ]);
+    const fixture = projectFixture();
+    const withMarkers: ProjectData = {
+      ...fixture,
+      documents: fixture.documents.map((doc) =>
+        doc.id === "doc-1"
+          ? {
+            ...doc,
+            content: `<p>Claim ${bodyMarker}<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>.</p>`,
+            footnotes: [{ id: "fn-1", html: `Compare ${noteMarker}.` }]
+          }
+          : doc
+      )
+    };
+
+    const provider = new OpenFolderSyncProvider(fs);
+    const first = await provider.sync(
+      "",
+      [createStoredProject(withMarkers, "device-a", 1_000)],
+      {},
+      1_000,
+      "device-a"
+    );
+
+    const mdPath = "projects/project-1/documents/doc-1.md";
+    const md = await fs.readText(mdPath);
+    expect(md).toContain("Claim [see @muller2021, p. 42][^fn-1].");
+    expect(md).toContain("[^fn-1]: Compare [-@doe2023; @muller2021, ch. 2].");
+
+    const reopened = await new OpenFolderSyncProvider(fs).connect("");
+    const reopenedDoc = reopened.projects[0].project.documents.find((doc) => doc.id === "doc-1");
+    expect(reopenedDoc?.content).toContain(`class="cite-ref"`);
+    expect(reopenedDoc?.footnotes).toEqual([{ id: "fn-1", html: `Compare ${noteMarker}.` }]);
+    expect(projectsHaveSameContent(first.projects[0].project, reopened.projects[0].project)).toBe(true);
+  });
+
   it("applies external Markdown edits", async () => {
     const fs = new MemoryFileSystem();
     await new OpenFolderSyncProvider(fs)
@@ -360,6 +543,42 @@ describe("open-folder sync", () => {
     expect(project.updatedBy).toBe("external");
     expect(project.revision).toBeGreaterThan(1);
     expect(project.project.documents[0].content).toContain("<strong>bright</strong>");
+  });
+
+  it("keeps syncing after a document file is renamed by hand", async () => {
+    const fs = new MemoryFileSystem();
+    const provider = () => new OpenFolderSyncProvider(fs);
+    const first = await provider().sync("", [storedProject()], {}, 1_000, "device-a");
+    const original = "projects/project-1/documents/doc-1.md";
+    await fs.writeText("projects/project-1/documents/Opening.md", await fs.readText(original));
+    await fs.remove(original);
+
+    const second = await provider().sync("", first.projects, first.lastSynced, 2_000, "device-a");
+    await provider().sync("", second.projects, second.lastSynced, 3_000, "device-a");
+
+    expect(await fs.exists(original)).toBe(true);
+    expect(await fs.exists("projects/project-1/documents/Opening.md")).toBe(false);
+  });
+
+  it("does not bring back scenes the winning side of a project conflict lacks", async () => {
+    const fs = new MemoryFileSystem();
+    const provider = () => new OpenFolderSyncProvider(fs);
+    // Another device wrote the project with both scenes.
+    await provider().sync("", [storedProject(1_000)], {}, 1_000, "device-b");
+    // This device has an unrelated, newer copy of the same project without doc-2.
+    const onlyFirst: ProjectData = {
+      ...projectFixture(),
+      name: "Local edit",
+      documents: projectFixture().documents.filter((doc) => doc.id !== "doc-2")
+    };
+    const older = createStoredProject({ ...onlyFirst, name: "Test Novel" }, "device-a", 500);
+    const local = stampProject(older, onlyFirst, "device-a", 3_000);
+    await provider().sync("", [local], {}, 3_000, "device-a");
+
+    const reopened = await provider().connect("");
+    const winner = reopened.projects.find((project) => project.id === "project-1");
+    expect(winner?.project.name).toBe("Local edit");
+    expect(winner?.project.documents.map((doc) => doc.id)).not.toContain("doc-2");
   });
 
   it("writes tombstones and removes deleted entity files", async () => {
@@ -438,6 +657,58 @@ describe("encrypted-folder sync", () => {
     const reopened = await new FolderSyncProvider(fs).connect(PASSPHRASE);
     expect(reopened.projects).toHaveLength(1);
     expect(reopened.projects[0].project.name).toBe("Test Novel");
+  });
+
+  it("keeps files it did not write, such as another sync tool's conflict copies", async () => {
+    const fs = new MemoryFileSystem();
+    const first = await new FolderSyncProvider(fs)
+      .sync(PASSPHRASE, [storedProject()], {}, 1_000, "device-a");
+    const copies = [
+      "projects/project-1/documents/doc-1 (conflict 2026-11-17 14.32 Laptop).enc",
+      "projects/project-1/documents/doc-1.sync-conflict-20261117-143200-ABCDEFG.enc",
+      "projects/project-1/chapters/chapter-1 (conflicted copy).enc"
+    ];
+    for (const copy of copies) {
+      await fs.writeText(copy, await fs.readText("projects/project-1/documents/doc-1.enc"));
+    }
+
+    await new FolderSyncProvider(fs)
+      .sync(PASSPHRASE, first.projects, first.lastSynced, 2_000, "device-a");
+
+    for (const copy of copies) expect(await fs.exists(copy)).toBe(true);
+  });
+
+  it("still cleans up files the winning side of a project conflict no longer has", async () => {
+    const fs = new MemoryFileSystem();
+    await new FolderSyncProvider(fs).sync(PASSPHRASE, [storedProject(1_000)], {}, 1_000, "device-b");
+    const onlyFirst: ProjectData = {
+      ...projectFixture(),
+      name: "Local edit",
+      documents: projectFixture().documents.filter((doc) => doc.id !== "doc-2")
+    };
+    const older = createStoredProject({ ...onlyFirst, name: "Test Novel" }, "device-a", 500);
+    const local = stampProject(older, onlyFirst, "device-a", 3_000);
+    await new FolderSyncProvider(fs).sync(PASSPHRASE, [local], {}, 3_000, "device-a");
+
+    expect(await fs.exists("projects/project-1/documents/doc-2.enc")).toBe(false);
+  });
+
+  it("still removes the files of deleted entities", async () => {
+    const fs = new MemoryFileSystem();
+    const original = storedProject(1_000);
+    await new FolderSyncProvider(fs).sync(PASSPHRASE, [original], {}, 1_000, "device-a");
+    expect(await fs.exists("projects/project-1/documents/doc-1.enc")).toBe(true);
+
+    const withoutDocument: ProjectData = {
+      ...projectFixture(),
+      activeDocumentId: "doc-2",
+      documents: projectFixture().documents.filter((doc) => doc.id !== "doc-1")
+    };
+    const updated = stampProject(original, withoutDocument, "device-a", 2_000);
+    await new FolderSyncProvider(fs).sync(PASSPHRASE, [updated], {}, 2_000, "device-a");
+
+    expect(await fs.exists("projects/project-1/documents/doc-1.enc")).toBe(false);
+    expect(await fs.exists("projects/project-1/documents/doc-2.enc")).toBe(true);
   });
 });
 

@@ -26,6 +26,7 @@ import {
   type ISectionOptions,
   type ParagraphChild
 } from "docx";
+import { resolveBookCitations } from "../citations/bibliography";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens } from "./presets";
 import { decodeEmbeddedImage, type EmbeddedImageAsset } from "./embedded-image";
@@ -261,6 +262,8 @@ async function coverSection(
 }
 
 export async function exportDocx(book: CompiledBook, options: PublishOptions): Promise<ExportPayload> {
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  book = resolvedBook;
   const tokens = resolveStyleTokens(options.style, options.customStyles);
   const bodySize = halfPoint(tokens.bodySizePt);
   const chapterSize = halfPoint(tokens.chapterHeadingSizePt);
@@ -451,6 +454,22 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
     }
   }
 
+  if (bibliography && bibliography.entries.length > 0) {
+    if (backMatterTarget.length > 0) {
+      backMatterTarget.push(new Paragraph({ children: [new PageBreak()] }));
+    }
+    backMatterTarget.push(new Paragraph({
+      style: "MatterTitle",
+      children: linesToTextRuns(bibliography.heading)
+    }));
+    for (const entry of bibliography.entries) {
+      backMatterTarget.push(new Paragraph({
+        style: "BibliographyEntry",
+        children: inlineToChildren(inlineRunsFromHtml(entry.html), new Map(), tokens.bodySizePt)
+      }));
+    }
+  }
+
   const footnotesMap: Record<number, { children: Paragraph[] }> = {};
   for (const note of bookFootnotes.all) {
     const fnRuns = inlineRunsFromHtml(note.html);
@@ -604,6 +623,19 @@ export async function exportDocx(book: CompiledBook, options: PublishOptions): P
           paragraph: {
             spacing: { line: lineSpacing, lineRule: LineRuleType.AUTO, after: paragraphSpacing },
             indent: { firstLine: 0 }
+          }
+        },
+        {
+          id: "BibliographyEntry",
+          name: "Bibliography Entry",
+          basedOn: "BodyText",
+          next: "BibliographyEntry",
+          quickFormat: true,
+          run: { font: tokens.docxFont, size: bodySize },
+          paragraph: {
+            alignment: AlignmentType.LEFT,
+            spacing: { line: lineSpacing, lineRule: LineRuleType.AUTO, after: Math.max(paragraphSpacing, 120) },
+            indent: { left: 720, hanging: 720 }
           }
         },
         {

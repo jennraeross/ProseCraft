@@ -113,6 +113,7 @@ export function projectContentKey(project: ProjectData): string {
     kind: projectKindOf(project),
     name: project.name,
     author: project.author,
+    trashed: project.trashed === true,
     documents: project.documents,
     chapters: project.chapters,
     projectGoal: project.projectGoal,
@@ -131,7 +132,8 @@ export function projectContentKey(project: ProjectData): string {
     snapshots: project.snapshots ?? [],
     labels: project.labels ?? [],
     sheetTemplates: project.sheetTemplates ?? [],
-    dismissedSuggestions: project.dismissedSuggestions ?? []
+    dismissedSuggestions: project.dismissedSuggestions ?? [],
+    citations: project.citations ?? []
   });
 }
 

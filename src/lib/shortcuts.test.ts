@@ -38,6 +38,14 @@ describe("shortcut list", () => {
     expect(formatShortcut(entry!.keys, true)).toBe("⌘⌥F");
     expect(formatShortcut(entry!.keys, false)).toBe("Ctrl+Alt+F");
   });
+
+  it("includes Mod+Alt+C for Insert citation", () => {
+    const entry = SHORTCUT_GROUPS.flatMap((group) => group.entries)
+      .find((item) => item.action === "Insert citation");
+    expect(entry?.keys).toEqual(["Mod", "Alt", "C"]);
+    expect(formatShortcut(entry!.keys, true)).toBe("⌘⌥C");
+    expect(formatShortcut(entry!.keys, false)).toBe("Ctrl+Alt+C");
+  });
 });
 
 describe("formatShortcut", () => {

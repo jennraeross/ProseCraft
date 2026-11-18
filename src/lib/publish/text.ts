@@ -1,3 +1,4 @@
+import { resolveBookCitations } from "../citations/bibliography";
 import { htmlToPlainText } from "./content";
 import { resolveBookFootnotes, sceneFootnoteNumberMap, type ResolvedFootnote } from "./footnotes";
 import { resolveStyleTokens } from "./presets";
@@ -35,6 +36,8 @@ function separatorText(separator: SceneSeparator): string {
 }
 
 export function exportText(book: CompiledBook, options: PublishOptions): ExportPayload {
+  const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
+  book = resolvedBook;
   const tokens = resolveStyleTokens(options.style, options.customStyles);
   const blocks: string[] = [];
   const bookFootnotes = resolveBookFootnotes(book, options);
@@ -89,6 +92,14 @@ export function exportText(book: CompiledBook, options: PublishOptions): ExportP
 
   if (!restartPerChapter && bookFootnotes.all.length > 0) {
     blocks.push(formatNotesBlock(bookFootnotes.all, tokens.chapterHeadingUppercase));
+  }
+
+  if (bibliography && bibliography.entries.length > 0) {
+    const heading = tokens.chapterHeadingUppercase
+      ? bibliography.heading.toUpperCase()
+      : bibliography.heading;
+    const lines = bibliography.entries.map((entry) => entry.text);
+    blocks.push([heading, ...lines].join("\n"));
   }
 
   const text = `${blocks.filter(Boolean).join("\n\n")}\n`;

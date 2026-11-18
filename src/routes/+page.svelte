@@ -37,6 +37,7 @@
     Pencil,
     PenLine,
     Plus,
+    Quote,
     Redo2,
     RotateCcw,
     Calculator,
@@ -136,6 +137,7 @@
     dropOrphanSnapshots,
     normalizeSnapshots,
     removeSnapshot,
+    snapshotHtml,
     snapshotsForDocument
   } from "$lib/snapshots";
   import { patchTileDocument, type TileDocumentPatch } from "$lib/tile-editing";
@@ -189,7 +191,19 @@
     type SystemFontFamily
   } from "$lib/editor-fonts";
   import { FOOTNOTE_REF_CLASS, sanitizeHtml as cleanHtml, sanitizeInlineHtml } from "$lib/sanitize";
-  import FootnotePopover from "$lib/FootnotePopover.svelte";
+  import FootnotePopover, { type FootnoteCitationRequest } from "$lib/FootnotePopover.svelte";
+  import CitationLibraryDialog from "$lib/CitationLibraryDialog.svelte";
+  import CitationPicker from "$lib/CitationPicker.svelte";
+  import {
+    CITE_REF_CLASS,
+    CITE_REF_SELECTOR,
+    buildCiteData,
+    citeMarkerHtml,
+    parseCiteData,
+    renderCitationLabels,
+    type CiteRefItem
+  } from "$lib/citations/cite-marker";
+  import { normalizeCslItems, type CslItem } from "$lib/citations/csl";
   import {
     FOOTNOTE_REF_SELECTOR,
     addFootnote,
@@ -203,10 +217,13 @@
     removeFootnote,
     renumberFootnoteMarkers,
     updateFootnote,
+    withFootnotes,
     type UndoFootnoteScopeEntry
   } from "$lib/footnotes";
   import {
     buildChapterHtml,
+    chapterSceneIds,
+    chapterSectionTargets,
     isSceneBreakElement,
     joinChapterMarkdown,
     sceneBreakHtml,
@@ -271,6 +288,13 @@
   import { SHORTCUT_GROUPS, buildShortcutsPdf } from "$lib/shortcuts";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
+    buildScrivenerProject,
+    estimateScrivenerStoredChars,
+    scrivenerFilesFromEntries,
+    scrivenerFilesFromZip
+  } from "$lib/import/scrivener";
+  import type { ScrivenerFiles, ScrivenerImportReport } from "$lib/import/scrivener";
+  import {
     createResearchFolderName,
     formatResearchFileSize,
     MAX_RESEARCH_FILE_BYTES,
@@ -324,8 +348,8 @@
     saveVault,
     writeStored
   } from "$lib/storage/repository";
-  import { getVaultBackend } from "$lib/storage/vault-store";
   import { readEncryptedBundleHint } from "$lib/storage/encrypted-bundle";
+  import { getVaultBackend } from "$lib/storage/vault-store";
   import {
     clearSyncState,
     loadSyncState,
@@ -503,6 +527,18 @@
   let dataStatus = $state("");
   let epubImportInput = $state<HTMLInputElement>();
   let epubImportBusy = $state(false);
+  let scrivenerZipInput = $state<HTMLInputElement>();
+  let scrivenerFolderInput = $state<HTMLInputElement>();
+  let scrivenerImportDialog: HTMLDialogElement;
+  let scrivenerImportBusy = $state(false);
+  // Read when the dialog opens: the storage backend is chosen at startup and does not change reactively.
+  let scrivenerImportOnLocalStorage = $state(false);
+  let scrivenerPreview = $state<{
+    project: ProjectData;
+    report: ScrivenerImportReport;
+    storedChars: number;
+  } | null>(null);
+  let scrivenerNameDraft = $state("");
   let markdownFolderInput = $state<HTMLInputElement>();
   let fountainImportInput = $state<HTMLInputElement>();
   let markdownImportDialog: HTMLDialogElement;
@@ -674,6 +710,18 @@
     beforeSelection: CaretSelection;
   } | null>(null);
   let footnoteFlashTimer: ReturnType<typeof setTimeout> | undefined;
+  let citations = $state<CslItem[]>([]);
+  let citationLibraryOpen = $state(false);
+  let citationPicker = $state<{
+    left: number;
+    top: number;
+    initialCites: CiteRefItem[];
+    isEditing: boolean;
+    target:
+      | { kind: "editor-insert"; range: Range }
+      | { kind: "editor-edit"; marker: HTMLElement }
+      | { kind: "footnote"; onCommit: (cites: CiteRefItem[]) => void; onRemove?: () => void };
+  } | null>(null);
   // On phones both sidebars are overlay drawers. On tablets the progress
   // sidebar still overlays, but the binder remains part of the layout.
   let mobileDrawerOpen = $derived(
@@ -1265,6 +1313,7 @@
       researchFolders,
       researchItems,
       publishOptions,
+      citations,
       comments: dropOrphanComments(comments, new Set(documents.map((doc) => doc.id))),
       snapshots: dropOrphanSnapshots(snapshots, new Set(documents.map((doc) => doc.id)))
     };
@@ -1408,6 +1457,9 @@
     activity = project.activity;
     timelineNodes = normalizeTimelineNodes(project.timelineNodes);
     publishOptions = normalizePublishOptions(project.publishOptions);
+    citations = normalizeCslItems(project.citations);
+    citationLibraryOpen = false;
+    citationPicker = null;
     const savedRows = Array.isArray(project.storyboardRows)
       ? project.storyboardRows.filter((row): row is StoryboardRow =>
         typeof row === "object" && row !== null && typeof row.id === "string" && typeof row.title === "string")
@@ -2513,7 +2565,8 @@
       researchFolderName: "",
       researchFolders: [],
       researchItems: [],
-      publishOptions: defaultPublishOptions()
+      publishOptions: defaultPublishOptions(),
+      citations: []
     };
     const chapter = next.chapters[0];
     const scene: DocumentData = {
@@ -2715,6 +2768,117 @@
       openSettings();
     } finally {
       epubImportBusy = false;
+    }
+  }
+
+  const MAX_SCRIVENER_ENTRY_BYTES = 50_000_000;
+
+  function triggerScrivenerZipImport() {
+    if (scrivenerImportBusy) return;
+    scrivenerZipInput?.click();
+  }
+
+  function triggerScrivenerFolderImport() {
+    if (scrivenerImportBusy) return;
+    scrivenerFolderInput?.click();
+  }
+
+  async function handleScrivenerZipImport(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || scrivenerImportBusy) return;
+    scrivenerImportBusy = true;
+    dataStatus = "Reading Scrivener project…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      openScrivenerPreview(scrivenerFilesFromZip(bytes), "");
+    } catch (error) {
+      console.error("Could not read that Scrivener project.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not read that Scrivener project.";
+    } finally {
+      scrivenerImportBusy = false;
+    }
+  }
+
+  async function handleScrivenerFolderImport(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const picked = [...(input.files ?? [])];
+    input.value = "";
+    if (!picked.length || scrivenerImportBusy) return;
+    scrivenerImportBusy = true;
+    dataStatus = "Reading Scrivener project…";
+    try {
+      const entries: { path: string; bytes: Uint8Array }[] = [];
+      const folderName = picked[0].webkitRelativePath.split("/")[0] || "";
+      for (const file of picked) {
+        const relativePath = file.webkitRelativePath || file.name;
+        const segments = relativePath.split("/");
+        if (segments.length < 2) continue;
+        if (file.size > MAX_SCRIVENER_ENTRY_BYTES) continue;
+        entries.push({
+          path: segments.slice(1).join("/"),
+          bytes: new Uint8Array(await file.arrayBuffer())
+        });
+      }
+      openScrivenerPreview(scrivenerFilesFromEntries(entries), folderName);
+    } catch (error) {
+      console.error("Could not read that Scrivener project.", error);
+      dataStatus = error instanceof Error ? error.message : "Could not read that Scrivener project.";
+    } finally {
+      scrivenerImportBusy = false;
+    }
+  }
+
+  function openScrivenerPreview(files: ScrivenerFiles, projectName: string) {
+    const { project, report } = buildScrivenerProject(files, projectName ? { projectName } : {});
+    scrivenerPreview = { project, report, storedChars: estimateScrivenerStoredChars(files) };
+    scrivenerNameDraft = project.name;
+    dataStatus = "";
+    scrivenerImportOnLocalStorage = getVaultBackend() === "localstorage";
+    if (!scrivenerImportDialog.open) scrivenerImportDialog.showModal();
+  }
+
+  async function submitScrivenerImport(event: SubmitEvent) {
+    event.preventDefault();
+    const preview = scrivenerPreview;
+    if (!preview || scrivenerImportBusy) return;
+    const project = { ...preview.project, name: scrivenerNameDraft.trim() || preview.project.name };
+    scrivenerImportBusy = true;
+    try {
+      showZenInterface();
+      if (saveTimer) clearTimeout(saveTimer);
+      persistNow();
+      // Save first: if the storage is too small the open project stays as it is.
+      const nextProjects = [...projects, project];
+      try {
+        saveVault(nextProjects, project.id);
+        await flushVaultStorage();
+      } catch (error) {
+        try {
+          saveVault(projects, activeProjectId);
+          await flushVaultStorage();
+        } catch {
+          // The previous state could not be rewritten either.
+        }
+        console.error("Not enough storage for that import.", error);
+        throw new Error(isQuotaExceededError(error)
+          ? "There is not enough storage for that import. Try importing a smaller project."
+          : "Could not save the imported project.");
+      }
+      projects = nextProjects;
+      loadProject(project);
+      void syncNativeProjectMenu();
+      const { report } = preview;
+      dataStatus = `Imported “${project.name}”: ${report.chapters} chapter(s), `
+        + `${report.scenes} scene(s), ${report.wikiPages} wiki page(s).`;
+      scrivenerPreview = null;
+      scrivenerImportDialog?.close();
+      settingsDialog?.close();
+    } catch (error) {
+      dataStatus = error instanceof Error ? error.message : "Could not import that Scrivener project.";
+    } finally {
+      scrivenerImportBusy = false;
     }
   }
 
@@ -3431,14 +3595,44 @@
     await tick();
   }
 
+  /**
+   * A screenplay scene can't go through markdown: its elements (`data-sp`)
+   * would come back as plain paragraphs. So a chapter holding one has no
+   * markdown editor.
+   */
+  function chapterHasScreenplayScene(chapterId: string | undefined): boolean {
+    return Boolean(chapterId)
+      && scenesInChapter(chapterId as string).some((doc) => doc.format === "screenplay");
+  }
+
+  /**
+   * Brings the markdown editor up to date with the chapter's scenes. If the
+   * chapter now holds a screenplay scene (restored or moved in), the editor
+   * goes back to rich text instead, without writing the markdown back.
+   */
+  function syncChapterMarkdownSource() {
+    if (markdownEditorMode && activeChapter && chapterHasScreenplayScene(activeChapter.id)) {
+      markdownEditorMode = false;
+      setEditorContent(buildChapterHtml(
+        scenesInChapter(activeChapter.id).map((doc) => doc.content),
+        publishOptions.sceneSeparator
+      ));
+      refreshCounts();
+      return;
+    }
+    setMarkdownSource(chapterMarkdownSource());
+  }
+
   function switchToMarkdownEditor() {
     if (!markdownEditorEnabled || markdownEditorMode) return;
+    if (inChapterMode && chapterHasScreenplayScene(activeChapter?.id)) return;
     if (saveTimer) clearTimeout(saveTimer);
     persistNow();
     const active = documents.find((doc) => doc.id === activeDocumentId);
     setMarkdownSource(inChapterMode ? chapterMarkdownSource() : (active?.markdownSource ?? htmlToMarkdown(editor.innerHTML, active?.footnotes)));
     selectEditorImage(null);
     closeFootnotePopover(false);
+    closeCitationPicker(false);
     clearRichTextFade();
     markdownEditorMode = true;
   }
@@ -3458,6 +3652,8 @@
 
   /** Writes the chapter markdown source back to scene documents. */
   function applyMarkdownSourceToDocs() {
+    // Never through markdown: a screenplay scene's elements would be lost.
+    if (chapterHasScreenplayScene(activeChapter?.id)) return;
     const mdSections = splitChapterMarkdown(markdownSource);
     const parsedSections = mdSections.map((section) => markdownToDocument(section));
     writeChapterSections(
@@ -3474,7 +3670,8 @@
       applyMarkdownSourceToDocs();
       setEditorContent(buildChapterHtml(
         scenesInChapter(activeChapter.id).map((doc) => doc.content),
-        publishOptions.sceneSeparator
+        publishOptions.sceneSeparator,
+        scenesInChapter(activeChapter.id).map((doc) => doc.id)
       ));
     } else {
       const html = applySingleDocumentMarkdown(markdownSource);
@@ -3498,7 +3695,11 @@
     let html = "";
     if (inChapterMode && activeChapter) {
       applyMarkdownSourceToDocs();
-      html = buildChapterHtml(scenesInChapter(activeChapter.id).map((doc) => doc.content), publishOptions.sceneSeparator);
+      html = buildChapterHtml(
+        scenesInChapter(activeChapter.id).map((doc) => doc.content),
+        publishOptions.sceneSeparator,
+        scenesInChapter(activeChapter.id).map((doc) => doc.id)
+      );
     } else {
       html = applySingleDocumentMarkdown(markdownSource);
     }
@@ -3804,10 +4005,23 @@
       selectEditorImage(null);
       hideHarperPopover();
       hideCommentSelectionPopover();
+      closeCitationPicker(false);
       openFootnotePopoverForMarker(footnoteRef);
       return;
     }
     if (footnotePopover) closeFootnotePopover(false);
+    const citeRef = target instanceof Element
+      ? target.closest<HTMLElement>(CITE_REF_SELECTOR)
+      : null;
+    if (citeRef && editor.contains(citeRef)) {
+      event.preventDefault();
+      selectEditorImage(null);
+      hideHarperPopover();
+      hideCommentSelectionPopover();
+      openCitationPickerForMarker(citeRef);
+      return;
+    }
+    if (citationPicker && citationPicker.target.kind !== "footnote") closeCitationPicker(false);
     const divider = target instanceof Element ? target.closest<HTMLElement>(".scene-break") : null;
     if (divider && editor.contains(divider)) {
       event.preventDefault();
@@ -4076,6 +4290,7 @@
     editor.innerHTML = html;
     ensureParagraphsAroundRichBlocks(editor);
     renumberFootnoteMarkers(editor);
+    refreshEditorCitationLabels();
     const cleaned = cleanHtml(html);
     liveEditorHtml = cleaned;
     knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
@@ -4087,7 +4302,10 @@
     syncScreenplayElementType();
     updateScreenplayMetrics();
     hideHarperPopover();
-    if (!applyingUndoHistory) footnotePopover = null;
+    if (!applyingUndoHistory) {
+      footnotePopover = null;
+      citationPicker = null;
+    }
     scheduleHarperLint();
   }
 
@@ -4503,7 +4721,8 @@
       if (markdownEditorMode) {
         applyMarkdownSourceToDocs();
       } else {
-        writeChapterSections(splitChapterHtml(cleanHtml(editor.innerHTML)));
+        const cleaned = cleanHtml(editor.innerHTML);
+        writeChapterSections(splitChapterHtml(cleaned), undefined, undefined, chapterSceneIds(cleaned));
       }
       chapters = chapters.map((chapter) => chapter.id === activeChapter.id ? { ...chapter, title } : chapter);
       persistChapters();
@@ -5057,7 +5276,7 @@
       now: Date.now(),
       reason: "before-restore"
     }));
-    const restored = cleanHtml(snapshot.content);
+    const restored = cleanHtml(snapshotHtml(snapshot));
     documents = documents.map((doc) => {
       if (doc.id !== snapshot.documentId) return doc;
       const { markdownSource: _discarded, ...rest } = doc;
@@ -5067,9 +5286,10 @@
       activeDocumentId = snapshot.documentId;
       setEditorContent(buildChapterHtml(
         scenesInChapter(activeChapter.id).map((doc) => doc.content),
-        publishOptions.sceneSeparator
+        publishOptions.sceneSeparator,
+        scenesInChapter(activeChapter.id).map((doc) => doc.id)
       ));
-      setMarkdownSource(chapterMarkdownSource());
+      syncChapterMarkdownSource();
       scrollToScene(snapshot.documentId);
     } else {
       setEditorContent(restored);
@@ -5123,9 +5343,7 @@
     const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
     documents = documents.map((doc) => {
       if (!scopeIds.has(doc.id)) return doc;
-      const nextNotes = map.get(doc.id);
-      const { footnotes: _old, ...rest } = doc;
-      return nextNotes && nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+      return withFootnotes(doc, map.get(doc.id));
     });
   }
 
@@ -5135,10 +5353,7 @@
     const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
     documents = documents.map((doc) => {
       if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
-      const nextNotes = doc.footnotes.filter((fn) => !drop.has(fn.id));
-      if (nextNotes.length === doc.footnotes.length) return doc;
-      const { footnotes: _old, ...rest } = doc;
-      return nextNotes.length > 0 ? { ...rest, footnotes: nextNotes } : rest;
+      return withFootnotes(doc, doc.footnotes.filter((fn) => !drop.has(fn.id)));
     });
   }
 
@@ -5151,12 +5366,28 @@
     return editor ? encodeSelection(editor) : null;
   }
 
+  /**
+   * The rich editor's content is now newer than any Markdown source of the
+   * scene (or the chapter's scenes), so the source is dropped; otherwise the
+   * open sync folder or the Markdown editor would bring the old text back.
+   */
+  function dropEditedMarkdownSource() {
+    const chapterId = inChapterMode ? activeChapter?.id : undefined;
+    documents = documents.map((doc) => {
+      if (doc.markdownSource === undefined) return doc;
+      if (chapterId ? doc.chapterId !== chapterId : doc.id !== activeDocumentId) return doc;
+      const { markdownSource: _markdownSource, ...withoutMarkdownSource } = doc;
+      return withoutMarkdownSource;
+    });
+  }
+
   function finishProgrammaticBodyEdit(before: CaretSelection, caretMoved = true) {
     if (!editor) return;
     renumberFootnoteMarkers(editor);
     const cleaned = cleanHtml(editor.innerHTML);
     liveEditorHtml = cleaned;
     knownEditorFootnoteIds = new Set(extractFootnoteIds(cleaned));
+    dropEditedMarkdownSource();
     pendingEdit = {
       kind: "other",
       caretMoved,
@@ -5265,6 +5496,7 @@
     const marker = editor?.querySelector<HTMLElement>(
       `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id="${CSS.escape(current.id)}"]`
     ) ?? null;
+    if (citationPicker?.target.kind === "footnote") citationPicker = null;
     footnotePopover = null;
     clearActiveFootnoteMarkerClass();
     if (refocusEditor && editor && !markdownEditorMode) {
@@ -5298,7 +5530,7 @@
       const nextNotes = hasEntry
         ? updateFootnote(existing, id, clean)
         : [...existing, { id, html: clean }];
-      return { ...doc, footnotes: nextNotes };
+      return withFootnotes(doc, nextNotes);
     });
     if (footnotePopover && footnotePopover.id === id) {
       footnotePopover.dirty = true;
@@ -5333,7 +5565,7 @@
 
     const added = addFootnote(targetDoc.footnotes, "");
     documents = documents.map((doc) => doc.id === targetDoc.id
-      ? { ...doc, footnotes: added.footnotes }
+      ? withFootnotes(doc, added.footnotes)
       : doc);
 
     const template = document.createElement("div");
@@ -5389,9 +5621,7 @@
     const scopeIds = new Set(scope.docs.map((doc) => doc.id));
     documents = documents.map((doc) => {
       if (!scopeIds.has(doc.id) || !doc.footnotes?.length) return doc;
-      const pruned = pruneOrphanFootnotes(scope.html, doc.footnotes);
-      const { footnotes: _old, ...rest } = doc;
-      return pruned.length > 0 ? { ...rest, footnotes: pruned } : rest;
+      return withFootnotes(doc, pruneOrphanFootnotes(scope.html, doc.footnotes));
     });
     finishProgrammaticBodyEdit(before, true);
   }
@@ -5425,6 +5655,225 @@
     void tick().then(() => openFootnotePopoverForMarker(marker));
   }
 
+  function refreshEditorCitationLabels() {
+    if (!editor) return;
+    renderCitationLabels(
+      editor,
+      citations,
+      publishOptions.citationStyle ?? "apa7",
+      publishOptions.citationLocale ?? "en"
+    );
+  }
+
+  $effect(() => {
+    void citations;
+    void publishOptions.citationStyle;
+    void publishOptions.citationLocale;
+    if (editor && !markdownEditorMode) {
+      refreshEditorCitationLabels();
+    }
+  });
+
+  function handleCitationsChange(next: CslItem[]) {
+    citations = next;
+    pageStateDirty = true;
+    commitPageState();
+    persist();
+    refreshEditorCitationLabels();
+  }
+
+  function openCitationLibrary() {
+    citationLibraryOpen = true;
+  }
+
+  function positionCitationPickerForRect(rect: DOMRect): { left: number; top: number } {
+    const width = 370;
+    const estimatedHeight = 360;
+    const showAbove = rect.bottom + estimatedHeight + 16 > window.innerHeight && rect.top > estimatedHeight;
+    return {
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      top: showAbove
+        ? Math.max(8, rect.top - estimatedHeight)
+        : Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - estimatedHeight - 8))
+    };
+  }
+
+  function clearActiveCitationMarkerClass() {
+    if (!editor) return;
+    for (const el of editor.querySelectorAll(`span.${CITE_REF_CLASS}.active-cite`)) {
+      el.classList.remove("active-cite");
+    }
+  }
+
+  function openCitationPickerAtCaret() {
+    if (!editor || markdownEditorMode || !activeDocumentId) return;
+    closeFootnotePopover(false);
+    hideHarperPopover();
+    hideCommentSelectionPopover();
+    clearActiveCitationMarkerClass();
+
+    let range: Range;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0
+      && editor.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      range = selection.getRangeAt(0).cloneRange();
+      range.collapse(false);
+    } else {
+      range = document.createRange();
+      const lastParagraph = editor.querySelector("p:last-of-type") ?? editor.lastElementChild ?? editor;
+      range.selectNodeContents(lastParagraph);
+      range.collapse(false);
+    }
+
+    const rawRect = range.getBoundingClientRect();
+    const fallbackEl = range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement ?? editor;
+    const rect = rawRect.width > 0 || rawRect.height > 0 ? rawRect : fallbackEl.getBoundingClientRect();
+    citationPicker = {
+      ...positionCitationPickerForRect(rect),
+      initialCites: [],
+      isEditing: false,
+      target: { kind: "editor-insert", range }
+    };
+  }
+
+  function openCitationPickerForMarker(marker: HTMLElement) {
+    if (!editor || markdownEditorMode) return;
+    const cites = parseCiteData(marker.getAttribute("data-cites"));
+    if (!cites) return;
+    clearActiveCitationMarkerClass();
+    marker.classList.add("active-cite");
+    citationPicker = {
+      ...positionCitationPickerForRect(marker.getBoundingClientRect()),
+      initialCites: cites,
+      isEditing: true,
+      target: { kind: "editor-edit", marker }
+    };
+  }
+
+  function openCitationPickerForFootnote(request: FootnoteCitationRequest) {
+    clearActiveCitationMarkerClass();
+    citationPicker = {
+      ...positionCitationPickerForRect(request.rect),
+      initialCites: request.initialCites,
+      isEditing: request.isEditing,
+      target: {
+        kind: "footnote",
+        onCommit: request.onCommit,
+        onRemove: request.onRemove
+      }
+    };
+  }
+
+  function closeCitationPicker(refocusEditor = false) {
+    const current = citationPicker;
+    if (!current) return;
+    citationPicker = null;
+    clearActiveCitationMarkerClass();
+    if (refocusEditor && current.target.kind !== "footnote" && editor && !markdownEditorMode) {
+      if (current.target.kind === "editor-edit" && editor.contains(current.target.marker)) {
+        placeCaretAfterMarker(current.target.marker);
+      } else {
+        editor.focus();
+      }
+    }
+  }
+
+  function repositionCitationPicker() {
+    const current = citationPicker;
+    if (!current || !editor) return;
+    if (current.target.kind !== "editor-edit") return;
+    if (!editor.contains(current.target.marker)) {
+      closeCitationPicker(false);
+      return;
+    }
+    const rect = current.target.marker.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      closeCitationPicker(false);
+      return;
+    }
+    const pos = positionCitationPickerForRect(rect);
+    current.left = pos.left;
+    current.top = pos.top;
+  }
+
+  function commitCitationPicker(cites: CiteRefItem[]) {
+    const current = citationPicker;
+    if (!current) return;
+    if (current.target.kind === "footnote") {
+      const fnCommit = current.target.onCommit;
+      citationPicker = null;
+      fnCommit(cites);
+      return;
+    }
+    if (!editor || markdownEditorMode) {
+      closeCitationPicker(false);
+      return;
+    }
+
+    const before = seedBodyUndoBeforeEdit();
+    if (current.target.kind === "editor-edit") {
+      const marker = current.target.marker;
+      if (editor.contains(marker)) {
+        marker.setAttribute("data-cites", buildCiteData(cites));
+        refreshEditorCitationLabels();
+        finishProgrammaticBodyEdit(before, true);
+        placeCaretAfterMarker(marker);
+      }
+    } else {
+      const range = current.target.range;
+      const tpl = document.createElement("div");
+      tpl.innerHTML = citeMarkerHtml(cites);
+      const marker = tpl.firstElementChild as HTMLElement;
+      if (editor.contains(range.commonAncestorContainer)) {
+        range.insertNode(marker);
+      } else {
+        const lastParagraph = editor.querySelector("p:last-of-type") ?? editor.lastElementChild ?? editor;
+        lastParagraph.append(marker);
+      }
+      const after = document.createRange();
+      after.setStartAfter(marker);
+      after.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(after);
+      refreshEditorCitationLabels();
+      finishProgrammaticBodyEdit(before, true);
+      editor.focus();
+    }
+    citationPicker = null;
+    clearActiveCitationMarkerClass();
+  }
+
+  function removeCitationFromPicker() {
+    const current = citationPicker;
+    if (!current) return;
+    if (current.target.kind === "footnote") {
+      const fnRemove = current.target.onRemove;
+      citationPicker = null;
+      fnRemove?.();
+      return;
+    }
+    if (current.target.kind === "editor-edit" && editor && !markdownEditorMode) {
+      const marker = current.target.marker;
+      if (editor.contains(marker)) {
+        const before = seedBodyUndoBeforeEdit();
+        const range = document.createRange();
+        range.setStartBefore(marker);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        marker.remove();
+        finishProgrammaticBodyEdit(before, true);
+        editor.focus();
+      }
+    }
+    citationPicker = null;
+    clearActiveCitationMarkerClass();
+  }
+
   function snapshotLabel(snapshot: DocumentSnapshot): string {
     const when = new Date(snapshot.createdAt).toLocaleString();
     return snapshot.reason === "before-restore" ? `${when} (before a restore)` : when;
@@ -5440,37 +5889,60 @@
   }
 
   /**
-   * Writes chapter sections back to scene documents in order. Surplus
-   * sections fold into the last scene; scenes left without a section are
-   * emptied and moved to Trash; trashed scenes regaining a section are
+   * Writes chapter sections back to scene documents. With the scene ids the
+   * dividers carry, each section goes to its own scene; otherwise in order.
+   * Surplus sections fold into the last scene; scenes left without a section
+   * are emptied and moved to Trash; trashed scenes regaining a section are
    * restored (undo of a merge).
    */
   function writeChapterSections(
     sections: string[],
     markdownSections?: string[],
-    footnoteSections?: FootnoteDef[][]
+    footnoteSections?: FootnoteDef[][],
+    sceneIds?: string[]
   ) {
     const chapterId = activeChapter?.id;
     if (!chapterId) return;
-    writeChapterSectionsFor(chapterId, sections, markdownSections, footnoteSections);
+    writeChapterSectionsFor(chapterId, sections, markdownSections, footnoteSections, sceneIds);
   }
 
   function writeChapterSectionsFor(
     chapterId: string,
     sections: string[],
     markdownSections?: string[],
-    footnoteSections?: FootnoteDef[][]
+    footnoteSections?: FootnoteDef[][],
+    sceneIds?: string[]
   ) {
     const live = documents.filter((doc) => doc.chapterId === chapterId && !doc.trashed);
     if (live.length === 0) return;
     const trashed = documents.filter((doc) => doc.chapterId === chapterId && doc.trashed);
+    const byIds = chapterSectionTargets(
+      live.map((doc) => doc.id),
+      trashed.map((doc) => doc.id),
+      sceneIds,
+      sections.length
+    );
     const revived: DocumentData[] = [];
-    for (let index = live.length; index < sections.length; index++) {
-      const donor = trashed.find((doc) => !revived.some((entry) => entry.id === doc.id));
-      if (!donor) break;
-      revived.push(donor);
+    if (byIds) {
+      for (const id of byIds) {
+        const donor = trashed.find((doc) => doc.id === id);
+        if (donor) revived.push(donor);
+      }
+    } else {
+      for (let index = live.length; index < sections.length; index++) {
+        const donor = trashed.find((doc) => !revived.some((entry) => entry.id === doc.id));
+        if (!donor) break;
+        revived.push(donor);
+      }
     }
-    const targets = [...live, ...revived];
+    // By ids, the scenes no section names come last: like surplus scenes, they
+    // are trashed below and their footnotes follow their markers.
+    const targets = byIds
+      ? [
+        ...byIds.map((id) => [...live, ...revived].find((doc) => doc.id === id) as DocumentData),
+        ...live.filter((doc) => !byIds.includes(doc.id))
+      ]
+      : [...live, ...revived];
     const merged = [...sections];
     const mergedMarkdown = markdownSections ? [...markdownSections] : undefined;
     const mergedFootnotes = footnoteSections ? footnoteSections.map((list) => [...list]) : undefined;
@@ -5561,6 +6033,19 @@
       }
       return doc;
     });
+    if (byIds) {
+      // A scene cut and pasted elsewhere in the chapter keeps its new place:
+      // the chapter's scenes take the dividers' order, in the slots they held.
+      const slots = documents.flatMap((doc, index) => (byIds.includes(doc.id) ? [index] : []));
+      const ordered = byIds.map((id) => documents.find((doc) => doc.id === id) as DocumentData);
+      if (slots.some((slot, index) => documents[slot].id !== ordered[index].id)) {
+        const next = [...documents];
+        slots.forEach((slot, index) => {
+          next[slot] = ordered[index];
+        });
+        documents = next;
+      }
+    }
   }
 
   function scrollToScene(docId: string) {
@@ -5913,7 +6398,7 @@
     documents = [...documents.slice(0, at), next, ...documents.slice(at)];
     activeDocumentId = next.id;
     const dividerTemplate = document.createElement("div");
-    dividerTemplate.innerHTML = sceneBreakHtml(publishOptions.sceneSeparator);
+    dividerTemplate.innerHTML = sceneBreakHtml(publishOptions.sceneSeparator, next.id);
     const divider = dividerTemplate.firstElementChild as HTMLElement;
     (block as HTMLElement).replaceWith(divider);
     let target = significantSibling(divider, "next");
@@ -6010,12 +6495,15 @@
     if (!chapter) return false;
     activeDocumentId = anchorId;
     title = chapter.title;
+    // Leave the markdown editor without writing anything back (see chapterHasScreenplayScene).
+    if (markdownEditorMode && chapterHasScreenplayScene(chapter.id)) markdownEditorMode = false;
     clearRichTextFade();
     setEditorContent(buildChapterHtml(
       scenesInChapter(chapter.id).map((doc) => doc.content),
-      publishOptions.sceneSeparator
+      publishOptions.sceneSeparator,
+      scenesInChapter(chapter.id).map((doc) => doc.id)
     ));
-    setMarkdownSource(chapterMarkdownSource());
+    syncChapterMarkdownSource();
     refreshCounts();
     lastEditorWordCount = wordCount;
     scrollToScene(anchorId);
@@ -6135,9 +6623,10 @@
       if (inChapterMode && activeChapter) {
         setEditorContent(buildChapterHtml(
           scenesInChapter(activeChapter.id).map((doc) => doc.content),
-          publishOptions.sceneSeparator
+          publishOptions.sceneSeparator,
+          scenesInChapter(activeChapter.id).map((doc) => doc.id)
         ));
-        setMarkdownSource(chapterMarkdownSource());
+        syncChapterMarkdownSource();
       } else {
         const current = nextDocuments.find((doc) => doc.id === activeDocumentId);
         if (!current) {
@@ -7324,7 +7813,8 @@
     const doc = documents.find((entry) => entry.id === id);
     if (patch.content !== undefined && doc?.chapterId
       && chapters.some((chapter) => chapter.id === doc.chapterId)) {
-      writeChapterSectionsFor(doc.chapterId, splitChapterHtml(cleanHtml(patch.content)));
+      const cleaned = cleanHtml(patch.content);
+      writeChapterSectionsFor(doc.chapterId, splitChapterHtml(cleaned), undefined, undefined, chapterSceneIds(cleaned));
       persist();
       return;
     }
@@ -7666,12 +8156,13 @@
   function refreshChapterView(scrollToId?: string | null) {
     if (!inChapterMode || !activeChapter) return;
     if (markdownEditorMode) {
-      setMarkdownSource(chapterMarkdownSource());
+      syncChapterMarkdownSource();
       return;
     }
     setEditorContent(buildChapterHtml(
       scenesInChapter(activeChapter.id).map((doc) => doc.content),
-      publishOptions.sceneSeparator
+      publishOptions.sceneSeparator,
+      scenesInChapter(activeChapter.id).map((doc) => doc.id)
     ));
     refreshCounts();
     if (scrollToId) scrollToScene(scrollToId);
@@ -7700,8 +8191,13 @@
       node.remove();
       node = next;
     }
+    // The section's divider goes too (the one before it, or after the first),
+    // so the scenes after it keep their own sections.
+    const divider = index > 0 ? breaks[index - 1] : end;
+    const after: Node | null = divider === end ? end?.nextSibling ?? null : end;
+    divider?.remove();
     if (caretInside && selection) {
-      let host: Node | null = end;
+      let host: Node | null = after;
       while (host && ((host.nodeType === Node.TEXT_NODE && !(host.textContent ?? "").trim())
         || isSceneBreakElement(host))) {
         host = host.nextSibling;
@@ -8091,7 +8587,7 @@
         refreshCounts();
       }
     } else if (inActiveChapter && markdownEditorMode) {
-      setMarkdownSource(chapterMarkdownSource());
+      syncChapterMarkdownSource();
     }
     persist();
   }
@@ -8317,6 +8813,15 @@
       }
       return;
     }
+    if ((event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey
+      && (event.key.toLowerCase() === "c" || event.code === "KeyC")) {
+      if (workspaceView === "writing" && !markdownEditorMode && activeDocumentId
+        && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
+        openCitationPickerAtCaret();
+      }
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openProjectSearch();
@@ -8338,6 +8843,7 @@
       // Pasted or restored widgets arrive as source only and need rendering.
       ensureParagraphsAroundRichBlocks(editor);
       renumberFootnoteMarkers(editor);
+      refreshEditorCitationLabels();
       void renderRichWidgets(editor, { mode: "svg", bodySizePt: 12 });
       if (event instanceof Event && screenplayActive && !markdownEditorMode) {
         syncScreenplayTyping();
@@ -8362,13 +8868,7 @@
       recordFieldEdit(editor, encodeCurrentBodyUndo(cleaned), encodeSelection(editor));
     }
     const previousWordCount = lastEditorWordCount;
-    const chapterId = inChapterMode ? activeChapter?.id : undefined;
-    documents = documents.map((doc) => {
-      if (doc.markdownSource === undefined) return doc;
-      if (chapterId ? doc.chapterId !== chapterId : doc.id !== activeDocumentId) return doc;
-      const { markdownSource: _markdownSource, ...withoutMarkdownSource } = doc;
-      return withoutMarkdownSource;
-    });
+    dropEditedMarkdownSource();
     refreshCounts();
     trackActivity(wordCount - previousWordCount);
     lastEditorWordCount = wordCount;
@@ -8452,6 +8952,7 @@
       storyboardRows: $state.snapshot(storyboardRows),
       timelineNodes: $state.snapshot(timelineNodes),
       publishOptions: $state.snapshot(publishOptions),
+      citations: $state.snapshot(citations),
       chapters: $state.snapshot(chapters),
       documents: $state.snapshot(documents)
     };
@@ -8567,6 +9068,10 @@
     if (step.changes.storyboardRows) storyboardRows = next.storyboardRows as StoryboardRow[];
     if (step.changes.timelineNodes) timelineNodes = next.timelineNodes as TimelineNode[];
     if (step.changes.publishOptions) publishOptions = next.publishOptions as PublishOptions;
+    if (step.changes.citations) {
+      citations = next.citations as CslItem[];
+      refreshEditorCitationLabels();
+    }
     if (step.changes.chapters) chapters = next.chapters as ChapterData[];
     if (step.changes.documents) documents = next.documents as DocumentData[];
     if (!storyboardDrawings.some((drawing) => drawing.id === selectedDrawingId)) selectedDrawingId = null;
@@ -9233,10 +9738,14 @@
     // every caret move, which would otherwise dismiss it instantly.
     window.addEventListener("scroll", repositionHarperPopover, true);
     window.addEventListener("scroll", repositionFootnotePopover, true);
+    window.addEventListener("scroll", repositionCitationPicker, true);
     const handleOutsideFootnotePointer = (event: PointerEvent) => {
-      if (!footnotePopover) return;
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest(`.footnote-popover, ${FOOTNOTE_REF_SELECTOR}`)) return;
+      if (citationPicker && !target?.closest(`.citation-picker, ${CITE_REF_SELECTOR}`)) {
+        closeCitationPicker(false);
+      }
+      if (!footnotePopover) return;
+      if (target?.closest(`.footnote-popover, .citation-picker, ${FOOTNOTE_REF_SELECTOR}`)) return;
       closeFootnotePopover(false);
     };
     window.addEventListener("pointerdown", handleOutsideFootnotePointer);
@@ -9247,6 +9756,7 @@
       window.removeEventListener("scroll", repositionHarperPopover, true);
       if (screenplayMetricsTimer) clearTimeout(screenplayMetricsTimer);
       window.removeEventListener("scroll", repositionFootnotePopover, true);
+      window.removeEventListener("scroll", repositionCitationPicker, true);
       window.removeEventListener("pointerdown", handleOutsideFootnotePointer);
       keepCommentPreview();
     };
@@ -10409,11 +10919,21 @@
           <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><MessageSquareText size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert footnote" title="Insert footnote" onpointerdown={(event) => event.preventDefault()} onclick={insertFootnoteAtCaret}><Superscript size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label="Insert citation" title="Insert citation" onpointerdown={(event) => event.preventDefault()} onclick={openCitationPickerAtCaret}><Quote size={16} aria-hidden="true" /></button>
+          <button class="tool-button tool-button-wide" aria-label="Sources" title="Sources…" onpointerdown={(event) => event.preventDefault()} onclick={openCitationLibrary}>Sources…</button>
           <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
           <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
           {#if markdownEditorEnabled}
-            <button class="tool-button tool-button-wide" aria-label="Markdown editor" title="Markdown editor" onpointerdown={(event) => event.preventDefault()} onclick={toggleEditorMode}>MD</button>
+            {@const screenplayChapter = inChapterMode && chapterHasScreenplayScene(activeChapter?.id)}
+            <button
+              class="tool-button tool-button-wide"
+              aria-label="Markdown editor"
+              title={screenplayChapter ? "Not available in a chapter with screenplay scenes" : "Markdown editor"}
+              disabled={screenplayChapter}
+              onpointerdown={(event) => event.preventDefault()}
+              onclick={toggleEditorMode}
+            >MD</button>
           {/if}
         </div>
         {/if}
@@ -10636,9 +11156,29 @@
             initialHtml={footnotePopover.initialHtml}
             left={footnotePopover.left}
             top={footnotePopover.top}
+            {citations}
+            citationStyle={publishOptions.citationStyle ?? "apa7"}
+            citationLocale={publishOptions.citationLocale ?? "en"}
             onChange={(html) => footnotePopover && handleFootnotePopoverChange(footnotePopover.id, footnotePopover.docId, html)}
             onRemove={() => footnotePopover && removeFootnoteById(footnotePopover.id, true)}
             onClose={() => closeFootnotePopover(true)}
+            onRequestCitation={openCitationPickerForFootnote}
+          />
+        {/if}
+
+        {#if citationPicker && !markdownEditorMode}
+          <CitationPicker
+            items={citations}
+            citationStyle={publishOptions.citationStyle ?? "apa7"}
+            citationLocale={publishOptions.citationLocale ?? "en"}
+            initialCites={citationPicker.initialCites}
+            isEditing={citationPicker.isEditing}
+            left={citationPicker.left}
+            top={citationPicker.top}
+            onCommit={commitCitationPicker}
+            onRemove={citationPicker.isEditing ? removeCitationFromPicker : undefined}
+            onClose={() => closeCitationPicker(true)}
+            onOpenLibrary={() => { closeCitationPicker(false); openCitationLibrary(); }}
           />
         {/if}
 
@@ -10975,8 +11515,11 @@
             options={publishOptions}
             theme={resolvedTheme}
             {colorScheme}
+            {citations}
+            citationsCount={citations.length}
             onOptionsChange={handlePublishOptionsChange}
             beforeExport={preparePublishExport}
+            onOpenSources={openCitationLibrary}
           />
         {/if}
     </section>
@@ -11171,7 +11714,7 @@
               <li class="snapshot-item">
                 <div class="snapshot-meta">
                   <strong>{snapshotLabel(snapshot)}</strong>
-                  <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                  <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshotHtml(snapshot)))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
                 </div>
                 <div class="snapshot-actions">
                   <button class="side-action" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
@@ -11179,7 +11722,7 @@
                   <button class="side-action danger" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
                 </div>
                 {#if snapshotPreviewId === snapshot.id}
-                  <div class="snapshot-preview">{@html cleanHtml(snapshot.content)}</div>
+                  <div class="snapshot-preview">{@html cleanHtml(snapshotHtml(snapshot))}</div>
                 {/if}
               </li>
             {/each}
@@ -11491,6 +12034,18 @@
           <button
             type="button"
             class="data-button"
+            onclick={triggerScrivenerZipImport}
+            disabled={scrivenerImportBusy}
+          >Import Scrivener zip…</button>
+          <button
+            type="button"
+            class="data-button"
+            onclick={triggerScrivenerFolderImport}
+            disabled={scrivenerImportBusy}
+          >Import Scrivener folder…</button>
+          <button
+            type="button"
+            class="data-button"
             onclick={triggerMarkdownFolderImport}
             disabled={markdownImportBusy}
           >Import Markdown folder…</button>
@@ -11501,6 +12056,7 @@
           >Import Fountain screenplay…</button>
         </div>
         <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
+        <p class="data-help">Creates a new project from a Scrivener project (.scriv), as a zip or as a folder. Manuscript chapters and scenes become chapters and scenes, the research folder becomes wiki pages. Labels, status, keywords, notes and snapshots are not imported.</p>
         <p class="data-help">Creates a new project from a folder of Markdown files (for example an Obsidian vault). You choose which folders are the manuscript and which become wiki pages.</p>
         <p class="data-help">Adds a Fountain or plain-text screenplay to the open project as a screenplay scene.</p>
       </div>
@@ -11732,6 +12288,23 @@
         onchange={handleEpubImport}
       />
       <input
+        id="scrivener-zip-import-input"
+        class="data-file-input"
+        type="file"
+        accept=".zip,application/zip"
+        bind:this={scrivenerZipInput}
+        onchange={handleScrivenerZipImport}
+      />
+      <input
+        id="scrivener-folder-import-input"
+        class="data-file-input"
+        type="file"
+        multiple
+        {...{ webkitdirectory: true }}
+        bind:this={scrivenerFolderInput}
+        onchange={handleScrivenerFolderImport}
+      />
+      <input
         id="markdown-folder-input"
         class="data-file-input"
         type="file"
@@ -11747,6 +12320,7 @@
         accept=".fountain,.txt,text/plain"
         bind:this={fountainImportInput}
         onchange={handleFountainImport}
+      />
       />
       {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
     </section>
@@ -11813,6 +12387,18 @@
           event.preventDefault();
           void openExternalUrl(APP_REPOSITORY_URL);
         }}>{APP_REPOSITORY_URL}</a>
+      </p>
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading">
+        <strong>Open source licences / Attribution</strong>
+        <span>Bundled citation style rules are derived from the Citation Style Language project styles (CC BY-SA 3.0).</span>
+      </div>
+      <p class="about-link-row">
+        <a class="about-link" href="https://github.com/citation-style-language/styles" target="_blank" rel="noreferrer" onclick={(event) => {
+          event.preventDefault();
+          void openExternalUrl("https://github.com/citation-style-language/styles");
+        }}>https://github.com/citation-style-language/styles</a>
       </p>
     </section>
     <section class="preference-section">
@@ -12235,7 +12821,7 @@
             <li class="snapshot-item">
               <div class="snapshot-meta">
                 <strong>{snapshotLabel(snapshot)}</strong>
-                <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshot.content))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshotHtml(snapshot)))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
               </div>
               <div class="snapshot-actions">
                 <button class="data-button" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
@@ -12243,7 +12829,7 @@
                 <button class="data-button danger-button" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
               </div>
               {#if snapshotPreviewId === snapshot.id}
-                <div class="snapshot-preview">{@html cleanHtml(snapshot.content)}</div>
+                <div class="snapshot-preview">{@html cleanHtml(snapshotHtml(snapshot))}</div>
               {/if}
             </li>
           {/each}
@@ -12352,6 +12938,69 @@
     <div class="settings-footer"><span>Only http and https links are supported.</span><button class="done-button" type="submit">Add link</button></div>
   </form>
 </dialog>
+
+<dialog class="settings-dialog scrivener-import-dialog" bind:this={scrivenerImportDialog} onclick={(event) => {
+  if (event.target === scrivenerImportDialog) scrivenerImportDialog.close();
+}}>
+  <form onsubmit={(event) => void submitScrivenerImport(event)}>
+    <div class="settings-header">
+      <div><span class="settings-kicker">SCRIVENER</span><h2>Import project</h2></div>
+      <button class="close-settings" aria-label="Close Scrivener import" type="button" onclick={() => scrivenerImportDialog.close()}>×</button>
+    </div>
+    <div class="settings-body">
+      {#if scrivenerPreview}
+        <section class="preference-section">
+          <div class="preference-heading"><strong>Project details</strong><span>Review what the import will create</span></div>
+          <label class="preference-label" for="scrivener-project-name">Project name</label>
+          <input
+            id="scrivener-project-name"
+            class="preference-select"
+            type="text"
+            bind:value={scrivenerNameDraft}
+            maxlength="100"
+            required
+          />
+          <ul class="scrivener-import-summary">
+            <li>{scrivenerPreview.report.chapters} chapter(s)</li>
+            <li>{scrivenerPreview.report.scenes} scene(s)</li>
+            <li>{scrivenerPreview.report.wikiPages} wiki page(s)</li>
+            <li>{scrivenerPreview.report.wikiFolders} wiki folder(s)</li>
+            {#if scrivenerPreview.report.skippedFiles > 0}
+              <li>{scrivenerPreview.report.skippedFiles} file(s) such as PDFs and images were skipped</li>
+            {/if}
+            {#if scrivenerPreview.report.itemsWithNotes > 0}
+              <li>{scrivenerPreview.report.itemsWithNotes} item(s) have notes that are not imported</li>
+            {/if}
+            {#if scrivenerPreview.report.flattenedFolders > 0}
+              <li>{scrivenerPreview.report.flattenedFolders} folder(s) were flattened</li>
+            {/if}
+            {#if scrivenerPreview.report.missingFiles > 0}
+              <li>{scrivenerPreview.report.missingFiles} file(s) could not be read</li>
+            {/if}
+          </ul>
+          {#if scrivenerImportOnLocalStorage}
+            {#if scrivenerPreview.storedChars > 3_000_000}
+              <p class="data-warning">This is probably too much for ProseCraft's storage, which holds roughly four million characters in total. Try importing a smaller project.</p>
+            {:else}
+              <p class="data-help">Selected: about {(scrivenerPreview.storedChars / 1_000_000).toFixed(1)} of roughly 4 million characters of storage.</p>
+            {/if}
+          {/if}
+        </section>
+        {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
+      {/if}
+    </div>
+    <div class="settings-footer"><span>Only the manuscript and research are imported.</span><button class="done-button" type="submit" disabled={scrivenerImportBusy}>{scrivenerImportBusy ? "Importing…" : "Import"}</button></div>
+  </form>
+</dialog>
+
+{#if citationLibraryOpen}
+  <CitationLibraryDialog
+    items={citations}
+    {documents}
+    onChange={handleCitationsChange}
+    onClose={() => (citationLibraryOpen = false)}
+  />
+{/if}
 
 {#if projectSearchOpen}
   <SearchDialog
@@ -12984,7 +13633,7 @@
   .title-input { display: block; width: 100%; margin: 21px 0 22px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text-heading); font-family: var(--writing-font, var(--interface-font)); font-size: clamp(calc(32px * var(--editor-scale)), calc(4vw * var(--editor-scale)), calc(40px * var(--editor-scale))); font-weight: 500; letter-spacing: -1.35px; line-height: 1.2; }
   .title-input::placeholder { color: var(--text-faint); }
   .editor-tools { position: sticky; top: 58px; z-index: 1; display: flex; flex-direction: column; gap: 6px; }
-  .toolbar { display: flex; min-height: 41px; align-items: center; gap: 3px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
+  .toolbar { display: flex; min-width: 0; max-width: 100%; min-height: 41px; flex-wrap: wrap; align-items: center; gap: 3px; row-gap: 4px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-soft); }
   .style-select { width: 112px; height: 28px; padding: 0 6px; border: 0; outline: 0; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
   .toolbar-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
   .tool-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
@@ -13169,6 +13818,24 @@
   @keyframes footnote-flash {
     0% { box-shadow: 0 0 0 3px var(--accent); background: color-mix(in srgb, var(--accent) 42%, transparent); }
     100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .editor-content :global(span.cite-ref) {
+    display: inline;
+    margin: 0 1px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    color: var(--accent-strong);
+    font-size: 0.92em;
+    cursor: pointer;
+    user-select: none;
+  }
+  .editor-content :global(span.cite-ref::after) {
+    content: attr(data-label);
+  }
+  .editor-content :global(span.cite-ref:hover),
+  .editor-content :global(span.cite-ref.active-cite) {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
   .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
@@ -13363,6 +14030,8 @@
   .research-markdown-content :global(img) { max-width: 100%; height: auto; }
   .project-settings-dialog form { margin: 0; }
   .research-link-dialog form { margin: 0; }
+  .scrivener-import-dialog form { margin: 0; }
+  .scrivener-import-summary { display: grid; gap: 4px; margin: 10px 0 8px; padding: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; list-style: none; }
   .starter-dialog form { margin: 0; }
   .starter-options { display: grid; gap: 6px; }
   .starter-option { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 8px 10px; border: 1px solid var(--border-control); border-radius: 6px; cursor: pointer; }
@@ -13787,7 +14456,7 @@
     .board-card-title { font-size: 16px; }
     .board-card-note, .storyboard-text-editor { font-size: 16px; }
     .storyboard-pan-hint { font-size: 10px; }
-    .toolbar { gap: 1px; overflow-x: auto; scrollbar-width: none; }
+    .toolbar { gap: 3px; flex-wrap: wrap; overflow-x: visible; }
     .toolbar::-webkit-scrollbar { display: none; }
     .style-select { width: 100px; flex: 0 0 auto; }
     .toolbar-divider { margin: 0 3px; }
