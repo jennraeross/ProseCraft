@@ -124,6 +124,17 @@ describe("buildScrivenerProject", () => {
     expect(project.documents[0].content).toBe("<p>Data layout.</p>");
   });
 
+  it("reads Japanese text stored in the Shift_JIS code page", () => {
+    const item = binderItem("Text", 'UUID="JA-1"', "Scene");
+    const { project } = build({
+      "project.scrivx": scrivx(draft([item])),
+      // "日本語" as Shift_JIS bytes, as RTF written on a Japanese system stores it.
+      "Files/Data/JA-1/content.rtf":
+        "{\\rtf1\\ansi\\ansicpg932\\cocoartf2639 {\\fonttbl\\f0\\fnil\\fcharset128 HiraginoSans-W3;}\\pard \\f0 \\'93\\'fa\\'96\\'7b\\'8c\\'ea\\par}"
+    });
+    expect(project.documents[0].content).toBe("<p>\u65e5\u672c\u8a9e</p>");
+  });
+
   it("ignores CRLF line breaks in the RTF header", () => {
     // Scrivener writes the header groups on separate lines; a raw CR/LF must
     // never end up as text at the start of the scene content.

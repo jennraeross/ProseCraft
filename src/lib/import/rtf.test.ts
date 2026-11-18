@@ -43,6 +43,29 @@ describe("rtfToHtml", () => {
     );
   });
 
+  it("decodes the Japanese code page", () => {
+    // "日本" in Shift_JIS; below, "中文" in GBK and in Big5, "é" in Mac Roman.
+    expect(rtfToHtml("{\\rtf1\\ansi\\ansicpg932 \\'93\\'fa\\'96\\'7b\\par}")).toBe("<p>\u65e5\u672c</p>");
+  });
+
+  it("decodes the Simplified Chinese code page", () => {
+    expect(rtfToHtml("{\\rtf1\\ansi\\ansicpg936 \\'d6\\'d0\\'ce\\'c4\\par}")).toBe("<p>\u4e2d\u6587</p>");
+  });
+
+  it("decodes the Traditional Chinese code page", () => {
+    expect(rtfToHtml("{\\rtf1\\ansi\\ansicpg950 \\'a4\\'a4\\'a4\\'e5\\par}")).toBe("<p>\u4e2d\u6587</p>");
+  });
+
+  it("decodes the Mac Roman code page", () => {
+    expect(rtfToHtml("{\\rtf1\\mac\\ansicpg10000 caf\\'8e\\par}")).toBe("<p>caf\u00e9</p>");
+  });
+
+  it("keeps \\uN text, \\'hh bytes, tabs and escaped symbols in order", () => {
+    expect(rtfToHtml("{\\rtf1\\ansi\\ansicpg932\\uc0 \\u9731 \\'93\\'fa\\par}")).toBe("<p>\u2603\u65e5</p>");
+    expect(rtfToHtml("{\\rtf1\\ansi\\ansicpg1252 x\\'e9\\tab y\\par}")).toBe("<p>x\u00e9\ty</p>");
+    expect(rtfToHtml("{\\rtf1\\ansi\\ansicpg1252 \\'e9\\{\\par}")).toBe("<p>\u00e9{</p>");
+  });
+
   it("decodes \\uNNNN escapes, including negative UTF-16 values", () => {
     expect(rtfToHtml("{\\rtf1\\ansi \\u228?\\par}")).toBe("<p>\u00e4</p>");
     expect(rtfToHtml("{\\rtf1\\ansi \\uc0\\u228?\\par}")).toBe("<p>\u00e4?</p>");
