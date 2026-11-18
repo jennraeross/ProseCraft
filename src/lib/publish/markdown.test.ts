@@ -230,3 +230,59 @@ describe("markdown citations round trip", () => {
     expect(html).not.toContain("cite-ref");
   });
 });
+
+describe("markdown tables round trip", () => {
+  /** The structure without the newlines marked puts between tags. */
+  const compact = (html: string) => html.replace(/>\n+</g, "><").trim();
+
+  it("writes a table with a header row as a pipe table that reads back as the same table", () => {
+    const html = `<p>Before.</p><table><thead><tr><th>Name</th><th>Role</th></tr></thead>`
+      + `<tbody><tr><td>Mara</td><td><em>Keeper</em></td></tr>`
+      + `<tr><td>a | b</td><td><a href="https://example.test/l">l</a></td></tr></tbody></table><p>After.</p>`;
+
+    const md = htmlToMarkdown(html);
+    expect(md).toBe(
+      "Before.\n\n| Name | Role |\n| --- | --- |\n| Mara | _Keeper_ |\n"
+      + "| a \\| b | [l](https://example.test/l) |\n\nAfter."
+    );
+    expect(compact(roundTrip(html))).toBe(html);
+  });
+
+  it("keeps a footnote marker in a pipe table cell", () => {
+    const html = `<table><thead><tr><th>H</th></tr></thead><tbody><tr><td>n`
+      + `<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup></td></tr></tbody></table>`;
+
+    expect(htmlToMarkdown(html)).toBe("| H |\n| --- |\n| n[^fn-1] |");
+    expect(compact(roundTrip(html))).toBe(html);
+  });
+
+  it("keeps a table with a blank line in it whole, and the text after it", () => {
+    const html = "<table><tbody><tr><td><pre><code>a\n\nb</code></pre></td></tr></tbody></table><p><em>after</em></p>";
+
+    expect(compact(roundTrip(html))).toBe(html);
+  });
+
+  it("keeps any other table as HTML, unchanged through the round trip", () => {
+    for (const html of [
+      // No header row.
+      "<table><tbody><tr><td>no</td><td>header</td></tr><tr><td>x</td><td>y</td></tr></tbody></table>",
+      // More than one line in a cell.
+      "<table><tbody><tr><th>H</th></tr><tr><td><p>one</p><p>two</p></td></tr></tbody></table>",
+      "<table><tbody><tr><th>H</th></tr><tr><td>a<br>b</td></tr></tbody></table>",
+      // Rows of different lengths.
+      "<table><tbody><tr><th>A</th><th>B</th></tr><tr><td>only one</td></tr></tbody></table>",
+      // A block in a cell.
+      "<table><thead><tr><th>H</th></tr></thead><tbody><tr><td><h2>Heading</h2></td></tr></tbody></table>",
+      "<table><thead><tr><th>H</th></tr></thead><tbody><tr><td><ul><li>a</li></ul></td></tr></tbody></table>",
+      "<table><thead><tr><th>H</th></tr></thead><tbody><tr><td><p>one</p></td></tr></tbody></table>",
+      // A pipe in code, which Turndown doesn't escape.
+      "<table><thead><tr><th>H</th></tr></thead><tbody><tr><td><code>x\\|y</code></td></tr></tbody></table>",
+      // A marker the conversion had to make visible is written empty again.
+      `<table><tbody><tr><td>n<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup></td></tr></tbody></table>`
+    ]) {
+      const md = htmlToMarkdown(html);
+      expect(md).toBe(html);
+      expect(roundTrip(html)).toBe(html);
+    }
+  });
+});
