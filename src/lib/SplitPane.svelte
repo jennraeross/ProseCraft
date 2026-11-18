@@ -1,8 +1,9 @@
 <script lang="ts">
   import { ArrowLeft, ArrowLeftRight, ArrowRight, Plus, X } from "@lucide/svelte";
   import { buildChapterHtml } from "$lib/chapter-sections";
+  import GraphTile from "$lib/GraphTile.svelte";
   import { markdownToHtml } from "$lib/publish/markdown";
-  import type { ChapterData, DocumentData, ResearchFile, SceneSeparator } from "$lib/publish/types";
+  import type { ChapterData, DocumentData, ResearchFile, ResearchFolder, SceneSeparator } from "$lib/publish/types";
   import PdfView from "$lib/PdfView.svelte";
   import { sanitizeHtml } from "$lib/sanitize";
   import { parseSplitTarget, type SplitGroup } from "$lib/split";
@@ -20,6 +21,8 @@
     documents,
     files,
     chapters,
+    folders,
+    activeDocumentId,
     sceneSeparator,
     isActiveDocument,
     canAdd,
@@ -36,6 +39,9 @@
     onEditTitle,
     onEditChapterTitle,
     onEditContent,
+    onConfirmCharacter,
+    onOpenPage,
+    onOpenPageInEditor,
     onClose
   }: {
     target: string;
@@ -43,6 +49,9 @@
     documents: DocumentData[];
     files: ResearchFile[];
     chapters: ChapterData[];
+    folders: ResearchFolder[];
+    /** Document open in the main editor; the scene graph tile follows it. */
+    activeDocumentId: string;
     sceneSeparator: SceneSeparator;
     /** True when this pane shows the document the main editor has open. */
     isActiveDocument: boolean;
@@ -61,6 +70,9 @@
     onEditTitle: (id: string, value: string) => void;
     onEditChapterTitle: (chapterId: string, value: string) => void;
     onEditContent: (id: string, html: string) => void;
+    onConfirmCharacter: (sceneId: string, pageId: string) => void;
+    onOpenPage: (id: string) => void;
+    onOpenPageInEditor: (id: string) => void;
     onClose: () => void;
   } = $props();
 
@@ -169,6 +181,9 @@
   <div class="split-pane-header">
     <select aria-label="Show in this pane" value={target} onchange={(event) => onTarget((event.currentTarget as HTMLSelectElement).value)}>
       <option value="">Choose something to show…</option>
+      {#if parsed?.kind === "graph" && parsed.mode === "page" && !groups.some((group) => group.options.some((option) => option.value === target))}
+        <option value={target}>Characters graph</option>
+      {/if}
       {#each groups as group (group.label)}
         <optgroup label={group.label}>
           {#each group.options as option (option.value)}
@@ -183,8 +198,19 @@
     <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to five reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
     <button class="split-button" type="button" aria-label="Close this pane" title="Close this pane" onclick={onClose}><X size={14} aria-hidden="true" /></button>
   </div>
-  <div class="split-pane-body" bind:this={readScroller}>
-    {#if document}
+  <div class="split-pane-body" class:graph-body={parsed?.kind === "graph"} bind:this={readScroller}>
+    {#if parsed?.kind === "graph"}
+      <GraphTile
+        {documents}
+        {chapters}
+        {folders}
+        sceneId={activeDocumentId}
+        pageId={parsed.mode === "page" ? parsed.id : null}
+        onConfirm={(pageId) => onConfirmCharacter(activeDocumentId, pageId)}
+        {onOpenPage}
+        {onOpenPageInEditor}
+      />
+    {:else if document}
       {#if isActiveDocument}
         <h2 class="split-title">{paneTitle}</h2>
         <p class="split-note split-hint">Open in the editor</p>
@@ -230,6 +256,8 @@
   .split-button:hover:not(:disabled) { background: var(--control-hover); color: var(--text-primary); }
   .split-button:disabled { opacity: .4; cursor: default; }
   .split-pane-body { min-height: 0; flex: 1; overflow: auto; padding: 14px 18px 20px; line-height: 1.65; }
+  /* The graph tile fills the pane and scrolls internally. */
+  .split-pane-body.graph-body { display: flex; overflow: hidden; padding: 0; }
   .split-title { margin: 0 0 10px; color: var(--text-heading); font-size: 15px; }
   .split-content :global(pre) { white-space: pre-wrap; word-break: break-word; }
   .split-content :global(img), .split-image { max-width: 100%; }

@@ -2,6 +2,7 @@ import type { CslItem } from "../citations/csl";
 import type { FormattedBibliographyEntry } from "../citations/format";
 import { STYLES, type CitationLocale, type CitationStyleId } from "../citations/styles";
 import { isEmbeddedImageSrc } from "../sanitize";
+import type { DocumentMeta } from "../story-meta";
 import { normalizeMatterPages, type MatterPage } from "./matter";
 import {
   BUILTIN_STYLE_IDS,
@@ -122,6 +123,11 @@ export type DocumentData = {
    */
   character?: CharacterSheet;
   place?: PlaceSheet;
+  /**
+   * Optional story metadata (page kind, aliases, relations, sheet values).
+   * It is never read by the export formats.
+   */
+  meta?: DocumentMeta;
 };
 
 export type ExportFormat = "pdf" | "epub" | "docx" | "markdown" | "html" | "text" | "fountain" | "screenplay-pdf";

@@ -4,15 +4,23 @@ export const MAX_SPLIT_PANES = 5;
 export type SplitPaneState = { id: string; target: string };
 export type SplitOption = { value: string; label: string };
 export type SplitGroup = { label: string; options: SplitOption[] };
-export type SplitTarget = { kind: "doc" | "file"; id: string };
+export type SplitTarget =
+  | { kind: "doc" | "file"; id: string }
+  | { kind: "graph"; mode: "scene" | "page"; id: string };
 
 export const docTarget = (id: string): string => `doc:${id}`;
 export const fileTarget = (id: string): string => `file:${id}`;
+/** Graph tile for the scene being written, or for one wiki page (`id` is its page id). */
+export const graphTarget = (kind: "scene" | "page", id = ""): string =>
+  kind === "scene" ? "graph:scene" : `graph:page:${id}`;
 
 /** Splits a pane target such as `doc:<id>` into its kind and id; empty or malformed targets give null. */
 export function parseSplitTarget(target: string): SplitTarget | null {
+  if (target === "graph:scene") return { kind: "graph", mode: "scene", id: "" };
+  const graph = /^graph:page:(.+)$/.exec(target);
+  if (graph) return { kind: "graph", mode: "page", id: graph[1] };
   const match = /^(doc|file):(.+)$/.exec(target);
-  return match ? { kind: match[1] as SplitTarget["kind"], id: match[2] } : null;
+  return match ? { kind: match[1] as "doc" | "file", id: match[2] } : null;
 }
 
 export function canAddSplitPane(panes: readonly SplitPaneState[]): boolean {

@@ -4,6 +4,7 @@ import { normalizeFootnotes } from "$lib/footnotes";
 import { normalizeProjectKind } from "$lib/project-kind";
 import { htmlToMarkdown, markdownToDocument } from "$lib/publish/markdown";
 import { sanitizeHtml } from "$lib/sanitize";
+import { normalizeMeta } from "$lib/story-meta";
 import type { ChapterData, DocumentData } from "$lib/publish/types";
 import {
   isEntityMeta,
@@ -110,14 +111,14 @@ export function normalizeDocument(document: DocumentData): DocumentData {
   return next;
 }
 
-function formatYamlValue(value: unknown): string {
+export function formatYamlValue(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (typeof value === "string") return JSON.stringify(value);
   return JSON.stringify(value);
 }
 
-function parseYamlValue(raw: string): unknown {
+export function parseYamlValue(raw: string): unknown {
   if (raw === "") return "";
   if (raw === "null") return null;
   if (raw === "true") return true;
@@ -191,7 +192,8 @@ function documentPayload(fields: Record<string, unknown>): Record<string, unknow
     updatedBy: fields.updatedBy,
     deletedAt: fields.deletedAt,
     character: fields.character,
-    place: fields.place
+    place: fields.place,
+    meta: fields.meta
   };
 }
 
@@ -212,7 +214,8 @@ function documentFields(document: DocumentData, meta: EntityMeta): Record<string
     updatedBy: meta.updatedBy,
     deletedAt: meta.deletedAt,
     character: document.character,
-    place: document.place
+    place: document.place,
+    meta: document.meta
   };
 }
 
@@ -294,6 +297,10 @@ function decodeDocument(
   if (footnotes !== undefined) record.footnotes = footnotes;
   if (isObject(fields.character)) record.character = fields.character as DocumentData["character"];
   if (isObject(fields.place)) record.place = fields.place as DocumentData["place"];
+  if (isObject(fields.meta)) {
+    const documentMeta = normalizeMeta(fields.meta);
+    if (documentMeta) record.meta = documentMeta;
+  }
 
   return {
     record,

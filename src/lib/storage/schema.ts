@@ -131,6 +131,8 @@ export function projectContentKey(project: ProjectData): string {
     comments: project.comments ?? [],
     snapshots: project.snapshots ?? [],
     labels: project.labels ?? [],
+    sheetTemplates: project.sheetTemplates ?? [],
+    dismissedSuggestions: project.dismissedSuggestions ?? [],
     citations: project.citations ?? []
   });
 }
