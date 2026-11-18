@@ -488,7 +488,7 @@ function evaluateValueExpression(
       }
       const lower = token.toLowerCase();
       if (macros.has(lower)) return macros.get(lower)!;
-      if (BUILTIN_MONTHS[lower]) return BUILTIN_MONTHS[lower];
+      if (Object.hasOwn(BUILTIN_MONTHS, lower)) return BUILTIN_MONTHS[lower];
       return token;
     })
     .join("");
@@ -638,7 +638,7 @@ export function parseBibtex(text: string): BibtexParseResult {
       warnings
     );
 
-    const cslType = BIBTEX_TYPE_MAP[entryType] ?? "document";
+    const cslType = Object.hasOwn(BIBTEX_TYPE_MAP, entryType) ? BIBTEX_TYPE_MAP[entryType] : "document";
     const item: CslItem = {
       id: citeKey,
       type: cslType,

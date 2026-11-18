@@ -3,7 +3,8 @@ import {
   MAX_CITATION_ITEMS,
   MAX_CITATION_TITLE_LENGTH,
   normalizeCslItems,
-  normalizeCslItemsDetailed
+  normalizeCslItemsDetailed,
+  parseMonthNumber
 } from "./csl";
 import { importCitations } from "./import";
 
@@ -412,5 +413,20 @@ TI  - Missing End Tag
     expect(jsonResult.items).toHaveLength(2);
     expect(jsonResult.items.map((item) => item.id)).toEqual(["ok1", "ok1-2"]);
     expect(jsonResult.warnings.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("reads types, bare words and months named like Object members as plain text", () => {
+    const result = importCitations(`
+@constructor{c1, title = {Odd type}, year = 2020}
+@article{c2, title = constructor # { and } # __proto__, year = 2020, month = constructor}
+`, "odd.bib");
+    expect(result.warnings).toEqual([]);
+    expect(result.items).toEqual([
+      { id: "c1", type: "document", citeKey: "c1", provider: "import", title: "Odd type", issued: { "date-parts": [[2020]] } },
+      { id: "c2", type: "article-journal", citeKey: "c2", provider: "import", title: "constructor and __proto__", issued: { "date-parts": [[2020]] } }
+    ]);
+    expect(parseMonthNumber("constructor")).toBeUndefined();
+    expect(parseMonthNumber("__proto__")).toBeUndefined();
+    expect(parseMonthNumber("toString")).toBeUndefined();
   });
 });
