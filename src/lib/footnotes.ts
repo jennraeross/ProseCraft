@@ -1,5 +1,5 @@
 import type { FootnoteDef } from "./publish/types";
-import { FOOTNOTE_REF_CLASS, isValidFootnoteId, sanitizeInlineHtml } from "./sanitize";
+import { CITE_REF_CLASS, FOOTNOTE_REF_CLASS, isValidFootnoteId, sanitizeInlineHtml } from "./sanitize";
 
 export const FOOTNOTE_REF_SELECTOR = `sup.${FOOTNOTE_REF_CLASS}[data-footnote-id]`;
 
@@ -301,4 +301,84 @@ export function decodeBodyUndoValue(
     return { html: value, footnotes };
   }
   return { html, footnotes };
+}
+
+export type PastedFootnoteSources = {
+  /** Ids with a marker in the editor right now. */
+  inEditor: ReadonlySet<string>;
+  /** Ids defined on a scene open in the editor. */
+  definedHere: ReadonlySet<string>;
+  /** A footnote cut from the editor, which a paste moves back. */
+  cutNote: (id: string) => FootnoteDef | undefined;
+  /** A footnote defined on any document of the project. */
+  note: (id: string) => FootnoteDef | undefined;
+  /** Every footnote id in use in the project, so a copy gets a fresh one. */
+  takenIds: ReadonlySet<string>;
+  idFactory?: FootnoteIdFactory;
+};
+
+/**
+ * Prepares pasted editor HTML so each footnote marker has a note of its own.
+ * A cut footnote that no document defines any more is moved back: it keeps
+ * its id and note, and is listed in `moved`. A footnote still defined
+ * somewhere is copied, as a copied footnote is in a word processor: the
+ * marker gets a new id and its own copy of the note. A marker with no note
+ * anywhere (copied from another project) is dropped.
+ */
+export function adoptPastedFootnotes(
+  html: string,
+  sources: PastedFootnoteSources
+): { html: string; added: FootnoteDef[]; moved: string[] } {
+  if (!html.includes(FOOTNOTE_REF_CLASS)) return { html, added: [], moved: [] };
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  const added: FootnoteDef[] = [];
+  const moved: string[] = [];
+  const taken = [...sources.takenIds].map((id) => ({ id, html: "" }));
+  const resolved = new Map<string, string | null>();
+  const copy = (source: FootnoteDef | undefined): string => {
+    const id = nextUniqueId([...taken, ...added], sources.idFactory ?? createFootnoteId);
+    added.push({ id, html: source?.html ?? "" });
+    return id;
+  };
+  const resolve = (id: string): string | null => {
+    if (sources.inEditor.has(id)) return copy(sources.note(id));
+    if (sources.definedHere.has(id)) return id;
+    const defined = sources.note(id);
+    const cut = sources.cutNote(id);
+    if (cut && !defined) {
+      added.push({ id, html: cut.html });
+      moved.push(id);
+      return id;
+    }
+    return defined || cut ? copy(defined ?? cut) : null;
+  };
+  for (const marker of Array.from(parsed.body.querySelectorAll<HTMLElement>(FOOTNOTE_REF_SELECTOR))) {
+    const id = marker.getAttribute("data-footnote-id") ?? "";
+    if (!resolved.has(id)) resolved.set(id, resolve(id));
+    const next = resolved.get(id);
+    if (next) marker.setAttribute("data-footnote-id", next);
+    else marker.remove();
+  }
+  return { html: parsed.body.innerHTML, added, moved };
+}
+
+/**
+ * Pasted footnote markers and citations without `contenteditable="false"`.
+ * Chromium lifts non-editable elements out of the paragraph when it inserts
+ * HTML; the editor makes the markers non-editable again once they are in.
+ */
+export function editableMarkersHtml(html: string): string {
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  for (const marker of Array.from(parsed.body.querySelectorAll(`sup.${FOOTNOTE_REF_CLASS}, span.${CITE_REF_CLASS}`))) {
+    marker.removeAttribute("contenteditable");
+  }
+  return parsed.body.innerHTML;
+}
+
+/** Removes every footnote marker from `html`. */
+export function stripFootnoteMarkers(html: string): string {
+  if (!html.includes(FOOTNOTE_REF_CLASS)) return html;
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  for (const marker of Array.from(parsed.body.querySelectorAll(`sup.${FOOTNOTE_REF_CLASS}`))) marker.remove();
+  return parsed.body.innerHTML;
 }

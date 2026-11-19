@@ -207,6 +207,8 @@
   import {
     FOOTNOTE_REF_SELECTOR,
     addFootnote,
+    adoptPastedFootnotes,
+    editableMarkersHtml,
     decodeBodyUndoValue,
     encodeBodyUndoValue,
     extractFootnoteIds,
@@ -699,6 +701,10 @@
   let rightSidebarTab = $state<"progress" | "comments" | "snapshots" | "footnotes">("progress");
   let liveEditorHtml = $state("");
   let knownEditorFootnoteIds = new Set<string>();
+  // Notes of footnote markers cut this session, so pasting the markers moves
+  // the notes along; and the ones such a paste moved, in case it is undone.
+  const cutFootnotes = new Map<string, FootnoteDef>();
+  const pastedCutFootnotes = new Map<string, FootnoteDef>();
   let footnotePopover = $state<{
     id: string;
     docId: string;
@@ -4072,7 +4078,8 @@
   /**
    * Equations, diagrams, and calculations are copied as their source rather
    * than their rendered SVG, so pasting them back re-renders them and pasting
-   * into another app gives readable text.
+   * into another app gives readable text. Footnote markers and citations are
+   * copied too; the browser leaves them out because they are not selectable.
    */
   function handleEditorClipboard(event: ClipboardEvent) {
     if (!event.clipboardData) return;
@@ -4082,14 +4089,86 @@
     if (!editor.contains(range.commonAncestorContainer)) return;
     const container = document.createElement("div");
     container.append(range.cloneContents());
-    if (!container.querySelector(RICH_SELECTOR)) return;
+    if (!container.querySelector(`${RICH_SELECTOR}, ${FOOTNOTE_REF_SELECTOR}, ${CITE_REF_SELECTOR}`)) return;
     const html = cleanHtml(container.innerHTML);
     event.preventDefault();
     event.clipboardData.setData("text/html", html);
     event.clipboardData.setData("text/plain", htmlToPlainText(html));
+    if (event.type === "cut") rememberCutFootnotes(extractFootnoteIds(html));
     if (event.type === "cut" && !document.execCommand("delete")) {
       range.deleteContents();
       handleInput();
+    }
+  }
+
+  const PASTE_BLOCK_TAGS = new Set(["P", "DIV", "H1", "H2", "H3", "BLOCKQUOTE", "UL", "OL", "LI", "PRE", "TABLE", "HR", "IMG"]);
+
+  /**
+   * Pasted footnote markers and citations go in through the editor so they
+   * keep their place in the paragraph, and each footnote marker gets a note:
+   * a cut one brings its note back, a copied one gets its own copy.
+   */
+  function handleEditorPaste(event: ClipboardEvent) {
+    const html = event.clipboardData?.getData("text/html") ?? "";
+    if (markdownEditorMode || (!html.includes(FOOTNOTE_REF_CLASS) && !html.includes(CITE_REF_CLASS))) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return;
+    event.preventDefault();
+    const scopeIds = new Set(footnoteDocs().flatMap((doc) => (doc.footnotes ?? []).map((fn) => fn.id)));
+    const projectNotes = new Map(documents.flatMap((doc) => (doc.footnotes ?? []).map((fn) => [fn.id, fn] as const)));
+    const adopted = adoptPastedFootnotes(cleanHtml(html), {
+      inEditor: knownEditorFootnoteIds,
+      definedHere: scopeIds,
+      cutNote: (id) => cutFootnotes.get(id),
+      note: (id) => projectNotes.get(id),
+      takenIds: new Set([...projectNotes.keys(), ...cutFootnotes.keys()])
+    });
+    const targetDocId = docIdForRange(range);
+    if (adopted.added.length > 0 && targetDocId) {
+      documents = documents.map((doc) => doc.id === targetDocId
+        ? withFootnotes(doc, [...(doc.footnotes ?? []), ...adopted.added])
+        : doc);
+    }
+    for (const id of adopted.moved) {
+      const note = cutFootnotes.get(id);
+      cutFootnotes.delete(id);
+      if (note) pastedCutFootnotes.set(id, note);
+    }
+    const fragment = range.createContextualFragment(adopted.html);
+    const inline = Array.from(fragment.childNodes).every((node) =>
+      !(node instanceof HTMLElement) || !PASTE_BLOCK_TAGS.has(node.tagName));
+    if (!inline) {
+      document.execCommand("insertHTML", false, editableMarkersHtml(adopted.html));
+      return;
+    }
+    // Inline content (a phrase, or a lone marker the browser would place
+    // outside the paragraph) goes straight in at the caret. A selection inside
+    // one paragraph is replaced in the same step, so one undo takes it back.
+    if (!selection.isCollapsed) {
+      if (editorTopBlock(range.startContainer) === editorTopBlock(range.endContainer)) range.deleteContents();
+      else document.execCommand("delete");
+    }
+    const caret = selection.getRangeAt(0);
+    const last = fragment.lastChild;
+    caret.insertNode(fragment);
+    if (last) {
+      // The break that holds an empty paragraph open is not needed any more.
+      const placeholder = last.nextSibling;
+      if (placeholder instanceof HTMLBRElement && !placeholder.nextSibling) placeholder.remove();
+      caret.setStartAfter(last);
+      caret.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(caret);
+    }
+    handleInput();
+  }
+
+  /** Keeps the notes of cut footnote markers, so pasting the markers moves them. */
+  function rememberCutFootnotes(ids: readonly string[]) {
+    for (const doc of footnoteDocs()) {
+      for (const fn of doc.footnotes ?? []) if (ids.includes(fn.id)) cutFootnotes.set(fn.id, fn);
     }
   }
 
@@ -5341,6 +5420,16 @@
 
   function restoreScopeFootnotes(map: Map<string, FootnoteDef[]>) {
     const scopeIds = new Set(footnoteDocs().map((doc) => doc.id));
+    const restored = new Set([...map.values()].flat().map((fn) => fn.id));
+    // Undoing the paste of a cut footnote makes it a cut footnote again;
+    // undoing the cut itself puts its note back where it was.
+    for (const [id, note] of pastedCutFootnotes) {
+      if (!restored.has(id)) {
+        pastedCutFootnotes.delete(id);
+        cutFootnotes.set(id, note);
+      }
+    }
+    for (const id of restored) cutFootnotes.delete(id);
     documents = documents.map((doc) => {
       if (!scopeIds.has(doc.id)) return doc;
       return withFootnotes(doc, map.get(doc.id));
@@ -11049,6 +11138,7 @@
           oninput={handleInput}
           oncopy={handleEditorClipboard}
           oncut={handleEditorClipboard}
+          onpaste={handleEditorPaste}
           onclick={handleEditorClick}
           onpointermove={handleEditorPointerMove}
           onpointerleave={() => { wikiMentionPreview = null; hideCommentPreviewSoon(); }}

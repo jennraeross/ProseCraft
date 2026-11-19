@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { commentText } from "./comment-dom";
 import {
   addFootnote,
+  adoptPastedFootnotes,
+  editableMarkersHtml,
   createFootnoteId,
   decodeBodyUndoValue,
   encodeBodyUndoValue,
@@ -16,6 +18,7 @@ import {
   removeFootnote,
   removeFootnoteRefFromHtml,
   renumberFootnoteMarkers,
+  stripFootnoteMarkers,
   updateFootnote,
   withFootnotes
 } from "./footnotes";
@@ -211,5 +214,79 @@ describe("DOM numbering and atomic undo encoding", () => {
     const decodedRedo = decodeBodyUndoValue(redone!.value);
     expect(decodedRedo.html).toBe(initialHtml);
     expect(decodedRedo.footnotes.size).toBe(0);
+  });
+});
+
+describe("adoptPastedFootnotes", () => {
+  const marker = (id: string) => `<sup class="footnote-ref" data-footnote-id="${id}" contenteditable="false"></sup>`;
+  const note: FootnoteDef = { id: "fn-1", html: "Note one." };
+  const none = () => undefined;
+  const base = {
+    inEditor: new Set<string>(),
+    definedHere: new Set<string>(),
+    cutNote: none,
+    note: none,
+    takenIds: new Set<string>(),
+    idFactory: () => "fn-copy01"
+  };
+  const cutOne = (id: string) => (id === "fn-1" ? note : undefined);
+
+  it("moves a cut footnote back when no document defines it", () => {
+    const result = adoptPastedFootnotes(`beta${marker("fn-1")} gam`, { ...base, cutNote: cutOne });
+    expect(result).toEqual({ html: `beta${marker("fn-1")} gam`, added: [note], moved: ["fn-1"] });
+  });
+
+  it("copies a cut footnote under a new id once a document defines it again", () => {
+    // Cut in one chapter and pasted in a second; pasting again in a third.
+    const result = adoptPastedFootnotes(marker("fn-1"), {
+      ...base,
+      cutNote: cutOne,
+      note: cutOne,
+      takenIds: new Set(["fn-1"])
+    });
+    expect(result).toEqual({
+      html: marker("fn-copy01"),
+      added: [{ id: "fn-copy01", html: "Note one." }],
+      moved: []
+    });
+  });
+
+  it("gives a copy of a marker still in the editor its own note", () => {
+    const result = adoptPastedFootnotes(`a${marker("fn-1")}b${marker("fn-1")}`, {
+      ...base,
+      inEditor: new Set(["fn-1"]),
+      definedHere: new Set(["fn-1"]),
+      note: cutOne,
+      takenIds: new Set(["fn-1"])
+    });
+    expect(result.html).toBe(`a${marker("fn-copy01")}b${marker("fn-copy01")}`);
+    expect(result.added).toEqual([{ id: "fn-copy01", html: "Note one." }]);
+  });
+
+  it("copies a note from another scene and keeps a note defined here", () => {
+    expect(adoptPastedFootnotes(marker("fn-1"), { ...base, note: cutOne }).added)
+      .toEqual([{ id: "fn-copy01", html: "Note one." }]);
+    expect(adoptPastedFootnotes(marker("fn-1"), { ...base, definedHere: new Set(["fn-1"]) }))
+      .toEqual({ html: marker("fn-1"), added: [], moved: [] });
+  });
+
+  it("drops a marker with no note anywhere and leaves other HTML alone", () => {
+    expect(adoptPastedFootnotes(`x${marker("fn-9")}y`, base)).toEqual({ html: "xy", added: [], moved: [] });
+    expect(adoptPastedFootnotes("<p>plain</p>", base)).toEqual({ html: "<p>plain</p>", added: [], moved: [] });
+  });
+});
+
+describe("pasted marker HTML", () => {
+  const cite = `<span class="cite-ref" data-cites="[{&quot;id&quot;:&quot;k&quot;}]" contenteditable="false"></span>`;
+  const breakDiv = `<div class="scene-break" contenteditable="false">#</div>`;
+
+  it("makes only footnote markers and citations editable", () => {
+    expect(editableMarkersHtml(`<p>a<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>${cite}</p>${breakDiv}`))
+      .toBe(`<p>a<sup class="footnote-ref" data-footnote-id="fn-1"></sup><span class="cite-ref" data-cites="[{&quot;id&quot;:&quot;k&quot;}]"></span></p>${breakDiv}`);
+  });
+
+  it("strips footnote markers and keeps citations", () => {
+    expect(stripFootnoteMarkers(`a<sup class="footnote-ref" data-footnote-id="fn-1" contenteditable="false"></sup>b${cite}`))
+      .toBe(`ab${cite}`);
   });
 });

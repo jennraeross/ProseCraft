@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
   import { sanitizeHtml } from "$lib/sanitize";
+  import { stripFootnoteMarkers } from "$lib/footnotes";
 
   const EMIT_DELAY_MS = 300;
 
@@ -82,7 +83,8 @@
     event.preventDefault();
     const pastedHtml = clipboard.getData("text/html");
     if (pastedHtml) {
-      document.execCommand("insertHTML", false, sanitizeHtml(pastedHtml));
+      // A tile has no footnote notes to give a pasted marker, so it is left out.
+      document.execCommand("insertHTML", false, stripFootnoteMarkers(sanitizeHtml(pastedHtml)));
     } else {
       const pastedText = clipboard.getData("text/plain");
       if (pastedText) document.execCommand("insertText", false, pastedText);
