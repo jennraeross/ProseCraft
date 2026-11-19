@@ -191,6 +191,7 @@
     type SystemFontFamily
   } from "$lib/editor-fonts";
   import { FOOTNOTE_REF_CLASS, sanitizeHtml as cleanHtml, sanitizeInlineHtml } from "$lib/sanitize";
+  import { pastedPictureHtml } from "$lib/paste-pictures";
   import FootnotePopover, { type FootnoteCitationRequest } from "$lib/FootnotePopover.svelte";
   import CitationLibraryDialog from "$lib/CitationLibraryDialog.svelte";
   import CitationPicker from "$lib/CitationPicker.svelte";
@@ -4237,11 +4238,35 @@
 
   function handleImagePaste(event: ClipboardEvent) {
     const files = imageFiles(event.clipboardData?.files);
-    if (!files.length) return;
+    if (!files.length) {
+      pasteHtmlWithPictures(event);
+      return;
+    }
     event.preventDefault();
     const range = markdownEditorMode ? null : editorRangeAtPoint(event);
     const position = markdownEditorMode ? markdownImagePosition(event) : null;
     void insertImageFiles(files, range, position);
+  }
+
+  /**
+   * Pasted HTML with pictures in it (a copied stretch of a web page, or a
+   * picture copied in the editor) goes in at the caret, inside the paragraph.
+   * Pictures are block-styled, so the browser's own paste would split the
+   * paragraph around them; while inserting they are laid out inline instead.
+   */
+  function pasteHtmlWithPictures(event: ClipboardEvent) {
+    if (event.defaultPrevented || markdownEditorMode
+      || !(event.target instanceof Node) || !editor.contains(event.target)) return;
+    const clean = pastedPictureHtml(event.clipboardData?.getData("text/html") ?? "");
+    if (clean === null) return;
+    event.preventDefault();
+    if (!clean) return;
+    editor.classList.add("pasting-pictures");
+    try {
+      document.execCommand("insertHTML", false, clean);
+    } finally {
+      editor.classList.remove("pasting-pictures");
+    }
   }
 
   function openImagePicker() {
@@ -13838,6 +13863,7 @@
     background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
   .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
+  .editor-content:global(.pasting-pictures) :global(img) { display: inline !important; float: none !important; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
   .editor-content :global(img[data-size="small"]) { width: 25%; height: auto; max-width: 100%; }
   .editor-content :global(img[data-size="medium"]) { width: 50%; height: auto; max-width: 100%; }
