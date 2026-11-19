@@ -110,6 +110,30 @@ describe("sanitizeInlineHtml", () => {
   });
 });
 
+describe("sanitizeHtml heading levels", () => {
+  it("keeps h1 to h3 and turns h4 to h6 into paragraphs", () => {
+    expect(sanitizeHtml("<h3>Kept</h3><h4>One</h4><h5>Two</h5><h6><em>Three</em></h6><p>Four</p>"))
+      .toBe("<h3>Kept</h3><p>One</p><p>Two</p><p><em>Three</em></p><p>Four</p>");
+  });
+
+  it("unwraps a deeper heading that holds blocks, and stays stable when sanitized again", () => {
+    for (const html of ["<h4><div>a</div><div>b</div></h4>", "<h4><p>x</p></h4>", "<h5>One</h5><h6><em>Two</em></h6>"]) {
+      const once = sanitizeHtml(html);
+      expect(sanitizeHtml(once)).toBe(once);
+    }
+    expect(sanitizeHtml("<h4><div>a</div><div>b</div></h4>")).toBe("<div>a</div><div>b</div>");
+    expect(sanitizeHtml("<h4><p>x</p></h4>")).toBe("<p>x</p>");
+  });
+
+  it("drops an empty deeper heading", () => {
+    expect(sanitizeHtml("<p>a</p><h4></h4><h5> <br></h5><p>b</p>")).toBe("<p>a</p><p>b</p>");
+  });
+
+  it("keeps deeper headings as inline text in footnotes", () => {
+    expect(sanitizeInlineHtml("<h4>One</h4>")).toBe("One");
+  });
+});
+
 describe("sanitizeHtml screenplay markers", () => {
   it("keeps known element types on paragraphs", () => {
     expect(sanitizeHtml('<p data-sp="dialogue">Hello</p>')).toBe('<p data-sp="dialogue">Hello</p>');
