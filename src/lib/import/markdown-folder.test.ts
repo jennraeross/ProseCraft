@@ -149,6 +149,14 @@ describe("buildMarkdownProject", () => {
     expect(first.content).not.toContain("<h1");
   });
 
+  it("keeps deeper headings as separate paragraphs", () => {
+    counter = 0;
+    const deep = [file("12_MS/v1/a.md", "# Scene\n\n#### One\n\n#### Two\n\nThree")];
+    const { project } = buildMarkdownProject(deep, plan("folders"), { createId });
+    const scene = project.documents.find((doc) => doc.title === "Scene")!;
+    expect(scene.content.replace(/\n/g, "")).toBe("<p>One</p><p>Two</p><p>Three</p>");
+  });
+
   it("can make every file a chapter instead", () => {
     counter = 0;
     const { project, report } = buildMarkdownProject(files, plan("files"), { createId });

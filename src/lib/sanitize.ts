@@ -15,6 +15,9 @@ const screenplayTypes = new Set([
   "centered", "section", "synopsis", "note", "page-break"
 ]);
 
+const minorHeadingTags = new Set(["H4", "H5", "H6"]);
+const blockSelector = "blockquote, div, h1, h2, h3, hr, li, ol, p, pre, table, ul";
+
 const inlineSafeTags = new Set([
   "A", "B", "BR", "CODE", "DEL", "EM", "I", "S", "STRIKE", "STRONG", "U"
 ]);
@@ -87,6 +90,25 @@ function cleanNode(node: Node, inlineOnly = false): Node | null {
       if (cleanChild) clean.append(cleanChild);
     }
     return clean;
+  }
+
+  if (!inlineOnly && minorHeadingTags.has(node.tagName)) {
+    // The editor has three heading levels. A deeper heading from a paste or an
+    // import becomes a paragraph, so it stays its own block. One that holds
+    // blocks itself is unwrapped instead, since a paragraph cannot hold them.
+    const paragraph = document.createElement("p");
+    for (const child of Array.from(node.childNodes)) {
+      const cleanChild = cleanNode(child, inlineOnly);
+      if (cleanChild) paragraph.append(cleanChild);
+    }
+    if (paragraph.querySelector(blockSelector)) {
+      const fragment = document.createDocumentFragment();
+      fragment.append(...Array.from(paragraph.childNodes));
+      return fragment;
+    }
+    const hasContent = (paragraph.textContent ?? "").trim() !== ""
+      || paragraph.querySelector("img, sup, span, .math-inline") !== null;
+    return hasContent ? paragraph : null;
   }
 
   const allowedTags = inlineOnly ? inlineSafeTags : safeTags;
