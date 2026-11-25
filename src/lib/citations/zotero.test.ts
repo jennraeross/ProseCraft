@@ -285,4 +285,40 @@ describe("ZoteroLocal provider", () => {
     await expect(unreachable.hasBetterBibtexPicker()).resolves.toBe(true);
     expect(isZoteroEndpointMissing("Zotero request timed out after 5s.")).toBe(false);
   });
+
+  it("cancels the pick by the id it sent, and only that one", async () => {
+    const cancelled: string[] = [];
+    let requestId: string | undefined;
+    let answer!: (value: string) => void;
+    const picker = new ZoteroLocal(
+      async (_path: string, options?: { requestId?: string }) => {
+        requestId = options?.requestId;
+        return await new Promise<string>((resolve) => {
+          answer = resolve;
+        });
+      },
+      async (id: string) => {
+        cancelled.push(id);
+        return true;
+      }
+    );
+
+    const picking = picker.tryPick();
+    while (!requestId) await Promise.resolve();
+    expect(requestId).toBeTruthy();
+
+    await expect(picker.cancelPick()).resolves.toBe(true);
+    expect(cancelled).toEqual([requestId]);
+    // A stopped pick is not in flight any more.
+    await expect(picker.cancelPick()).resolves.toBe(false);
+    expect(cancelled).toHaveLength(1);
+
+    answer("");
+    await expect(picking).resolves.toEqual({ supported: true, items: [] });
+  });
+
+  it("has nothing to cancel when no pick is waiting", async () => {
+    const picker = new ZoteroLocal(async () => "[]", async () => true);
+    await expect(picker.cancelPick()).resolves.toBe(false);
+  });
 });

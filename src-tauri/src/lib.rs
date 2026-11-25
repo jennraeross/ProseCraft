@@ -769,6 +769,23 @@ const ZOTERO_PICK_TIMEOUT: Duration = Duration::from_secs(300);
 const ZOTERO_MAX_TIMEOUT: Duration = Duration::from_secs(600);
 const ZOTERO_MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 const ZOTERO_MAX_PATH_LEN: usize = 4096;
+/// Short read slices, so a cancelled pick is noticed while Zotero still holds
+/// the request open waiting for the person to pick.
+const ZOTERO_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const ZOTERO_CANCELLED: &str = "Zotero request cancelled.";
+
+/// In-flight requests the dialog can cancel, by the id it sent with them.
+static ZOTERO_IN_FLIGHT: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn zotero_in_flight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    ZOTERO_IN_FLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn zotero_cancelled(cancel: &Option<Arc<AtomicBool>>) -> bool {
+    cancel
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+}
 
 fn validate_zotero_path(path: &str) -> Result<(), String> {
     if !path.starts_with('/') || path.starts_with("//") {
@@ -925,6 +942,7 @@ fn perform_zotero_request_to(
     addr: std::net::SocketAddr,
     path: &str,
     timeout: Duration,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<String, String> {
     validate_zotero_path(path)?;
 
@@ -950,6 +968,9 @@ fn perform_zotero_request_to(
     let mut parsed_headers: Option<(usize, u16, Option<usize>, bool)> = None;
 
     loop {
+        if zotero_cancelled(&cancel) {
+            return Err(ZOTERO_CANCELLED.to_string());
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(format!(
@@ -957,7 +978,7 @@ fn perform_zotero_request_to(
                 describe_zotero_timeout(timeout)
             ));
         }
-        let _ = stream.set_read_timeout(Some(remaining));
+        let _ = stream.set_read_timeout(Some(remaining.min(ZOTERO_POLL_INTERVAL)));
 
         match stream.read(&mut chunk) {
             Ok(0) => break,
@@ -992,6 +1013,17 @@ fn perform_zotero_request_to(
                         break;
                     }
                 }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                // A short poll slice ran out; the deadline and the cancel flag
+                // are checked at the top of the loop.
             }
             Err(error) => return Err(map_zotero_io_error(error, timeout)),
         }
@@ -1044,17 +1076,52 @@ fn perform_zotero_request_to(
 /// Forwards a GET request exclusively to Zotero's local HTTP server on `127.0.0.1:23119`.
 ///
 /// `timeout_ms` defaults to 5 s, or 5 minutes for Better BibTeX's picker, whose
-/// request stays open until the person has picked.
+/// request stays open until the person has picked. `request_id`, when given,
+/// lets `zotero_cancel` stop the request while it waits.
 #[tauri::command]
-async fn zotero_request(path: String, timeout_ms: Option<u64>) -> Result<String, String> {
+async fn zotero_request(
+    path: String,
+    timeout_ms: Option<u64>,
+    request_id: Option<String>,
+) -> Result<String, String> {
     let timeout = match timeout_ms {
         Some(ms) => Duration::from_millis(ms).min(ZOTERO_MAX_TIMEOUT),
         None => default_zotero_timeout(&path),
     };
+    let cancel = request_id.as_ref().map(|id| {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut requests) = zotero_in_flight().lock() {
+            requests.insert(id.clone(), flag.clone());
+        }
+        flag
+    });
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ZOTERO_PORT));
-    tauri::async_runtime::spawn_blocking(move || perform_zotero_request_to(addr, &path, timeout))
-        .await
-        .map_err(|error| error.to_string())?
+    let result =
+        tauri::async_runtime::spawn_blocking(move || perform_zotero_request_to(addr, &path, timeout, cancel))
+            .await
+            .map_err(|error| error.to_string())?;
+    if let Some(id) = request_id.as_deref()
+        && let Ok(mut requests) = zotero_in_flight().lock()
+    {
+        requests.remove(id);
+    }
+    result
+}
+
+/// Stops an in-flight `zotero_request` by its id. Returns false when it already finished.
+#[tauri::command]
+fn zotero_cancel(request_id: String) -> bool {
+    let flag = zotero_in_flight()
+        .lock()
+        .ok()
+        .and_then(|mut requests| requests.remove(&request_id));
+    match flag {
+        Some(flag) => {
+            flag.store(true, Ordering::Relaxed);
+            true
+        }
+        None => false,
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1231,7 +1298,8 @@ pub fn run() {
             oauth_start_loopback,
             oauth_wait_for_callback,
             oauth_cancel_loopback,
-            zotero_request
+            zotero_request,
+            zotero_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1434,6 +1502,7 @@ mod tests {
             addr,
             "/api/users/0/items?q=&format=csljson&limit=25",
             ZOTERO_TIMEOUT,
+            None,
         );
         assert_eq!(ok_res.unwrap(), "[]");
 
@@ -1441,6 +1510,7 @@ mod tests {
             addr,
             "/api/users/0/items?q=test&format=csljson&limit=25",
             ZOTERO_TIMEOUT,
+            None,
         );
         assert_eq!(err_res.unwrap_err(), "HTTP 403: Local API is not enabled");
 
@@ -1466,12 +1536,63 @@ mod tests {
             addr,
             "/better-bibtex/cayw?format=json",
             Duration::from_millis(150),
+            None,
         )
         .unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < Duration::from_millis(700));
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn zotero_request_stops_when_the_pick_is_cancelled() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&mut stream).unwrap();
+            // Holds the answer back, like a picker nobody has finished using.
+            std::thread::sleep(Duration::from_millis(2000));
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
+        });
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let cancelling = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            flag.store(true, Ordering::Relaxed);
+        });
+
+        let started = Instant::now();
+        let err = perform_zotero_request_to(
+            addr,
+            "/better-bibtex/cayw?format=json",
+            ZOTERO_PICK_TIMEOUT,
+            Some(Arc::clone(&cancel)),
+        )
+        .unwrap_err();
+        assert_eq!(err, ZOTERO_CANCELLED);
+        assert!(started.elapsed() < Duration::from_millis(1500));
+
+        cancelling.join().unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn zotero_cancel_only_knows_requests_that_are_in_flight() {
+        let id = format!("test-{}", std::process::id());
+        let flag = Arc::new(AtomicBool::new(false));
+        zotero_in_flight()
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Arc::clone(&flag));
+
+        assert!(zotero_cancel(id.clone()));
+        assert!(flag.load(Ordering::Relaxed));
+        // Gone once cancelled, so a second cancel has nothing to do.
+        assert!(!zotero_cancel(id));
     }
 
     #[test]
