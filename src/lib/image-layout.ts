@@ -160,18 +160,15 @@ export function imageLayoutStyle(layout: ImageLayout, options: { sizing?: boolea
   const percent = sizing ? imageWidthPercent(safe) : null;
   const declarations: string[] = [];
   if (safe.wrap === "block") {
-    if (sizing) {
-      declarations.push(percent === null ? "width: auto" : `width: ${percent}%`);
-      declarations.push("max-width: 100%", "height: auto");
-    }
+    if (sizing) declarations.push(percent === null ? "width: auto" : `width: ${percent}%`);
+    // Also cap a picture that keeps its own pixel size, so it never runs past the column.
+    declarations.push("max-width: 100%", "height: auto");
     if (safe.align === "center") declarations.push("margin-left: auto", "margin-right: auto");
     else if (safe.align === "right") declarations.push("margin-left: auto", "margin-right: 0");
     else declarations.push("margin-left: 0", "margin-right: auto");
   } else {
-    if (sizing) {
-      declarations.push(percent === null ? "width: auto" : `width: ${percent}%`);
-      declarations.push(percent === null ? "max-width: 50%" : "max-width: 100%", "height: auto");
-    }
+    if (sizing) declarations.push(percent === null ? "width: auto" : `width: ${percent}%`);
+    declarations.push(!sizing || percent === null ? "max-width: 50%" : "max-width: 100%", "height: auto");
     declarations.push(
       `float: ${safe.wrap === "wrap-left" ? "left" : "right"}`,
       safe.wrap === "wrap-left" ? "margin: 4px 18px 14px 0" : "margin: 4px 0 14px 18px"
@@ -227,7 +224,8 @@ export function imageLayoutBox(
   const sourceWidth = Math.max(1, pictureWidth);
   const sourceHeight = Math.max(1, pictureHeight);
   const percent = options.pixelSize ? null : imageWidthPercent(safe);
-  let width = Math.min(percent === null ? sourceWidth : (columnWidth * percent) / 100, columnWidth);
+  const cap = safe.wrap === "block" ? columnWidth : (columnWidth * MAX_WRAP_PERCENT) / 100;
+  let width = Math.min(percent === null ? sourceWidth : (columnWidth * percent) / 100, cap);
   let height = (sourceHeight / sourceWidth) * width;
   const maxHeight = options.maxHeight ?? Infinity;
   if (height > maxHeight) {
