@@ -50,6 +50,7 @@
   let zoteroError = $state<ZoteroErrorState | null>(null);
   let zoteroNotice = $state<string | null>(null);
   let zoteroBbtSupported = $state(true);
+  let zoteroPicking = $state(false);
 
   function emptyDraft(kind: ManualSourceKind = "book"): ManualSourceDraft {
     return {
@@ -103,15 +104,16 @@
   async function checkZoteroConnection() {
     zoteroChecking = true;
     const status = await zotero.checkStatus();
-    zoteroChecking = false;
     zoteroAvailable = status.available;
     if (status.available) {
       if (zoteroError?.code === "not-running") {
         zoteroError = null;
       }
+      zoteroBbtSupported = await zotero.hasBetterBibtexPicker();
     } else if (status.error) {
       zoteroError = status.error;
     }
+    zoteroChecking = false;
   }
 
   async function searchZotero(event: SubmitEvent) {
@@ -137,7 +139,7 @@
   }
 
   async function pickFromZotero() {
-    zoteroSearching = true;
+    zoteroPicking = true;
     zoteroError = null;
     zoteroNotice = null;
     try {
@@ -147,12 +149,21 @@
         return;
       }
       zoteroAvailable = true;
+      zoteroBbtSupported = true;
       if (picked.items.length > 0) {
         zoteroResults = picked.items;
         zoteroHasSearched = true;
+      } else {
+        zoteroNotice = "No Zotero items were picked.";
+      }
+    } catch (error) {
+      const state = classifyZoteroError(error);
+      zoteroError = state;
+      if (state.code === "not-running") {
+        zoteroAvailable = false;
       }
     } finally {
-      zoteroSearching = false;
+      zoteroPicking = false;
     }
   }
 
@@ -642,17 +653,23 @@
           <button
             type="submit"
             class="data-button"
-            disabled={zoteroSearching}
+            disabled={zoteroSearching || zoteroPicking}
           >{zoteroSearching ? "Searching…" : "Search"}</button>
           {#if zoteroBbtSupported}
             <button
               type="button"
               class="data-button"
-              disabled={zoteroSearching}
+              disabled={zoteroSearching || zoteroPicking}
               onclick={() => void pickFromZotero()}
-            >Pick in Zotero…</button>
+            >{zoteroPicking ? "Waiting for Zotero…" : "Pick in Zotero…"}</button>
           {/if}
         </form>
+
+        {#if !zoteroBbtSupported}
+          <p class="zotero-hint">
+            Picking sources in Zotero needs the Better BibTeX plugin. Install it in Zotero to use “Pick in Zotero…”.
+          </p>
+        {/if}
 
         {#if zoteroError && (zoteroAvailable !== false || zoteroError.code === "forbidden" || zoteroError.code === "timeout")}
           <p class="form-error" role="alert">{zoteroError.message}</p>
