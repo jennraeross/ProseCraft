@@ -763,6 +763,10 @@ fn oauth_cancel_loopback() {
 const ZOTERO_HOST: &str = "127.0.0.1:23119";
 const ZOTERO_PORT: u16 = 23119;
 const ZOTERO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Better BibTeX's CAYW picker only answers once the person has picked, so it
+/// needs minutes rather than seconds.
+const ZOTERO_PICK_TIMEOUT: Duration = Duration::from_secs(300);
+const ZOTERO_MAX_TIMEOUT: Duration = Duration::from_secs(600);
 const ZOTERO_MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 const ZOTERO_MAX_PATH_LEN: usize = 4096;
 
@@ -887,36 +891,59 @@ fn decode_chunked_body(raw: &[u8]) -> Result<ChunkedDecode, String> {
     }
 }
 
-fn map_zotero_io_error(error: std::io::Error) -> String {
+fn default_zotero_timeout(path: &str) -> Duration {
+    if path.starts_with("/better-bibtex/cayw") && !path.contains("probe=") {
+        ZOTERO_PICK_TIMEOUT
+    } else {
+        ZOTERO_TIMEOUT
+    }
+}
+
+fn describe_zotero_timeout(timeout: Duration) -> String {
+    let secs = timeout.as_secs();
+    if secs >= 60 && secs % 60 == 0 {
+        let minutes = secs / 60;
+        format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" })
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn map_zotero_io_error(error: std::io::Error, timeout: Duration) -> String {
     match error.kind() {
         std::io::ErrorKind::ConnectionRefused => {
             "Zotero is not running (connection refused on 127.0.0.1:23119).".to_string()
         }
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
-            "Zotero request timed out after 5s.".to_string()
+            format!("Zotero request timed out after {}.", describe_zotero_timeout(timeout))
         }
         _ => format!("Could not reach Zotero: {error}"),
     }
 }
 
-fn perform_zotero_request_to(addr: std::net::SocketAddr, path: &str) -> Result<String, String> {
+fn perform_zotero_request_to(
+    addr: std::net::SocketAddr,
+    path: &str,
+    timeout: Duration,
+) -> Result<String, String> {
     validate_zotero_path(path)?;
 
-    let deadline = Instant::now() + ZOTERO_TIMEOUT;
-    let mut stream = TcpStream::connect_timeout(&addr, ZOTERO_TIMEOUT).map_err(map_zotero_io_error)?;
+    let deadline = Instant::now() + timeout;
+    let mut stream =
+        TcpStream::connect_timeout(&addr, timeout).map_err(|error| map_zotero_io_error(error, timeout))?;
     stream
-        .set_write_timeout(Some(ZOTERO_TIMEOUT))
-        .map_err(map_zotero_io_error)?;
+        .set_write_timeout(Some(timeout))
+        .map_err(|error| map_zotero_io_error(error, timeout))?;
     stream
-        .set_read_timeout(Some(ZOTERO_TIMEOUT))
-        .map_err(map_zotero_io_error)?;
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| map_zotero_io_error(error, timeout))?;
 
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {ZOTERO_HOST}\r\nUser-Agent: ProseCraft\r\nAccept: application/json, text/plain, */*\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
-        .map_err(map_zotero_io_error)?;
+        .map_err(|error| map_zotero_io_error(error, timeout))?;
 
     let mut raw = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -925,7 +952,10 @@ fn perform_zotero_request_to(addr: std::net::SocketAddr, path: &str) -> Result<S
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err("Zotero request timed out after 5s.".to_string());
+            return Err(format!(
+                "Zotero request timed out after {}.",
+                describe_zotero_timeout(timeout)
+            ));
         }
         let _ = stream.set_read_timeout(Some(remaining));
 
@@ -963,7 +993,7 @@ fn perform_zotero_request_to(addr: std::net::SocketAddr, path: &str) -> Result<S
                     }
                 }
             }
-            Err(error) => return Err(map_zotero_io_error(error)),
+            Err(error) => return Err(map_zotero_io_error(error, timeout)),
         }
     }
 
@@ -1012,10 +1042,17 @@ fn perform_zotero_request_to(addr: std::net::SocketAddr, path: &str) -> Result<S
 }
 
 /// Forwards a GET request exclusively to Zotero's local HTTP server on `127.0.0.1:23119`.
+///
+/// `timeout_ms` defaults to 5 s, or 5 minutes for Better BibTeX's picker, whose
+/// request stays open until the person has picked.
 #[tauri::command]
-async fn zotero_request(path: String) -> Result<String, String> {
+async fn zotero_request(path: String, timeout_ms: Option<u64>) -> Result<String, String> {
+    let timeout = match timeout_ms {
+        Some(ms) => Duration::from_millis(ms).min(ZOTERO_MAX_TIMEOUT),
+        None => default_zotero_timeout(&path),
+    };
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ZOTERO_PORT));
-    tauri::async_runtime::spawn_blocking(move || perform_zotero_request_to(addr, &path))
+    tauri::async_runtime::spawn_blocking(move || perform_zotero_request_to(addr, &path, timeout))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -1393,12 +1430,71 @@ mod tests {
             }
         });
 
-        let ok_res = perform_zotero_request_to(addr, "/api/users/0/items?q=&format=csljson&limit=25");
+        let ok_res = perform_zotero_request_to(
+            addr,
+            "/api/users/0/items?q=&format=csljson&limit=25",
+            ZOTERO_TIMEOUT,
+        );
         assert_eq!(ok_res.unwrap(), "[]");
 
-        let err_res = perform_zotero_request_to(addr, "/api/users/0/items?q=test&format=csljson&limit=25");
+        let err_res = perform_zotero_request_to(
+            addr,
+            "/api/users/0/items?q=test&format=csljson&limit=25",
+            ZOTERO_TIMEOUT,
+        );
         assert_eq!(err_res.unwrap_err(), "HTTP 403: Local API is not enabled");
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn zotero_request_honours_a_custom_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&mut stream).unwrap();
+            // Answer after the client's deadline, like a picker nobody has
+            // finished using yet.
+            std::thread::sleep(Duration::from_millis(700));
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
+        });
+
+        let started = Instant::now();
+        let err = perform_zotero_request_to(
+            addr,
+            "/better-bibtex/cayw?format=json",
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(700));
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn zotero_timeout_descriptions_are_readable() {
+        assert_eq!(describe_zotero_timeout(ZOTERO_TIMEOUT), "5s");
+        assert_eq!(describe_zotero_timeout(ZOTERO_PICK_TIMEOUT), "5 minutes");
+        assert_eq!(describe_zotero_timeout(Duration::from_secs(90)), "90s");
+    }
+
+    #[test]
+    fn zotero_default_timeout_is_long_only_for_the_picker() {
+        assert_eq!(
+            default_zotero_timeout("/better-bibtex/cayw?format=json"),
+            ZOTERO_PICK_TIMEOUT
+        );
+        assert_eq!(
+            default_zotero_timeout("/better-bibtex/cayw?probe=1"),
+            ZOTERO_TIMEOUT
+        );
+        assert_eq!(default_zotero_timeout("/connector/ping"), ZOTERO_TIMEOUT);
+        assert_eq!(
+            default_zotero_timeout("/api/users/0/items?q=&format=csljson&limit=25"),
+            ZOTERO_TIMEOUT
+        );
     }
 }
