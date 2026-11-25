@@ -3,6 +3,8 @@ import { resolveBookCitations } from "../citations/bibliography";
 import { DEFAULT_IMAGE_LAYOUT, imageLayoutBox } from "../image-layout";
 import { resolveBookFootnotes, type ResolvedFootnote } from "./footnotes";
 import { matterParagraphs } from "./matter";
+import { createPdfFontSet, type PdfFontSet, type TextSegment } from "./pdf-fonts";
+import type { PdfFontVariant } from "./pdf-font-data";
 import { resolveStyleTokens, type PresetTokens } from "./presets";
 import { blocksFromHtml, inlineRunsFromHtml, type Block, type InlineRun } from "./rich-text";
 import {
@@ -73,11 +75,40 @@ function pdfImageFormat(mediaType: string): string {
   return "PNG";
 }
 
-export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPayload {
+/**
+ * Collects every non-ASCII string in the compiled book so the exporter can
+ * decide whether the (large) CJK fallback fonts are needed. Image payloads are
+ * skipped: they are ASCII base64 and cannot contain text.
+ */
+function collectBookText(book: CompiledBook): string[] {
+  const texts: string[] = [];
+  const seen = new Set<object>();
+  const skippedKeys = new Set(["cover", "image", "src", "dataUrl", "dataURL"]);
+  const visit = (value: unknown, depth: number): void => {
+    if (typeof value === "string") {
+      if (!/[^\x00-\x7f]/.test(value)) return;
+      texts.push(value.length > 100_000 ? value.replace(/data:[^"')\s]+/g, " ") : value);
+      return;
+    }
+    if (depth > 20 || value === null || typeof value !== "object") return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (!skippedKeys.has(key)) visit(child, depth + 1);
+    }
+  };
+  visit(book, 0);
+  return texts;
+}
+
+export async function exportPdf(book: CompiledBook, options: PublishOptions): Promise<ExportPayload> {
   const { book: resolvedBook, bibliography } = resolveBookCitations(book, options);
   book = resolvedBook;
   const tokens = resolveStyleTokens(options.style, options.customStyles);
-  const pdfFont = tokens.pdfFont;
   const pageWidth = tokens.page.widthPt;
   const pageHeight = tokens.page.heightPt;
   const contentLeft = tokens.page.marginLeftPt;
@@ -105,15 +136,78 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     creator: "ProseCraft"
   });
 
+  const fontSet: PdfFontSet = await createPdfFontSet(doc, tokens.pdfFont, collectBookText(book));
+
   let pageNumber = 1;
   let y = contentTop + bodySize;
   let bodyStarted = false;
   let pageHasContent = false;
   let frontMatterMode = false;
 
-  const setFont = (style: string, size: number) => {
-    doc.setFont(pdfFont, style);
-    doc.setFontSize(size);
+  const measureSegments = (segments: TextSegment[], size: number): number =>
+    segments.reduce((sum, segment) => sum + fontSet.width(segment, size), 0);
+
+  const measureText = (text: string, variant: PdfFontVariant, size: number): number =>
+    measureSegments(fontSet.segment(text, variant), size);
+
+  const drawText = (
+    text: string,
+    x: number,
+    baseline: number,
+    opts: { variant: PdfFontVariant; size: number; align?: "left" | "center" | "right" }
+  ): number => {
+    const segments = fontSet.segment(text, opts.variant);
+    const width = measureSegments(segments, opts.size);
+    let cursor = x;
+    if (opts.align === "center") cursor -= width / 2;
+    else if (opts.align === "right") cursor -= width;
+    for (const segment of segments) {
+      doc.setFont(segment.family, segment.variant);
+      doc.setFontSize(opts.size);
+      doc.text(segment.text, cursor, baseline);
+      cursor += fontSet.width(segment, opts.size);
+    }
+    return width;
+  };
+
+  const wrapPlainText = (
+    text: string,
+    maxWidth: number,
+    variant: PdfFontVariant,
+    size: number
+  ): string[] => {
+    const lines: string[] = [];
+    const paragraphs = text.replace(/\r\n?/g, "\n").split("\n");
+    for (const paragraph of paragraphs) {
+      if (paragraph.trim().length === 0) {
+        lines.push("");
+        continue;
+      }
+      let current = "";
+      for (const word of paragraph.split(/(\s+)/).filter((part) => part.length > 0)) {
+        const candidate = current + word;
+        if (current.trim().length > 0 && measureText(candidate.trimEnd(), variant, size) > maxWidth) {
+          lines.push(current.trimEnd());
+          current = word.trimStart();
+        } else {
+          current = candidate;
+        }
+        while (measureText(current, variant, size) > maxWidth && current.length > 1) {
+          const characters = Array.from(current);
+          let index = 1;
+          while (
+            index < characters.length
+            && measureText(characters.slice(0, index + 1).join(""), variant, size) <= maxWidth
+          ) {
+            index += 1;
+          }
+          lines.push(characters.slice(0, index).join("").trimEnd());
+          current = characters.slice(index).join("").trimStart();
+        }
+      }
+      lines.push(current.trimEnd());
+    }
+    return lines;
   };
 
   const setColor = (color: [number, number, number]) => doc.setTextColor(color[0], color[1], color[2]);
@@ -121,14 +215,20 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
   const drawHeaderFooter = () => {
     if (tokens.runningHeader) {
       const header = book.author ? `${book.author} / ${book.title}` : book.title;
-      setFont("normal", 8.5);
       setColor(MUTED);
-      doc.text(header, pageWidth / 2, tokens.page.marginTopPt / 2 + 3, { align: "center" });
+      drawText(header, pageWidth / 2, tokens.page.marginTopPt / 2 + 3, {
+        variant: "normal",
+        size: 8.5,
+        align: "center"
+      });
     }
     if (tokens.pageNumbers) {
-      setFont("normal", 8.5);
       setColor(MUTED);
-      doc.text(String(pageNumber), pageWidth / 2, pageHeight - tokens.page.marginBottomPt / 2 + 3, { align: "center" });
+      drawText(String(pageNumber), pageWidth / 2, pageHeight - tokens.page.marginBottomPt / 2 + 3, {
+        variant: "normal",
+        size: 8.5,
+        align: "center"
+      });
     }
     setColor(INK);
   };
@@ -170,10 +270,8 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     }
   };
 
-  const measure = (text: string, run: InlineRun, size: number, bold = false, italic = false): number => {
-    setFont(fontStyle(run, bold, italic), size);
-    return doc.getTextWidth(text);
-  };
+  const measure = (text: string, run: InlineRun, size: number, bold = false, italic = false): number =>
+    measureText(text, fontStyle(run, bold, italic) as PdfFontVariant, size);
 
   const tokenize = (
     runs: InlineRun[],
@@ -372,20 +470,23 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
       }
       if (token.superscript) {
         const supSize = size * 0.68;
-        setFont(fontStyle(token.run, forceBold, forceItalic), supSize);
-        doc.text(token.text, cursor, baseline - size * 0.35);
-        cursor += token.width;
+        cursor += drawText(token.text, cursor, baseline - size * 0.35, {
+          variant: fontStyle(token.run, forceBold, forceItalic) as PdfFontVariant,
+          size: supSize
+        });
         continue;
       }
-      setFont(fontStyle(token.run, forceBold, forceItalic), size);
-      doc.text(token.text, cursor, baseline);
+      const tokenWidth = drawText(token.text, cursor, baseline, {
+        variant: fontStyle(token.run, forceBold, forceItalic) as PdfFontVariant,
+        size
+      });
       if (token.run.underline) {
-        doc.line(cursor, baseline + 2, cursor + token.width, baseline + 2);
+        doc.line(cursor, baseline + 2, cursor + tokenWidth, baseline + 2);
       }
       if (token.run.strike) {
-        doc.line(cursor, baseline - size * 0.3, cursor + token.width, baseline - size * 0.3);
+        doc.line(cursor, baseline - size * 0.3, cursor + tokenWidth, baseline - size * 0.3);
       }
-      cursor += token.width + (token.isSpace ? extra : 0);
+      cursor += tokenWidth + (token.isSpace ? extra : 0);
     }
   };
 
@@ -419,8 +520,7 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
           if (rest.length > 0) drawRuns[firstIndex] = { ...run, text: rest };
           else drawRuns.splice(firstIndex, 1);
           if (drawRuns.length === 0) return;
-          setFont("bold", bodySize * 5.2);
-          dropCapWidth = doc.getTextWidth(letter) + 3;
+          dropCapWidth = measureText(letter, "bold", bodySize * 5.2) + 3;
         }
       }
     }
@@ -467,9 +567,11 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
 
     if (dropCapLetter) {
       setColor(color);
-      setFont("bold", bodySize * 5.2);
       const dropBaseline = startY + (dropCapLines - 1) * opts.lineHeight;
-      doc.text(dropCapLetter, contentLeft + leftIndent, dropBaseline);
+      drawText(dropCapLetter, contentLeft + leftIndent, dropBaseline, {
+        variant: "bold",
+        size: bodySize * 5.2
+      });
       if (lines.length < dropCapLines) {
         y += (dropCapLines - lines.length) * opts.lineHeight;
       }
@@ -651,11 +753,9 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     y += spacing / 2;
     setColor(MUTED);
     if (separator === "hash") {
-      setFont("normal", bodySize * 0.9);
-      doc.text("#", pageWidth / 2, y, { align: "center" });
+      drawText("#", pageWidth / 2, y, { variant: "normal", size: bodySize * 0.9, align: "center" });
     } else if (separator === "asterisks") {
-      setFont("normal", bodySize * 0.9);
-      doc.text("* * *", pageWidth / 2, y, { align: "center" });
+      drawText("* * *", pageWidth / 2, y, { variant: "normal", size: bodySize * 0.9, align: "center" });
     } else if (separator === "line") {
       doc.setDrawColor(RULE[0], RULE[1], RULE[2]);
       doc.line(pageWidth / 2 - 32, y - bodySize * 0.3, pageWidth / 2 + 32, y - bodySize * 0.3);
@@ -696,32 +796,36 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
 
   const renderTitlePage = () => {
     const titleSize = Math.min(bodySize * 2.7, 34);
-    setFont("normal", titleSize);
     setColor(INK);
-    const titleLines = doc.splitTextToSize(book.title, contentWidth) as string[];
+    const titleLines = wrapPlainText(book.title, contentWidth, "normal", titleSize);
     const titleBlock = titleLines.length * titleSize * 1.18;
     let titleY = pageHeight * 0.3;
     for (const line of titleLines) {
-      doc.text(line, pageWidth / 2, titleY, { align: "center" });
+      drawText(line, pageWidth / 2, titleY, { variant: "normal", size: titleSize, align: "center" });
       titleY += titleSize * 1.18;
     }
     if (book.subtitle) {
-      setFont("italic", bodySize * 1.1);
       setColor(MUTED);
-      doc.text(book.subtitle, pageWidth / 2, titleY + 16, { align: "center" });
+      drawText(book.subtitle, pageWidth / 2, titleY + 16, {
+        variant: "italic",
+        size: bodySize * 1.1,
+        align: "center"
+      });
     }
     if (book.author) {
-      setFont("normal", bodySize);
       setColor(MUTED);
-      doc.text(`by ${book.author}`, pageWidth / 2, pageHeight * 0.55, { align: "center" });
+      drawText(`by ${book.author}`, pageWidth / 2, pageHeight * 0.55, {
+        variant: "normal",
+        size: bodySize,
+        align: "center"
+      });
     }
     if (book.copyright && !options.includeCopyrightPage) {
-      setFont("normal", 8.5);
       setColor(MUTED);
-      const lines = doc.splitTextToSize(book.copyright, contentWidth * 0.9) as string[];
+      const lines = wrapPlainText(book.copyright, contentWidth * 0.9, "normal", 8.5);
       let copyrightY = pageHeight - tokens.page.marginBottomPt - (lines.length - 1) * 11;
       for (const line of lines) {
-        doc.text(line, pageWidth / 2, copyrightY, { align: "center" });
+        drawText(line, pageWidth / 2, copyrightY, { variant: "normal", size: 8.5, align: "center" });
         copyrightY += 11;
       }
     }
@@ -729,12 +833,15 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
   };
 
   const renderDedication = () => {
-    setFont("italic", bodySize * 1.05);
     setColor(MUTED);
-    const lines = doc.splitTextToSize(book.dedication, contentWidth * 0.7) as string[];
+    const lines = wrapPlainText(book.dedication, contentWidth * 0.7, "italic", bodySize * 1.05);
     let dedicationY = pageHeight * 0.45;
     for (const line of lines) {
-      doc.text(line, pageWidth / 2, dedicationY, { align: "center" });
+      drawText(line, pageWidth / 2, dedicationY, {
+        variant: "italic",
+        size: bodySize * 1.05,
+        align: "center"
+      });
       dedicationY += bodySize * 1.55;
     }
     setColor(INK);
@@ -744,12 +851,11 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
   const renderCopyrightPage = () => {
     const size = bodySize * 0.82;
     const lineHeight = size * 1.6;
-    setFont("normal", size);
     setColor(MUTED);
-    const lines = doc.splitTextToSize(book.copyright, contentWidth * 0.85) as string[];
+    const lines = wrapPlainText(book.copyright, contentWidth * 0.85, "normal", size);
     let copyrightY = Math.min(pageHeight * 0.45, contentBottom - (lines.length - 1) * lineHeight);
     for (const line of lines) {
-      doc.text(line, pageWidth / 2, copyrightY, { align: "center" });
+      drawText(line, pageWidth / 2, copyrightY, { variant: "normal", size, align: "center" });
       copyrightY += lineHeight;
     }
     setColor(INK);
@@ -784,11 +890,10 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
   const tocEntryGap = bodySize * 0.35;
   const tocMaxWidth = contentWidth - 48;
   const tocBottomLimit = contentBottom - bodySize * 0.5;
-  setFont("normal", bodySize);
   const tocEntries = hasTableOfContents
     ? book.chapters.map((chapter) => ({
       label: chapter.label,
-      lines: doc.splitTextToSize(chapter.label, tocMaxWidth) as string[],
+      lines: wrapPlainText(chapter.label, tocMaxWidth, "normal", bodySize),
       pageNumber: 0
     }))
     : [];
@@ -813,9 +918,12 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     let tocPageIndex = 0;
     let cursor = tocFirstBaseline;
     doc.setPage(tocPageNumbers[0]);
-    setFont("bold", tocHeadingSize);
     setColor(INK);
-    doc.text("Contents", pageWidth / 2, tocHeadingBaseline, { align: "center" });
+    drawText("Contents", pageWidth / 2, tocHeadingBaseline, {
+      variant: "bold",
+      size: tocHeadingSize,
+      align: "center"
+    });
 
     tocEntries.forEach((entry, index) => {
       const height = Math.max(1, entry.lines.length) * tocLineHeight + tocEntryGap;
@@ -824,12 +932,15 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
         doc.setPage(tocPageNumbers[tocPageIndex]);
         cursor = contentTop + bodySize;
       }
-      setFont("normal", bodySize);
       setColor(INK);
       entry.lines.forEach((line, lineIndex) => {
-        doc.text(line, contentLeft, cursor);
+        drawText(line, contentLeft, cursor, { variant: "normal", size: bodySize });
         if (lineIndex === entry.lines.length - 1) {
-          doc.text(String(chapterStartPages[index] ?? 0), contentRight, cursor, { align: "right" });
+          drawText(String(chapterStartPages[index] ?? 0), contentRight, cursor, {
+            variant: "normal",
+            size: bodySize,
+            align: "right"
+          });
         }
         cursor += tocLineHeight;
       });
@@ -883,14 +994,15 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     if (options.includeChapterTitles) {
       const headingSize = tokens.chapterHeadingSizePt;
       const headingText = tokens.chapterHeadingUppercase ? chapter.label.toUpperCase() : chapter.label;
-      const headingLines = doc.splitTextToSize(headingText, contentWidth) as string[];
+      const headingLines = wrapPlainText(headingText, contentWidth, "bold", headingSize);
       ensureSpace(headingLines.length * headingSize * 1.25 + bodyLine * 2);
       chapterStartPage = pageNumber;
       y += tokens.chapterHeadingSpaceBefore * headingSize;
-      setFont("bold", headingSize);
       setColor(INK);
       for (const line of headingLines) {
-        doc.text(line, tokens.chapterHeadingAlign === "center" ? pageWidth / 2 : contentLeft, y, {
+        drawText(line, tokens.chapterHeadingAlign === "center" ? pageWidth / 2 : contentLeft, y, {
+          variant: "bold",
+          size: headingSize,
           align: tokens.chapterHeadingAlign === "center" ? "center" : "left"
         });
         y += headingSize * 1.25;
