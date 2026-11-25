@@ -3850,7 +3850,8 @@
     { size: "small", label: "Small", ariaLabel: "Small image size" },
     { size: "medium", label: "Medium", ariaLabel: "Medium image size" },
     { size: "large", label: "Large", ariaLabel: "Large image size" },
-    { size: "full", label: "Full", ariaLabel: "Full width" }
+    { size: "full", label: "Full", ariaLabel: "Full width" },
+    { size: "original", label: "Original", ariaLabel: "Original image size" }
   ];
   const IMAGE_ALIGN_OPTIONS: { align: ImageLayoutAlign; label: string }[] = [
     { align: "left", label: "Left" },
@@ -4171,27 +4172,6 @@
     for (const doc of footnoteDocs()) {
       for (const fn of doc.footnotes ?? []) if (ids.includes(fn.id)) cutFootnotes.set(fn.id, fn);
     }
-  }
-
-  function setSelectedImageWidth(percent: number | null) {
-    const image = selectedEditorImage;
-    if (!image || !editor.contains(image)) {
-      selectEditorImage(null);
-      return;
-    }
-    if (percent === null) {
-      image.removeAttribute("width");
-      image.removeAttribute("height");
-    } else {
-      const width = Math.round(editor.clientWidth * percent / 100);
-      const ratio = image.naturalHeight / image.naturalWidth;
-      image.setAttribute("width", String(width));
-      image.setAttribute("height", String(Math.round(width * ratio)));
-    }
-    applyImageLayout(image, { ...readImageLayout(image), size: "large" });
-    selectedImageLayout = readImageLayout(image);
-    paintCustomImageWidth(image);
-    handleInput();
   }
 
   function removeSelectedImage() {
@@ -11064,14 +11044,8 @@
               editor.focus();
             }}
           >
-            <span class="image-edit-label">Image size</span>
-            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(50)}>50%</button>
-            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(75)}>75%</button>
-            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(100)}>Fit width</button>
-            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(null)}>Original size</button>
-            <span class="toolbar-divider" aria-hidden="true"></span>
-            <span class="image-edit-label">Column width</span>
-            <div class="image-layout-group" role="group" aria-label="Image column width">
+            <span class="image-edit-label">Size</span>
+            <div class="image-layout-group" role="group" aria-label="Image size">
               {#each IMAGE_SIZE_OPTIONS as option (option.size)}
                 <button
                   type="button"
@@ -13952,21 +13926,25 @@
   .editor-content :global(span.cite-ref.active-cite) {
     background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
-  .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; object-fit: contain; }
+  .editor-content :global(img) { display: block; max-width: 100%; height: auto; margin: 18px auto; object-fit: contain; }
+  .editor-content :global(img:not([width])) { width: 75%; }
   .editor-content:global(.pasting-pictures) :global(img) { display: inline !important; float: none !important; }
   .editor-content :global(img.selected-writing-image) { outline: 2px solid var(--accent); outline-offset: 3px; cursor: pointer; }
   .editor-content :global(img[data-size="small"]) { width: 25%; height: auto; max-width: 100%; }
   .editor-content :global(img[data-size="medium"]) { width: 50%; height: auto; max-width: 100%; }
   .editor-content :global(img[data-size="large"]) { width: 75%; height: auto; max-width: 100%; }
   .editor-content :global(img[data-size="full"]) { width: 100%; height: auto; max-width: 100%; }
-  .editor-content :global(img[data-size="custom"]) { max-width: 100%; }
-  .editor-content :global(img[data-align="left"]) { margin-right: auto; }
-  .editor-content :global(img[data-align="center"]) { margin-right: auto; margin-left: auto; }
-  .editor-content :global(img[data-align="right"]) { margin-left: auto; }
+  .editor-content :global(img[data-size="original"]) { width: auto; height: auto; max-width: 100%; }
+  .editor-content :global(img[data-size="custom"]) { width: auto; max-width: 100%; }
+  .editor-content :global(img[data-align="left"]) { margin-left: 0; margin-right: auto; }
+  .editor-content :global(img[data-align="center"]) { margin-left: auto; margin-right: auto; }
+  .editor-content :global(img[data-align="right"]) { margin-left: auto; margin-right: 0; }
   .editor-content :global(img[data-wrap="wrap-left"]) { float: left; width: 50%; max-width: 50%; margin: 4px 18px 14px 0; }
   .editor-content :global(img[data-wrap="wrap-right"]) { float: right; width: 50%; max-width: 50%; margin: 4px 0 14px 18px; }
   .editor-content :global(img[data-wrap="wrap-left"][data-size="small"]),
   .editor-content :global(img[data-wrap="wrap-right"][data-size="small"]) { width: 25%; max-width: 25%; }
+  .editor-content :global(img[data-wrap="wrap-left"][data-size="original"]),
+  .editor-content :global(img[data-wrap="wrap-right"][data-size="original"]) { width: auto; max-width: 50%; }
   /* Headings and dividers must start below a floated image. */
   .editor-content :global(h1), .editor-content :global(h2), .editor-content :global(h3),
   .editor-content :global(blockquote), .editor-content :global(pre),
