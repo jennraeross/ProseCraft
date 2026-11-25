@@ -23,7 +23,7 @@ export type PdfFontSet = {
   width(segment: TextSegment, size: number): number;
 };
 
-type FontEntry = {
+export type FontEntry = {
   family: string;
   variant: PdfFontVariant;
   coverage: Map<number, boolean>;
@@ -85,11 +85,12 @@ function binaryString(bytes: Uint8Array): string {
 
 const binaryFontCache = new Map<string, string>();
 
-function binaryFont(data: string): string {
-  const cached = binaryFontCache.get(data);
+/** Decompresses a bundled font once per family and weight. */
+function binaryFont(cacheKey: string, data: string): string {
+  const cached = binaryFontCache.get(cacheKey);
   if (cached !== undefined) return cached;
   const binary = binaryString(unzlibSync(decodeBase64(data)));
-  binaryFontCache.set(data, binary);
+  binaryFontCache.set(cacheKey, binary);
   return binary;
 }
 
@@ -109,7 +110,7 @@ function registerFont(
   data: string
 ): FontEntry {
   const name = `${family}-${variant}`;
-  doc.addFileToVFS(name, binaryFont(data));
+  doc.addFileToVFS(name, binaryFont(name, data));
   doc.addFont(name, family, variant);
   const font = (doc.getFont as unknown as (
     name: string,
@@ -133,6 +134,32 @@ function hasGlyph(entry: FontEntry, codePoint: number): boolean {
   const present = glyph !== 0;
   entry.coverage.set(codePoint, present);
   return present;
+}
+
+/** True when jsPDF gave us the font's glyph table, so coverage can be asked for. */
+function coversByName(entry: FontEntry): boolean {
+  return typeof entry.metadata.characterToGlyph === "function";
+}
+
+/**
+ * The bundled fallback for one character, or `undefined` when neither has it.
+ * A font that can show the glyph wins. When no bundled font has a glyph table
+ * (a jsPDF change), the family bundled for the character's script is used
+ * instead: the primary family would draw a missing-glyph box, which is worse.
+ */
+export function chooseFallback(
+  codePoint: number,
+  sc: FontEntry | undefined,
+  kr: FontEntry | undefined
+): FontEntry | undefined {
+  const ordered = isHangul(codePoint) ? [kr, sc] : [sc, kr];
+  for (const entry of ordered) {
+    if (entry && coversByName(entry) && hasGlyph(entry, codePoint)) return entry;
+  }
+  for (const entry of ordered) {
+    if (entry && !coversByName(entry)) return entry;
+  }
+  return undefined;
 }
 
 /**
@@ -176,12 +203,6 @@ export async function createPdfFontSet(
     kr = registerFont(doc, "ProseCjkKR", "normal", krData);
   }
 
-  const pickFallback = (codePoint: number): FontEntry | undefined => {
-    if (sc && hasGlyph(sc, codePoint)) return sc;
-    if (kr && hasGlyph(kr, codePoint)) return kr;
-    return undefined;
-  };
-
   const segment = (text: string, variant: PdfFontVariant): TextSegment[] => {
     const segments: TextSegment[] = [];
     for (const character of text) {
@@ -189,7 +210,7 @@ export async function createPdfFontSet(
       let family = primaryFamily;
       let segmentVariant: PdfFontVariant = variant;
       if (codePoint !== undefined && codePoint >= 0x80 && !hasGlyph(variants[variant], codePoint)) {
-        const fallback = pickFallback(codePoint);
+        const fallback = chooseFallback(codePoint, sc, kr);
         if (fallback) {
           family = fallback.family;
           segmentVariant = "normal";
