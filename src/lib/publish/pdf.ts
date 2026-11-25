@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import { resolveBookCitations } from "../citations/bibliography";
+import { DEFAULT_IMAGE_LAYOUT, imageLayoutBox } from "../image-layout";
 import { resolveBookFootnotes, type ResolvedFootnote } from "./footnotes";
 import { matterParagraphs } from "./matter";
 import { resolveStyleTokens, type PresetTokens } from "./presets";
@@ -501,24 +502,31 @@ export function exportPdf(book: CompiledBook, options: PublishOptions): ExportPa
     const src = block.image?.src;
     if (!src) throw new Error("The document contains an image without source data.");
     const properties = doc.getImageProperties(src);
-    const width = block.image?.width ?? properties.width;
-    const height = block.image?.height ?? properties.height;
+    const pictureWidth = block.image?.width ?? properties.width;
+    const pictureHeight = block.image?.height ?? properties.height;
     const maxImageHeight = Math.min(288, contentBottom - contentTop - bodyLine * 0.5);
-    const scale = Math.min(1, contentWidth / width, maxImageHeight / height);
-    const imageWidth = width * scale;
-    const imageHeight = height * scale;
-    ensureSpace(imageHeight + bodyLine * 0.5);
+    // The stored layout decides the width and the side, as the editor and the
+    // CSS exports do. A plain picture is 75% wide and centered, and a small one
+    // is drawn at that width like the editor draws it rather than kept tiny.
+    const box = imageLayoutBox(
+      block.image?.layout ?? DEFAULT_IMAGE_LAYOUT,
+      contentWidth,
+      pictureWidth,
+      pictureHeight,
+      { pixelSize: block.image?.pixelSized ?? false, maxHeight: maxImageHeight }
+    );
+    ensureSpace(box.height + bodyLine * 0.5);
     doc.addImage(
       src,
       properties.fileType,
-      contentLeft + (contentWidth - imageWidth) / 2,
+      contentLeft + box.offset,
       y,
-      imageWidth,
-      imageHeight,
+      box.width,
+      box.height,
       undefined,
       "FAST"
     );
-    y += imageHeight + bodyLine * 0.5;
+    y += box.height + bodyLine * 0.5;
   };
 
   const renderBlock = (

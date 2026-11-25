@@ -24,6 +24,19 @@ describe("rich text runs", () => {
     expect(blocks[1].image?.alt).toBe("Diagram");
   });
 
+  it("carries the stored picture layout and the explicit size", () => {
+    const blocks = blocksFromHtml([
+      `<p><img src="${IMAGE}" alt="Placed" data-size="small" data-align="left"></p>`,
+      `<p><img src="${IMAGE}" alt="Pixels" width="80" height="40" data-align="right"></p>`,
+      `<p><img src="${IMAGE}" alt="Plain"></p>`
+    ].join(""));
+    expect(blocks[0].image?.layout).toEqual({ size: "small", align: "left", wrap: "block" });
+    expect(blocks[0].image?.pixelSized).toBe(false);
+    expect(blocks[1].image?.layout).toEqual({ size: "large", align: "right", wrap: "block" });
+    expect(blocks[1].image?.pixelSized).toBe(true);
+    expect(blocks[2].image?.layout).toEqual({ size: "large", align: "center", wrap: "block" });
+  });
+
   it("keeps an image-only paragraph as a run rather than an empty line", () => {
     const blocks = blocksFromHtml(
       `<p><img src="${IMAGE}" alt="Equation" data-inline="true" width="20" height="10"></p>`
