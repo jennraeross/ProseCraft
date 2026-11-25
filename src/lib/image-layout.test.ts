@@ -163,11 +163,11 @@ describe("imageLayoutStyle", () => {
       .toBe("width: auto; max-width: 50%; height: auto; float: left; margin: 4px 18px 14px 0;");
   });
 
-  it("can leave the size to the image and only place it", () => {
+  it("leaves the size alone but still caps it, so nothing runs past the column", () => {
     expect(imageLayoutStyle({ size: "large", align: "left", wrap: "block" }, { sizing: false }))
-      .toBe("margin-left: 0; margin-right: auto;");
+      .toBe("max-width: 100%; height: auto; margin-left: 0; margin-right: auto;");
     expect(imageLayoutStyle({ size: "large", align: "center", wrap: "wrap-right" }, { sizing: false }))
-      .toBe("float: right; margin: 4px 0 14px 18px;");
+      .toBe("max-width: 50%; height: auto; float: right; margin: 4px 0 14px 18px;");
   });
 
   it("floats wrapped images with a margin towards the text", () => {
@@ -236,6 +236,15 @@ describe("imageLayoutBox", () => {
       .toEqual({ width: 320, height: 200, offset: 80 });
   });
 
+  it("keeps a wrapped picture with its own size inside half the column", () => {
+    const box = imageLayoutBox(layout({ size: "large", align: "left", wrap: "wrap-left" }), 400, 320, 200, {
+      pixelSize: true
+    });
+    expect(box.width).toBe(200);
+    expect(box.height).toBe(125);
+    expect(box.offset).toBe(0);
+  });
+
   it("shrinks a tall picture to the page height and keeps it aligned", () => {
     const box = imageLayoutBox(layout({ size: "large", align: "center" }), 400, 400, 2000, { maxHeight: 200 });
     expect(box.height).toBe(200);
@@ -264,7 +273,15 @@ describe("applyImageLayoutStyles", () => {
   it("keeps an explicit pixel size and only places the image", () => {
     const html = applyImageLayoutStyles(HTML(` width="320" height="200" data-align="right"`));
     expect(html).toContain(`width="320"`);
-    expect(html).toContain(`style="margin-left: auto; margin-right: 0;"`);
+    expect(html).toContain(`style="max-width: 100%; height: auto; margin-left: auto; margin-right: 0;"`);
+    expect(html).not.toContain("width: 75%");
+  });
+
+  it("sizes a picture by its width attribute even when it also carries a size", () => {
+    // The old 50%/75%/Fit buttons stored a pixel width next to data-size="large";
+    // the editor treats the attribute as the size, so the export must too.
+    const html = applyImageLayoutStyles(HTML(` width="320" height="200" data-size="large" data-align="left"`));
+    expect(html).toContain(`style="max-width: 100%; height: auto; margin-left: 0; margin-right: auto;"`);
     expect(html).not.toContain("width: 75%");
   });
 

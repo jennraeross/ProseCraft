@@ -142,22 +142,26 @@
   .tile-body :global(ul), .tile-body :global(ol) { padding-left: 24px; }
   .tile-body :global(a) { color: var(--link); text-decoration-color: var(--link-underline); text-underline-offset: 3px; }
   .tile-body :global(img) { display: block; max-width: 100%; height: auto; margin: 18px auto; object-fit: contain; }
+  /* An explicit width attribute is the picture's size; the layout only places it. */
   .tile-body :global(img:not([width])) { width: 75%; }
-  .tile-body :global(img[data-size="small"]) { width: 25%; height: auto; max-width: 100%; }
-  .tile-body :global(img[data-size="medium"]) { width: 50%; height: auto; max-width: 100%; }
-  .tile-body :global(img[data-size="large"]) { width: 75%; height: auto; max-width: 100%; }
-  .tile-body :global(img[data-size="full"]) { width: 100%; height: auto; max-width: 100%; }
-  .tile-body :global(img[data-size="original"]) { width: auto; height: auto; max-width: 100%; }
-  .tile-body :global(img[data-size="custom"]) { width: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="small"]:not([width])) { width: 25%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="medium"]:not([width])) { width: 50%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="large"]:not([width])) { width: 75%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="full"]:not([width])) { width: 100%; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="original"]:not([width])) { width: auto; height: auto; max-width: 100%; }
+  .tile-body :global(img[data-size="custom"]:not([width])) { width: auto; max-width: 100%; }
   .tile-body :global(img[data-align="left"]) { margin-left: 0; margin-right: auto; }
   .tile-body :global(img[data-align="center"]) { margin-left: auto; margin-right: auto; }
   .tile-body :global(img[data-align="right"]) { margin-left: auto; margin-right: 0; }
-  .tile-body :global(img[data-wrap="wrap-left"]) { float: left; width: 50%; max-width: 50%; margin: 4px 18px 14px 0; }
-  .tile-body :global(img[data-wrap="wrap-right"]) { float: right; width: 50%; max-width: 50%; margin: 4px 0 14px 18px; }
-  .tile-body :global(img[data-wrap="wrap-left"][data-size="small"]),
-  .tile-body :global(img[data-wrap="wrap-right"][data-size="small"]) { width: 25%; max-width: 25%; }
-  .tile-body :global(img[data-wrap="wrap-left"][data-size="original"]),
-  .tile-body :global(img[data-wrap="wrap-right"][data-size="original"]) { width: auto; max-width: 50%; }
+  /* A wrapped picture of its own size still leaves half the column to the text. */
+  .tile-body :global(img[data-wrap="wrap-left"]) { float: left; max-width: 50%; margin: 4px 18px 14px 0; }
+  .tile-body :global(img[data-wrap="wrap-right"]) { float: right; max-width: 50%; margin: 4px 0 14px 18px; }
+  .tile-body :global(img[data-wrap="wrap-left"]:not([width])),
+  .tile-body :global(img[data-wrap="wrap-right"]:not([width])) { width: 50%; max-width: 50%; }
+  .tile-body :global(img[data-wrap="wrap-left"][data-size="small"]:not([width])),
+  .tile-body :global(img[data-wrap="wrap-right"][data-size="small"]:not([width])) { width: 25%; max-width: 25%; }
+  .tile-body :global(img[data-wrap="wrap-left"][data-size="original"]:not([width])),
+  .tile-body :global(img[data-wrap="wrap-right"][data-size="original"]:not([width])) { width: auto; max-width: 50%; }
   .tile-body :global(h1), .tile-body :global(h2), .tile-body :global(h3),
   .tile-body :global(blockquote), .tile-body :global(pre),
   .tile-body :global(table), .tile-body :global(.scene-break) { clear: both; }
