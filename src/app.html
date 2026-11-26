@@ -40,6 +40,10 @@
             "dracula"
           ];
           if (schemes.includes(savedScheme)) scheme = savedScheme;
+          const savedLocale = localStorage.getItem("prosecraft-locale");
+          if (savedLocale && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$/.test(savedLocale)) {
+            root.lang = savedLocale;
+          }
         } catch {
           // Local storage may be unavailable; the defaults above still apply.
         }

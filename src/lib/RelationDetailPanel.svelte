@@ -4,6 +4,8 @@
   import { addRelation, removeRelation, updateRelation, type RelationInput } from "./relations";
   import { RELATION_TYPES, type Relation, type RelationTension, type RelationType } from "./story-meta";
   import type { ChapterData, DocumentData } from "./publish/types";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Selection = { source: string; relation: Relation };
 
@@ -35,14 +37,14 @@
     onClose
   }: Props = $props();
 
-  const TYPE_LABELS: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const TYPE_LABELS: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   const TENSION_LEVELS: readonly RelationTension[] = [1, 2, 3, 4, 5];
@@ -71,9 +73,9 @@
   );
   const canCreate = $derived(Boolean(sourceId && targetId && sourceId !== targetId));
 
-  const sourceTitle = $derived(selection ? (titles.get(selection.source) ?? "Unknown page") : "");
+  const sourceTitle = $derived(selection ? (titles.get(selection.source) ?? t("network.unknownPage")) : "");
   const targetTitle = $derived(
-    selection ? (titles.get(selection.relation.to) ?? "Unknown page") : ""
+    selection ? (titles.get(selection.relation.to) ?? t("network.unknownPage")) : ""
   );
 
   const validityHint = $derived.by(() => {
@@ -84,11 +86,11 @@
     const until = selection.relation.until
       ? chapters.findIndex((chapter) => chapter.id === selection.relation.until)
       : -1;
-    if (from < 0 && until < 0) return "Active in every chapter";
-    if (from < 0) return `Until Ch ${until + 1}, inclusive`;
-    if (until < 0) return `From Ch ${from + 1}, open-ended`;
-    if (from > until) return "The end comes before the start";
-    return `Ch ${from + 1} to Ch ${until + 1}`;
+    if (from < 0 && until < 0) return t("relation.activeEvery");
+    if (from < 0) return t("relation.untilInclusive", { chapter: until + 1 });
+    if (until < 0) return t("relation.fromOpen", { chapter: from + 1 });
+    if (from > until) return t("relation.invalidRange");
+    return t("relation.range", { from: from + 1, to: until + 1 });
   });
 
   function blankToUndefined(value: string): string | undefined {
@@ -121,7 +123,7 @@
   async function deleteSelected(): Promise<void> {
     if (!selection) return;
     const confirmed = await confirmDestructiveAction(
-      `Delete the relation between “${sourceTitle}” and “${targetTitle}”?`
+      t("relation.deleteConfirm", { a: sourceTitle, b: targetTitle })
     );
     if (!confirmed) return;
     onChange(removeRelation(documents, selection.source, selection.relation.id));
@@ -136,7 +138,7 @@
 </script>
 
 {#snippet typeChips(active: RelationType, pick: (type: RelationType) => void)}
-  <div class="relation-chips" role="group" aria-label="Relation type">
+  <div class="relation-chips" role="group" aria-label={t("suggestions.relationType")}>
     {#each RELATION_TYPES as type (type)}
       <button
         type="button"
@@ -145,29 +147,29 @@
         aria-pressed={active === type}
         onclick={() => pick(type)}
       >
-        {TYPE_LABELS[type]}
+        {t(TYPE_LABELS[type])}
       </button>
     {/each}
   </div>
 {/snippet}
 
 {#if adding}
-  <section class="relation-panel" aria-label="Add relation">
+  <section class="relation-panel" aria-label={t("network.addRelation")}>
     <header class="relation-head">
       <div>
-        <p class="relation-eyebrow">New relation</p>
-        <h2>Add relation</h2>
+        <p class="relation-eyebrow">{t("relation.new")}</p>
+        <h2>{t("network.addRelation")}</h2>
       </div>
-      <button type="button" class="relation-close" aria-label="Close" onclick={onClose}>
+      <button type="button" class="relation-close" aria-label={t("common.close")} onclick={onClose}>
         <X size={13} aria-hidden="true" />
       </button>
     </header>
 
     {#if pages.length < 2}
-      <p class="relation-empty">Create at least two wiki pages to link them.</p>
+      <p class="relation-empty">{t("relation.needTwoPages")}</p>
     {:else}
       <label class="relation-field">
-        <span class="relation-label">From</span>
+        <span class="relation-label">{t("relation.from")}</span>
         <select
           class="relation-input"
           value={sourceId}
@@ -180,13 +182,13 @@
       </label>
 
       <label class="relation-field">
-        <span class="relation-label">To</span>
+        <span class="relation-label">{t("relation.to")}</span>
         <select
           class="relation-input"
           value={targetId}
           onchange={(event) => (addTargetId = event.currentTarget.value)}
         >
-          <option value="">Choose a page</option>
+          <option value="">{t("relation.choosePage")}</option>
           {#each targetPages as page (page.id)}
             <option value={page.id}>{page.title}</option>
           {/each}
@@ -194,56 +196,56 @@
       </label>
 
       <div class="relation-field">
-        <span class="relation-label">Type</span>
+        <span class="relation-label">{t("relation.type")}</span>
         {@render typeChips(addType, (type) => (addType = type))}
       </div>
 
       <div class="relation-actions">
         <button type="button" class="relation-primary" disabled={!canCreate} onclick={create}>
-          <Plus size={12} aria-hidden="true" /> Add relation
+          <Plus size={12} aria-hidden="true" /> {t("network.addRelation")}
         </button>
-        <button type="button" class="relation-secondary" onclick={onClose}>Cancel</button>
+        <button type="button" class="relation-secondary" onclick={onClose}>{t("common.cancel")}</button>
       </div>
     {/if}
   </section>
 {:else if selection}
-  <section class="relation-panel" aria-label="Relation details" data-testid="relation-detail">
+  <section class="relation-panel" aria-label={t("relation.details")} data-testid="relation-detail">
     <header class="relation-head">
       <div>
-        <p class="relation-eyebrow">Selected relation</p>
+        <p class="relation-eyebrow">{t("relation.selected")}</p>
         <h2>
           <span class="relation-name">{sourceTitle}</span>
           <span class="relation-name"><span class="relation-arrow">→</span> {targetTitle}</span>
         </h2>
-        <p class="relation-meta">Directed · type {TYPE_LABELS[selection.relation.type].toLowerCase()}</p>
+        <p class="relation-meta">{t("relation.meta", { type: t(TYPE_LABELS[selection.relation.type]) })}</p>
       </div>
-      <button type="button" class="relation-close" aria-label="Close" onclick={onClose}>
+      <button type="button" class="relation-close" aria-label={t("common.close")} onclick={onClose}>
         <X size={13} aria-hidden="true" />
       </button>
     </header>
 
-    <span class="relation-badge">Declared</span>
+    <span class="relation-badge">{t("network.declared")}</span>
 
     <div class="relation-field">
-      <span class="relation-label">Type</span>
+      <span class="relation-label">{t("relation.type")}</span>
       {@render typeChips(selection.relation.type, (type) => patch({ type }))}
     </div>
 
     <label class="relation-field">
-      <span class="relation-label">Label</span>
+      <span class="relation-label">{t("suggestions.label")}</span>
       <input
         class="relation-input"
         value={selection.relation.label ?? ""}
-        placeholder="e.g. Estranged brother"
+        placeholder={t("relation.labelPlaceholder")}
         oninput={(event) => patch({ label: blankToUndefined(event.currentTarget.value) })}
       />
     </label>
 
     <div class="relation-field">
       <div class="relation-label-row">
-        <span class="relation-label">Tension</span>
+        <span class="relation-label">{t("relation.tension")}</span>
         <span class="relation-value">
-          {selection.relation.tension ? `${selection.relation.tension} / 5` : "Not set"}
+          {selection.relation.tension ? t("relation.tensionValue", { value: selection.relation.tension }) : t("relation.notSet")}
         </span>
         {#if selection.relation.tension}
           <button
@@ -251,17 +253,17 @@
             class="relation-clear"
             onclick={() => patch({ tension: undefined })}
           >
-            Clear
+            {t("relation.clear")}
           </button>
         {/if}
       </div>
-      <div class="relation-tension" role="group" aria-label="Tension">
+      <div class="relation-tension" role="group" aria-label={t("relation.tension")}>
         {#each TENSION_LEVELS as level (level)}
           <button
             type="button"
             class="tension-segment"
             class:active={(selection.relation.tension ?? 0) >= level}
-            aria-label={`Tension ${level}`}
+            aria-label={t("relation.tensionLevel", { level })}
             aria-pressed={selection.relation.tension === level}
             onclick={() => patch({ tension: level })}
           ></button>
@@ -270,31 +272,31 @@
     </div>
 
     <div class="relation-field">
-      <span class="relation-label">Valid from / until</span>
+      <span class="relation-label">{t("relation.validity")}</span>
       <div class="relation-range">
         <select
           class="relation-input"
-          aria-label="Valid from chapter"
+          aria-label={t("relation.validFrom")}
           value={selection.relation.from ?? ""}
           onchange={(event) =>
             patch({ from: blankToUndefined(event.currentTarget.value) })}
         >
-          <option value="">Start</option>
+          <option value="">{t("relation.start")}</option>
           {#each chapters as chapter, index (chapter.id)}
-            <option value={chapter.id}>Ch {index + 1}</option>
+            <option value={chapter.id}>{t("relation.chapter", { chapter: index + 1 })}</option>
           {/each}
         </select>
         <span class="relation-dash">–</span>
         <select
           class="relation-input"
-          aria-label="Valid until chapter"
+          aria-label={t("relation.validUntil")}
           value={selection.relation.until ?? ""}
           onchange={(event) =>
             patch({ until: blankToUndefined(event.currentTarget.value) })}
         >
-          <option value="">Open</option>
+          <option value="">{t("relation.open")}</option>
           {#each chapters as chapter, index (chapter.id)}
-            <option value={chapter.id}>Ch {index + 1}</option>
+            <option value={chapter.id}>{t("relation.chapter", { chapter: index + 1 })}</option>
           {/each}
         </select>
       </div>
@@ -302,25 +304,25 @@
     </div>
 
     <label class="relation-field">
-      <span class="relation-label">Note</span>
+      <span class="relation-label">{t("relation.note")}</span>
       <textarea
         class="relation-input relation-note"
         rows="3"
         value={selection.relation.note ?? ""}
-        placeholder="What changes between them?"
+        placeholder={t("relation.notePlaceholder")}
         oninput={(event) => patch({ note: blankToUndefined(event.currentTarget.value) })}
       ></textarea>
     </label>
 
     <div class="relation-actions">
       <button type="button" class="relation-primary" onclick={openBoth}>
-        <Users size={12} aria-hidden="true" /> Open both pages
+        <Users size={12} aria-hidden="true" /> {t("relation.openBoth")}
       </button>
       <button type="button" class="relation-delete" onclick={deleteSelected}>
-        <Trash2 size={12} aria-hidden="true" /> Delete relation
+        <Trash2 size={12} aria-hidden="true" /> {t("relation.delete")}
       </button>
     </div>
-    <p class="relation-save">Changes save immediately</p>
+    <p class="relation-save">{t("relation.autosave")}</p>
   </section>
 {/if}
 

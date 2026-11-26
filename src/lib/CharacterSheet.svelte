@@ -17,11 +17,14 @@
   import {
     normalizeMeta,
     type DocumentMeta,
+    type PageKind,
     type Relation,
     type RelationType,
     type SheetField,
     type SheetTemplate
   } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   let {
     document,
@@ -47,20 +50,20 @@
 
   type Tab = "profile" | "relations" | "appearances" | "notes";
 
-  const TABS: readonly { id: Tab; label: string }[] = [
-    { id: "profile", label: "Profile" },
-    { id: "relations", label: "Relations" },
-    { id: "appearances", label: "Appearances" },
-    { id: "notes", label: "Notes" }
+  const TABS: readonly { id: Tab; labelKey: MessageKey }[] = [
+    { id: "profile", labelKey: "sheet.tab.profile" },
+    { id: "relations", labelKey: "sheet.tab.relations" },
+    { id: "appearances", labelKey: "sheet.tab.appearances" },
+    { id: "notes", labelKey: "sheet.tab.notes" }
   ];
 
-  const KIND_LABELS = {
-    character: "Character",
-    place: "Place",
-    organisation: "Organisation",
-    item: "Item",
-    other: "Page"
-  } as const;
+  const KIND_LABELS: Record<PageKind, MessageKey> = {
+    character: "pageKind.character",
+    place: "pageKind.place",
+    organisation: "pageKind.organisation",
+    item: "pageKind.item",
+    other: "pageKind.other"
+  };
 
   const uid = $props.id();
   let tab = $state<Tab>("profile");
@@ -92,14 +95,14 @@
     new Map(templates.flatMap((entry) => entry.fields).map((field) => [field.id, field.label]))
   );
 
-  const RELATION_LABELS: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const RELATION_LABELS: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   const relationColors: Record<RelationType, string> = {
@@ -187,9 +190,15 @@
     const indexOf = (id?: string) => (id ? chapters.findIndex((chapter) => chapter.id === id) : -1);
     const from = indexOf(relation.from);
     const until = indexOf(relation.until);
-    if (from < 0 && until < 0) return "All chapters";
-    if (from >= 0 && until >= 0) return from === until ? `Ch ${from + 1}` : `Ch ${from + 1}–${until + 1}`;
-    return from >= 0 ? `From Ch ${from + 1}` : `Until Ch ${until + 1}`;
+    if (from < 0 && until < 0) return t("sheet.rangeAll");
+    if (from >= 0 && until >= 0) {
+      return from === until
+        ? t("sheet.rangeOne", { chapter: from + 1 })
+        : t("sheet.rangeFromTo", { from: from + 1, to: until + 1 });
+    }
+    return from >= 0
+      ? t("sheet.rangeFrom", { chapter: from + 1 })
+      : t("sheet.rangeUntil", { chapter: until + 1 });
   }
 
   /** Writes one metadata patch and lets normalisation drop empty values. */
@@ -306,32 +315,32 @@
   <div class="character-sheet sheet-add-row">
     <button type="button" class="sheet-add" onclick={addSheet}>
       <Plus size={12} />
-      Add sheet
+      {t("sheet.add")}
     </button>
-    <span class="sheet-hint">Profile fields for this page.</span>
+    <span class="sheet-hint">{t("sheet.profileHint")}</span>
   </div>
 {:else}
-  <section class="character-sheet" aria-label="Character sheet">
+  <section class="character-sheet" aria-label={t("sheet.title")}>
     <header class="sheet-head">
       <div class="sheet-portrait" aria-hidden="true">{initial}</div>
       <div class="sheet-identity">
         <div class="sheet-title-row">
-          <span class="sheet-name">{document.title || "Untitled"}</span>
+          <span class="sheet-name">{document.title || t("common.untitled")}</span>
           <span class="sheet-subtitle">
-            {KIND_LABELS[kind]}
-            {#if template}<span class="sheet-dot">·</span>{template.name} template{/if}
+            {t(KIND_LABELS[kind])}
+            {#if template}<span class="sheet-dot">·</span>{t("sheet.templateName", { name: template.name })} {/if}
           </span>
         </div>
         <div class="sheet-aliases">
-          <span class="sheet-alias-label">Aliases</span>
+          <span class="sheet-alias-label">{t("sheet.aliases")}</span>
           {#each aliases as alias, index (index)}
             <span class="sheet-chip">
               {alias}
               <button
                 type="button"
                 class="sheet-chip-x"
-                title={`Remove ${alias}`}
-                aria-label={`Remove ${alias}`}
+                title={t("sheet.removeAlias", { alias })}
+                aria-label={t("sheet.removeAlias", { alias })}
                 onclick={() => removeAlias(index)}
               >
                 <X size={9} />
@@ -341,8 +350,8 @@
           <input
             class="sheet-alias-input"
             bind:value={aliasDraft}
-            placeholder="+ alias"
-            aria-label="Add alias"
+            placeholder={t("sheet.aliasPlaceholder")}
+            aria-label={t("sheet.addAlias")}
             onkeydown={onAliasKeydown}
             onblur={addAlias}
           />
@@ -350,7 +359,7 @@
       </div>
     </header>
 
-    <div class="sheet-tabs" role="tablist" aria-label="Character sheet sections">
+    <div class="sheet-tabs" role="tablist" aria-label={t("sheet.sections")}>
       {#each TABS as entry (entry.id)}
         <button
           type="button"
@@ -362,7 +371,7 @@
           class:active={tab === entry.id}
           onclick={() => (tab = entry.id)}
         >
-          {entry.label}
+          {t(entry.labelKey)}
         </button>
       {/each}
     </div>
@@ -375,20 +384,20 @@
         aria-labelledby={`${uid}-tab-profile`}
       >
         <div class="sheet-template-row">
-          <label class="sheet-label" for={`${uid}-template`}>Template</label>
+          <label class="sheet-label" for={`${uid}-template`}>{t("sheet.template")}</label>
           <select
             id={`${uid}-template`}
             class="sheet-select"
             value={template?.id ?? ""}
             onchange={chooseTemplate}
           >
-            <option value="">No template</option>
+            <option value="">{t("sheet.noTemplate")}</option>
             {#each templates as entry (entry.id)}
               <option value={entry.id}>{entry.name}</option>
             {/each}
           </select>
           <button type="button" class="sheet-manage" onclick={() => (editorOpen = true)}>
-            Manage templates
+            {t("sheet.manageTemplates")}
           </button>
         </div>
 
@@ -404,7 +413,7 @@
         {/if}
 
         {#if fields.length > 0}
-          <p class="sheet-section-label">Profile fields</p>
+          <p class="sheet-section-label">{t("sheet.profileFields")}</p>
           <div class="sheet-fields">
             {#each fields as field, index (field.id)}
               <div class="sheet-field" class:wide={field.type === "longtext"}>
@@ -424,7 +433,7 @@
                     value={sheetValue(meta, field.id)}
                     onchange={(event) => onFieldChange(field, event)}
                   >
-                    <option value="">Choose…</option>
+                    <option value="">{t("sheet.choose")}</option>
                     {#each field.options ?? [] as option (option)}
                       <option value={option}>{option}</option>
                     {/each}
@@ -467,15 +476,15 @@
             {/each}
           </datalist>
         {:else if template}
-          <p class="sheet-hint">This template has no fields yet. Pick another template or edit it in the template editor.</p>
+          <p class="sheet-hint">{t("sheet.noFields")}</p>
         {:else}
-          <p class="sheet-hint">Pick a template to add profile fields.</p>
+          <p class="sheet-hint">{t("sheet.pickTemplate")}</p>
         {/if}
 
         {#if orphanedValues.length > 0}
           <div class="sheet-orphans">
-            <p class="sheet-section-label">Other fields</p>
-            <p class="sheet-hint">Values without a field in this template are kept here.</p>
+            <p class="sheet-section-label">{t("sheet.otherFields")}</p>
+            <p class="sheet-hint">{t("sheet.orphanHint")}</p>
             <div class="sheet-fields">
               {#each orphanedValues as [key, value], index (key)}
                 <div class="sheet-field wide">
@@ -501,13 +510,13 @@
         aria-labelledby={`${uid}-tab-relations`}
       >
         {#if relationRows.length === 0}
-          <p class="sheet-hint">No relations yet. Add them in the network view.</p>
+          <p class="sheet-hint">{t("sheet.noRelations")}</p>
         {:else}
           <ul class="relation-list">
             {#each relationRows as row (row.key)}
               <li class="relation-row">
                 <span class="relation-chip" style:color={relationColors[row.relation.type]}>
-                  <span class="relation-dot"></span>{RELATION_LABELS[row.relation.type]}
+                  <span class="relation-dot"></span>{t(RELATION_LABELS[row.relation.type])}
                 </span>
                 <span class="relation-arrow" aria-hidden="true">{row.incoming ? "←" : "→"}</span>
                 <span class="relation-target">{row.title}</span>
@@ -521,15 +530,15 @@
         {/if}
 
         <div class="relation-mini">
-          <p class="sheet-section-label">Neighbourhood</p>
+          <p class="sheet-section-label">{t("sheet.neighbourhood")}</p>
           {#if miniGraph.nodes.length === 0}
-            <p class="sheet-hint">No connected pages yet.</p>
+            <p class="sheet-hint">{t("sheet.noConnections")}</p>
           {:else}
             <svg
               class="relation-mini-graph"
               viewBox={`0 0 ${MINI_WIDTH} ${MINI_HEIGHT}`}
               role="img"
-              aria-label="This page and its relations"
+              aria-label={t("sheet.miniGraphAria")}
             >
               {#each miniGraph.edges as edge (edge.id)}
                 <line
@@ -568,7 +577,7 @@
             class="sheet-manage"
             onclick={() => onOpenGraphBeside?.(document.id)}
           >
-            Open graph beside
+            {t("network.openGraphBeside")}
           </button>
         </div>
       </div>
@@ -593,8 +602,8 @@
         id={`${uid}-panel-notes`}
         aria-labelledby={`${uid}-tab-notes`}
       >
-        <p class="sheet-placeholder-title">Notes</p>
-        <p class="sheet-hint">Notes are the text below.</p>
+        <p class="sheet-placeholder-title">{t("sheet.notesTitle")}</p>
+        <p class="sheet-hint">{t("sheet.notesHint")}</p>
       </div>
     {/if}
   </section>

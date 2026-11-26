@@ -4,6 +4,7 @@
   import { replaceInDocuments, type ReplaceResult } from "$lib/replace";
   import { MAX_SEARCH_HITS, searchDocuments, type SearchChapter, type SearchHit } from "$lib/search";
   import type { DocumentData } from "$lib/publish/types";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     documents: DocumentData[];
@@ -23,6 +24,8 @@
   let { documents, chapters, initialQuery = "", onOpen, onClose, onFlush, onSnapshot, onReplace }: Props = $props();
 
   const DEBOUNCE_MS = 150;
+  const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+  const modKey = isMac ? "⌘" : "Ctrl";
 
   type PendingReplace = {
     /** Documents the confirmed replacement is applied to. */
@@ -162,7 +165,7 @@
     const source = onFlush();
     const result = replaceInDocuments(source, debouncedQuery, replacement, { caseSensitive, wholeWord }, ids);
     pendingReplace = result.total > 0 ? { source, result } : null;
-    replaceStatus = result.total > 0 ? "" : "Nothing to replace.";
+    replaceStatus = result.total > 0 ? "" : t("search.nothingToReplace");
   }
 
   function confirmReplace() {
@@ -179,7 +182,7 @@
     pendingReplace = null;
     const matches = pending.result.total;
     const changedDocuments = pending.result.changed.length;
-    replaceStatus = `Replaced ${matches} ${matches === 1 ? "match" : "matches"} in ${changedDocuments} ${changedDocuments === 1 ? "document" : "documents"}`;
+    replaceStatus = t("search.replaced", { matches, documents: changedDocuments });
     selectedIndex = 0;
   }
 
@@ -202,20 +205,20 @@
   onkeydown={handleDialogKeydown}
 >
   <div class="settings-header">
-    <div><span class="settings-kicker">PROJECT</span><h2 id="project-search-title">Find and replace</h2></div>
-    <button class="close-settings" aria-label="Close find and replace" type="button" onclick={onClose}><X size={15} aria-hidden="true" /></button>
+    <div><span class="settings-kicker">{t("search.kicker")}</span><h2 id="project-search-title">{t("search.title")}</h2></div>
+    <button class="close-settings" aria-label={t("search.close")} type="button" onclick={onClose}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body">
     <div class="search-fields">
       <div class="search-field">
-        <label class="search-field-label" for="project-search-query">Find</label>
+        <label class="search-field-label" for="project-search-query">{t("search.find")}</label>
         <div class="search-field-control">
           <input
             bind:this={searchInput}
             id="project-search-query"
             class="search-input search-find"
             type="text"
-            placeholder="Search titles and text"
+            placeholder={t("search.findPlaceholder")}
             spellcheck="false"
             autocomplete="off"
             autocapitalize="off"
@@ -224,20 +227,20 @@
             bind:value={query}
             oninput={() => { pendingReplace = null; replaceStatus = ""; }}
           />
-          <div class="search-modes" role="group" aria-label="Search options">
-            <button type="button" class="search-mode" class:active={caseSensitive} aria-pressed={caseSensitive} aria-label="Match case" title="Match case" onclick={() => (caseSensitive = !caseSensitive)}>Aa</button>
-            <button type="button" class="search-mode" class:active={wholeWord} aria-pressed={wholeWord} aria-label="Whole word" title="Whole word" onclick={() => (wholeWord = !wholeWord)}><span class="search-mode-word" aria-hidden="true">ab</span></button>
+          <div class="search-modes" role="group" aria-label={t("search.options")}>
+            <button type="button" class="search-mode" class:active={caseSensitive} aria-pressed={caseSensitive} aria-label={t("search.matchCase")} title={t("search.matchCase")} onclick={() => (caseSensitive = !caseSensitive)}>Aa</button>
+            <button type="button" class="search-mode" class:active={wholeWord} aria-pressed={wholeWord} aria-label={t("search.wholeWord")} title={t("search.wholeWord")} onclick={() => (wholeWord = !wholeWord)}><span class="search-mode-word" aria-hidden="true">ab</span></button>
           </div>
         </div>
       </div>
       <div class="search-field">
-        <label class="search-field-label" for="project-replace-query">Replace</label>
+        <label class="search-field-label" for="project-replace-query">{t("search.replace")}</label>
         <input
           bind:this={replaceInput}
           id="project-replace-query"
           class="search-input"
           type="text"
-          placeholder="Replace with…"
+          placeholder={t("search.replacePlaceholder")}
           spellcheck="false"
           autocomplete="off"
           autocapitalize="off"
@@ -251,28 +254,28 @@
     </div>
     {#if results.length > 0}
       <div class="search-summary">
-        <span class="search-summary-count">{summaryMatches} {summaryMatches === 1 ? "match" : "matches"} in {summaryDocuments} {summaryDocuments === 1 ? "document" : "documents"}</span>
+        <span class="search-summary-count">{t("search.summary", { matches: summaryMatches, documents: summaryDocuments })}</span>
         <button type="button" class="search-select-link" onclick={toggleAllHits}>
-          {allHitsSelected ? "Select none" : "Select all"}
+          {allHitsSelected ? t("search.selectNone") : t("search.selectAll")}
         </button>
       </div>
       {#if skippedMatches > 0}
-        <p class="search-skip-note">{skippedMatches} {skippedMatches === 1 ? "match spans" : "matches span"} formatting and {skippedMatches === 1 ? "is" : "are"} skipped.</p>
+        <p class="search-skip-note">{t("search.skipped", { count: skippedMatches })}</p>
       {/if}
     {/if}
     <section class="search-results-section">
       {#if !debouncedQuery.trim()}
-        <p class="search-hint">Type to search scene text, wiki pages, and titles.</p>
+        <p class="search-hint">{t("search.hint")}</p>
       {:else if results.length === 0}
-        <p class="search-hint">No matches for “{debouncedQuery.trim()}”.</p>
+        <p class="search-hint">{t("search.noMatches", { query: debouncedQuery.trim() })}</p>
       {:else}
-        <ul class="search-results" bind:this={resultList} aria-label="Search results">
+        <ul class="search-results" bind:this={resultList} aria-label={t("search.results")}>
           {#each results as hit, index (hit.documentId)}
             <li data-index={index} class="search-hit-row" class:active={index === activeIndex}>
               <input
                 class="search-hit-check"
                 type="checkbox"
-                aria-label={`Include ${hit.title || "Untitled"} in replace`}
+                aria-label={t("search.includeInReplace", { title: hit.title || t("common.untitled") })}
                 checked={selectedIds.has(hit.documentId)}
                 onchange={(event) => toggleHit(hit.documentId, event.currentTarget.checked)}
               />
@@ -280,15 +283,15 @@
                 type="button"
                 class="search-hit"
                 aria-current={index === activeIndex ? "true" : undefined}
-                title="Go to match (Enter)"
+                title={t("search.goToMatch")}
                 onclick={() => onOpen(hit.documentId, revealRequest())}
                 onpointerenter={() => (selectedIndex = index)}
               >
                 <span class="search-hit-header">
-                  <span class="search-hit-title">{hit.title || "Untitled"}</span>
-                  <span class="search-kind-badge" class:wiki={hit.kind === "wiki"}>{hit.kind === "scene" ? "Scene" : "Wiki"}</span>
+                  <span class="search-hit-title">{hit.title || t("common.untitled")}</span>
+                  <span class="search-kind-badge" class:wiki={hit.kind === "wiki"}>{hit.kind === "scene" ? t("search.kind.scene") : t("search.kind.wiki")}</span>
                   {#if hit.chapterTitle}<span class="search-hit-chapter">{hit.chapterTitle}</span>{/if}
-                  <span class="search-hit-count" title={`${hit.matches} ${hit.matches === 1 ? "match" : "matches"}`}>{hit.matches}</span>
+                  <span class="search-hit-count" title={t("search.matchCount", { count: hit.matches })}>{hit.matches}</span>
                 </span>
                 <span class="search-hit-snippet">{hit.snippet.slice(0, hit.matchStart)}<mark>{hit.snippet.slice(hit.matchStart, hit.matchStart + hit.matchLength)}</mark>{hit.snippet.slice(hit.matchStart + hit.matchLength)}</span>
               </button>
@@ -303,22 +306,29 @@
       {#if replaceStatus}
         {replaceStatus}
       {:else}
-        {totalMatches} {totalMatches === 1 ? "hit" : "hits"} in {results.length} {results.length === 1 ? "document" : "documents"}{results.length >= MAX_SEARCH_HITS ? ` (first ${MAX_SEARCH_HITS} documents)` : ""}
+        {t("search.footer", {
+          hits: totalMatches,
+          documents: results.length,
+          truncated:
+            results.length >= MAX_SEARCH_HITS
+              ? ` ${t("search.footerFirst", { count: MAX_SEARCH_HITS })}`
+              : ""
+        })}
       {/if}
     </span>
     {#if pendingReplace}
-      <div class="search-confirm" role="group" aria-label="Confirm replace">
-        <span>Replace {pendingReplace.result.total} {pendingReplace.result.total === 1 ? "match" : "matches"} in {pendingReplace.result.changed.length} {pendingReplace.result.changed.length === 1 ? "document" : "documents"}? A snapshot of each changed scene is saved first.</span>
-        <button type="button" class="search-button" onclick={() => (pendingReplace = null)}>Cancel</button>
-        <button type="button" class="search-button primary" bind:this={confirmReplaceButton} onclick={confirmReplace}>Replace</button>
+      <div class="search-confirm" role="group" aria-label={t("search.confirmGroup")}>
+        <span>{t("search.confirm", { matches: pendingReplace.result.total, documents: pendingReplace.result.changed.length })}</span>
+        <button type="button" class="search-button" onclick={() => (pendingReplace = null)}>{t("common.cancel")}</button>
+        <button type="button" class="search-button primary" bind:this={confirmReplaceButton} onclick={confirmReplace}>{t("search.replaceAction")}</button>
       </div>
     {:else}
       <div class="search-actions">
-        <button type="button" class="search-button" title="Replace selected (Ctrl+Enter)" disabled={summaryMatches === 0} onclick={() => requestReplace(false)}>Replace selected</button>
-        <button type="button" class="search-button primary" title="Replace all" disabled={results.length === 0} onclick={() => requestReplace(true)}>{replacement ? "Replace all" : "Delete matches"}</button>
+        <button type="button" class="search-button" title={t("search.replaceSelectedShortcut", { mod: modKey })} disabled={summaryMatches === 0} onclick={() => requestReplace(false)}>{t("search.replaceSelected")}</button>
+        <button type="button" class="search-button primary" title={t("search.replaceAll")} disabled={results.length === 0} onclick={() => requestReplace(true)}>{replacement ? t("search.replaceAll") : t("search.deleteMatches")}</button>
       </div>
     {/if}
-    <span class="search-keys-hint">Enter goes to the match · Ctrl+Enter replaces selected · Esc closes</span>
+    <span class="search-keys-hint">{t("search.keysHint", { mod: modKey })}</span>
   </div>
 </dialog>
 

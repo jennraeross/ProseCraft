@@ -4,6 +4,7 @@ import {
   buildShortcutsPdf,
   formatKey,
   formatShortcut,
+  localizedShortcutGroups,
   shortcutsToPlainText
 } from "./shortcuts";
 
@@ -18,6 +19,20 @@ describe("shortcut list", () => {
         expect(entry.keys.every((key) => key.trim().length > 0)).toBe(true);
       }
     }
+  });
+
+  it("carries a translation key for every group and action", () => {
+    for (const group of SHORTCUT_GROUPS) {
+      expect(group.titleKey).toBeTruthy();
+      for (const entry of group.entries) expect(entry.actionKey).toBeTruthy();
+    }
+  });
+
+  it("localizes groups and actions through the provided translator", () => {
+    const groups = localizedShortcutGroups((key) => `[${key}]`);
+    expect(groups[0].title).toBe("[shortcuts.group.general]");
+    expect(groups[0].entries[0].action).toBe("[shortcuts.action.newDocument]");
+    expect(groups[0].entries[0].keys).toEqual(["Mod", "N"]);
   });
 
   it("lists no key combination twice", () => {

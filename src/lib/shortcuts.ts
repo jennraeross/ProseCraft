@@ -1,7 +1,8 @@
 import { jsPDF } from "jspdf";
+import type { MessageKey } from "$lib/i18n/catalog";
 
-export type ShortcutEntry = { keys: string[]; action: string };
-export type ShortcutGroup = { title: string; entries: ShortcutEntry[] };
+export type ShortcutEntry = { keys: string[]; action: string; actionKey?: MessageKey };
+export type ShortcutGroup = { title: string; entries: ShortcutEntry[]; titleKey?: MessageKey };
 
 const SHORTCUTS_TITLE = "ProseCraft keyboard shortcuts";
 
@@ -14,42 +15,61 @@ const SHORTCUTS_TITLE = "ProseCraft keyboard shortcuts";
 export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   {
     title: "General",
+    titleKey: "shortcuts.group.general",
     entries: [
-      { keys: ["Mod", "N"], action: "New document" },
-      { keys: ["Mod", ","], action: "Settings" },
-      { keys: ["Mod", "Shift", "E"], action: "Export scene" },
-      { keys: ["Mod", "Shift", "P"], action: "Publish manuscript" },
-      { keys: ["Mod", "/"], action: "Keyboard shortcuts" }
+      { keys: ["Mod", "N"], action: "New document", actionKey: "shortcuts.action.newDocument" },
+      { keys: ["Mod", ","], action: "Settings", actionKey: "shortcuts.action.settings" },
+      { keys: ["Mod", "Shift", "E"], action: "Export scene", actionKey: "shortcuts.action.exportScene" },
+      { keys: ["Mod", "Shift", "P"], action: "Publish manuscript", actionKey: "shortcuts.action.publishManuscript" },
+      { keys: ["Mod", "/"], action: "Keyboard shortcuts", actionKey: "shortcuts.action.keyboardShortcuts" }
     ]
   },
   {
     title: "Writing",
+    titleKey: "shortcuts.group.writing",
     entries: [
-      { keys: ["Mod", "B"], action: "Bold" },
-      { keys: ["Mod", "I"], action: "Italic" },
-      { keys: ["Mod", "U"], action: "Underline" },
-      { keys: ["Mod", "Alt", "F"], action: "Insert footnote" },
-      { keys: ["Mod", "Alt", "C"], action: "Insert citation" },
-      { keys: ["Mod", "Z"], action: "Undo" },
-      { keys: ["Mod", "Shift", "Z"], action: "Redo" },
-      { keys: ["Mod", "Y"], action: "Redo (alternate)" }
+      { keys: ["Mod", "B"], action: "Bold", actionKey: "shortcuts.action.bold" },
+      { keys: ["Mod", "I"], action: "Italic", actionKey: "shortcuts.action.italic" },
+      { keys: ["Mod", "U"], action: "Underline", actionKey: "shortcuts.action.underline" },
+      { keys: ["Mod", "Alt", "F"], action: "Insert footnote", actionKey: "shortcuts.action.insertFootnote" },
+      { keys: ["Mod", "Alt", "C"], action: "Insert citation", actionKey: "shortcuts.action.insertCitation" },
+      { keys: ["Mod", "Z"], action: "Undo", actionKey: "shortcuts.action.undo" },
+      { keys: ["Mod", "Shift", "Z"], action: "Redo", actionKey: "shortcuts.action.redo" },
+      { keys: ["Mod", "Y"], action: "Redo (alternate)", actionKey: "shortcuts.action.redoAlternate" }
     ]
   },
   {
     title: "Search",
+    titleKey: "shortcuts.group.search",
     entries: [
-      { keys: ["Mod", "Shift", "F"], action: "Search the project" }
+      { keys: ["Mod", "Shift", "F"], action: "Search the project", actionKey: "shortcuts.action.searchProject" }
     ]
   },
   {
     title: "Layout",
+    titleKey: "shortcuts.group.layout",
     entries: [
-      { keys: ["Mod", "Shift", "Enter"], action: "Toggle focus mode" },
-      { keys: ["Esc"], action: "Leave focus mode" },
-      { keys: ["Alt", "Click"], action: "Open scene, wiki page or file beside" }
+      { keys: ["Mod", "Shift", "Enter"], action: "Toggle focus mode", actionKey: "shortcuts.action.toggleFocusMode" },
+      { keys: ["Esc"], action: "Leave focus mode", actionKey: "shortcuts.action.leaveFocusMode" },
+      { keys: ["Alt", "Click"], action: "Open scene, wiki page or file beside", actionKey: "shortcuts.action.openBeside" }
     ]
   }
 ];
+
+/** Translate the sheet for the active interface language. */
+export function localizedShortcutGroups(
+  translate: (key: MessageKey) => string
+): ShortcutGroup[] {
+  return SHORTCUT_GROUPS.map((group) => ({
+    title: group.titleKey ? translate(group.titleKey) : group.title,
+    titleKey: group.titleKey,
+    entries: group.entries.map((entry) => ({
+      keys: entry.keys,
+      action: entry.actionKey ? translate(entry.actionKey) : entry.action,
+      actionKey: entry.actionKey
+    }))
+  }));
+}
 
 const KEY_LABELS = {
   Mod: { mac: "⌘", other: "Ctrl" },
@@ -75,8 +95,12 @@ function formatPdfShortcut(keys: string[], isMac: boolean): string {
     .join("+");
 }
 
-export function shortcutsToPlainText(groups: ShortcutGroup[], isMac: boolean): string {
-  const lines = [SHORTCUTS_TITLE, ""];
+export function shortcutsToPlainText(
+  groups: ShortcutGroup[],
+  isMac: boolean,
+  title: string = SHORTCUTS_TITLE
+): string {
+  const lines = [title, ""];
   for (const group of groups) {
     lines.push(group.title, "-".repeat(group.title.length));
     const width = Math.max(0, ...group.entries.map((entry) => entry.action.length)) + 2;
@@ -88,13 +112,27 @@ export function shortcutsToPlainText(groups: ShortcutGroup[], isMac: boolean): s
   return lines.join("\n").trimEnd() + "\n";
 }
 
+export type ShortcutPdfLabels = {
+  title?: string;
+  macLayout?: string;
+  windowsLayout?: string;
+};
+
 /**
  * Builds a printable sheet with the action on the left and the keys on the
  * right. Long sheets continue on a second page without repeating headings.
  */
-export async function buildShortcutsPdf(groups: ShortcutGroup[], isMac: boolean): Promise<Uint8Array> {
+export async function buildShortcutsPdf(
+  groups: ShortcutGroup[],
+  isMac: boolean,
+  labels: ShortcutPdfLabels = {}
+): Promise<Uint8Array> {
+  const title = labels.title ?? SHORTCUTS_TITLE;
+  const layout = isMac
+    ? (labels.macLayout ?? "macOS key layout")
+    : (labels.windowsLayout ?? "Windows and Linux key layout");
   const doc = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait" });
-  doc.setProperties({ title: SHORTCUTS_TITLE, creator: "ProseCraft" });
+  doc.setProperties({ title, creator: "ProseCraft" });
 
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -117,10 +155,10 @@ export async function buildShortcutsPdf(groups: ShortcutGroup[], isMac: boolean)
   };
 
   setText(20, "bold", ink);
-  doc.text(SHORTCUTS_TITLE, margin, y);
+  doc.text(title, margin, y);
   y += 16;
   setText(9.5, "normal", muted);
-  doc.text(isMac ? "macOS key layout" : "Windows and Linux key layout", margin, y);
+  doc.text(layout, margin, y);
   y += 12;
   doc.setDrawColor(206, 206, 200);
   doc.setLineWidth(0.8);

@@ -1,5 +1,6 @@
 import { normalizeCslItemsDetailed, sanitizeCitationId, type CslItem } from "./csl";
 import type { CitationProvider } from "./provider";
+import { t } from "$lib/i18n/state.svelte";
 
 export const ZOTERO_PING_PATH = "/connector/ping";
 export const ZOTERO_BBT_CAYW_PATH = "/better-bibtex/cayw?format=json";
@@ -86,20 +87,20 @@ export function classifyZoteroHttpError(status: number, body = ""): ZoteroErrorS
     return {
       code: "forbidden",
       message:
-        'Zotero blocked local API access (HTTP 403). Enable "Allow other applications on this computer to communicate with Zotero" in Zotero Settings → Advanced → Files and Folders.',
+        t("module.zotero.forbidden"),
       ...(detail ? { detail } : {})
     };
   }
   if (status === 408 || status === 504) {
     return {
       code: "timeout",
-      message: "Zotero did not respond in time (5 s timeout). Check that Zotero is responsive and try again.",
+      message: t("module.zotero.timeout5"),
       ...(detail ? { detail } : {})
     };
   }
   return {
     code: "unknown",
-    message: `Zotero returned HTTP ${status}.`,
+    message: t("module.zotero.http", { status }),
     ...(detail ? { detail } : {})
   };
 }
@@ -133,7 +134,7 @@ export function classifyZoteroError(error: unknown): ZoteroErrorState {
   if (/timed?\s*out|timeout|wouldblock|etimedout/i.test(trimmed)) {
     return {
       code: "timeout",
-      message: "Zotero request timed out after 5 seconds. Make sure Zotero is responsive and try again.",
+      message: t("module.zotero.timeout"),
       ...(trimmed ? { detail: trimmed } : {})
     };
   }
@@ -145,7 +146,7 @@ export function classifyZoteroError(error: unknown): ZoteroErrorState {
   ) {
     return {
       code: "not-running",
-      message: "Zotero is not running. Start Zotero on this computer and try again.",
+      message: t("module.zotero.notRunning"),
       ...(trimmed ? { detail: trimmed } : {})
     };
   }
@@ -153,14 +154,14 @@ export function classifyZoteroError(error: unknown): ZoteroErrorState {
   if (/only available in the desktop/i.test(trimmed)) {
     return {
       code: "not-desktop",
-      message: "Zotero integration is only available in the ProseCraft desktop app.",
+      message: t("module.zotero.desktopOnly"),
       ...(trimmed ? { detail: trimmed } : {})
     };
   }
 
   return {
     code: "unknown",
-    message: trimmed || "Could not communicate with Zotero.",
+    message: trimmed || t("module.zotero.commFailed"),
     ...(trimmed ? { detail: trimmed } : {})
   };
 }
@@ -270,7 +271,7 @@ export function mapZoteroCslJson(rawText: string): CslItem[] {
     parsed = JSON.parse(cleaned);
   } catch (error) {
     const detail = error instanceof Error ? error.message : "invalid JSON";
-    throw new ZoteroError("invalid-response", "Zotero returned an invalid JSON response.", detail);
+    throw new ZoteroError("invalid-response", t("module.zotero.invalidJson"), detail);
   }
 
   return mapZoteroItems(parsed);
@@ -281,7 +282,7 @@ async function tauriZoteroTransport(path: string): Promise<string> {
   if (!isTauri()) {
     throw new ZoteroError(
       "not-desktop",
-      "Zotero integration is only available in the ProseCraft desktop app."
+      t("module.zotero.desktopOnly")
     );
   }
   return invoke<string>("zotero_request", { path });

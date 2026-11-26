@@ -1,6 +1,7 @@
 import { createVault, isVaultHeader, unlockVault, type CreateVaultOptions } from "../crypto";
 import { ENTITY_KINDS, type StoredProject } from "../types";
 import { BUNDLE_FILE, OPEN_MARKER_FILE } from "./files";
+import { t } from "$lib/i18n/state.svelte";
 import {
   PROJECTS_DIR,
   VAULT_FILE,
@@ -37,10 +38,10 @@ export class FolderSyncProvider implements SyncProvider {
   async connect(passphrase: string): Promise<SyncConnection> {
     if (!(await this.fs.exists(VAULT_FILE))) {
       if (await this.fs.exists(BUNDLE_FILE)) {
-        throw new Error("This folder is set up for single-file sync, not encrypted-folder sync.");
+        throw new Error(t("module.sync.fileForFolder"));
       }
       if (await this.fs.exists(OPEN_MARKER_FILE)) {
-        throw new Error("This folder is set up for open-folder sync, not encrypted-folder sync.");
+        throw new Error(t("module.sync.openForFolder"));
       }
       // Refuse to adopt a folder that already holds encrypted projects but no
       // header: creating a second vault would make those projects unreadable.
@@ -48,7 +49,7 @@ export class FolderSyncProvider implements SyncProvider {
         if (entry.isDirectory
           && (await this.fs.exists(`${PROJECTS_DIR}/${entry.name}/project.enc`)
             || await this.fs.exists(`${PROJECTS_DIR}/${entry.name}/project.json`))) {
-          throw new Error("This folder contains project files but no vault file.");
+          throw new Error(t("module.sync.noVault"));
         }
       }
       const { header, vaultKey } = await createVault(passphrase, this.vaultOptions);
@@ -58,14 +59,14 @@ export class FolderSyncProvider implements SyncProvider {
     }
     const raw: unknown = JSON.parse(await this.fs.readText(VAULT_FILE));
     if (!isVaultHeader(raw)) {
-      throw new Error("The sync folder's vault file is not valid.");
+      throw new Error(t("module.sync.invalidVault"));
     }
     const vaultKey = await unlockVault(raw, passphrase);
     return { header: raw, vaultKey, projects: await this.pull(vaultKey), created: false };
   }
 
   async pull(vaultKey?: Uint8Array): Promise<StoredProject[]> {
-    if (!vaultKey) throw new Error("The sync vault is locked.");
+    if (!vaultKey) throw new Error(t("module.sync.vaultLocked"));
     const entries = await this.fs.listDir(PROJECTS_DIR);
     const projects: StoredProject[] = [];
     for (const entry of entries) {
@@ -77,7 +78,7 @@ export class FolderSyncProvider implements SyncProvider {
   }
 
   async push(projects: StoredProject[], vaultKey?: Uint8Array): Promise<void> {
-    if (!vaultKey) throw new Error("The sync vault is locked.");
+    if (!vaultKey) throw new Error(t("module.sync.vaultLocked"));
     await this.fs.createDir(PROJECTS_DIR);
     for (const project of projects) {
       const dir = projectDirName(project.id);

@@ -1,4 +1,5 @@
 import type { StoredVault } from "./types";
+import { t } from "$lib/i18n/state.svelte";
 
 /**
  * IndexedDB-backed storage for the canonical vault.
@@ -76,11 +77,11 @@ function notifyError(error: unknown): void {
 
 function openVaultDatabase(): Promise<IDBDatabase> {
   if (typeof indexedDB === "undefined") {
-    return Promise.reject(new Error("IndexedDB is unavailable."));
+    return Promise.reject(new Error(t("module.vault.indexedDbUnavailable")));
   }
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
-    request.onerror = () => reject(request.error ?? new Error("Could not open vault storage."));
+    request.onerror = () => reject(request.error ?? new Error(t("module.vault.openFailed")));
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(STORE_NAME)) {
@@ -93,7 +94,7 @@ function openVaultDatabase(): Promise<IDBDatabase> {
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
-    request.onerror = () => reject(request.error ?? new Error("Vault storage failed."));
+    request.onerror = () => reject(request.error ?? new Error(t("module.vault.storageFailed")));
     request.onsuccess = () => resolve(request.result);
   });
 }
@@ -101,8 +102,8 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
 function transactionComplete(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("Vault storage failed."));
-    transaction.onabort = () => reject(transaction.error ?? new Error("Vault storage was interrupted."));
+    transaction.onerror = () => reject(transaction.error ?? new Error(t("module.vault.storageFailed")));
+    transaction.onabort = () => reject(transaction.error ?? new Error(t("module.vault.interrupted")));
   });
 }
 
@@ -155,7 +156,7 @@ export async function writeVaultRecord(vault: StoredVault): Promise<void> {
     } catch (error) {
       if (!isDataCloneError(error)) throw error;
       console.warn(
-        "The vault contained values IndexedDB cannot clone; storing a plain copy instead.",
+        t("module.vault.cloneFallback"),
         error
       );
       await putVaultRecord(database, JSON.parse(JSON.stringify(vault)) as StoredVault);

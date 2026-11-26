@@ -2,6 +2,7 @@
   import { onDestroy, untrack } from "svelte";
   import { sanitizeHtml } from "$lib/sanitize";
   import { stripFootnoteMarkers } from "$lib/footnotes";
+  import { t } from "$lib/i18n/state.svelte";
 
   const EMIT_DELAY_MS = 300;
 
@@ -99,8 +100,8 @@
   <input
     class="tile-title"
     bind:this={titleInput}
-    aria-label="Title"
-    placeholder="Untitled"
+    aria-label={t("tile.title")}
+    placeholder={t("common.untitled")}
     autocapitalize="sentences"
     enterkeyhint="done"
     value={titleValue}
@@ -116,7 +117,7 @@
     contenteditable="true"
     role="textbox"
     tabindex="0"
-    aria-label="Document text"
+    aria-label={t("tile.text")}
     aria-multiline="true"
     spellcheck="true"
     oninput={scheduleEmit}

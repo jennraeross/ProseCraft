@@ -61,6 +61,8 @@ export function cslTypeToManualKind(type: string): ManualSourceKind | null {
 }
 
 /** Human-readable label for a CSL item type. */
+import type { MessageKey } from "$lib/i18n/catalog";
+
 export function sourceTypeLabel(type: string): string {
   switch (type.toLowerCase()) {
     case "book":
@@ -84,6 +86,33 @@ export function sourceTypeLabel(type: string): string {
       return "Report";
     default:
       return type ? type.charAt(0).toUpperCase() + type.slice(1) : "Source";
+  }
+}
+
+/** Translation key for a source type, if it has one. */
+export function sourceTypeKey(type: string): MessageKey | undefined {
+  switch (type.toLowerCase()) {
+    case "book":
+      return "citation.type.book";
+    case "article-journal":
+    case "article":
+    case "article-magazine":
+    case "article-newspaper":
+      return "citation.type.article";
+    case "chapter":
+      return "citation.type.chapter";
+    case "paper-conference":
+      return "citation.type.conference";
+    case "webpage":
+    case "post-weblog":
+    case "post":
+      return "citation.type.website";
+    case "thesis":
+      return "citation.type.thesis";
+    case "report":
+      return "citation.type.report";
+    default:
+      return type ? undefined : "citation.type.source";
   }
 }
 

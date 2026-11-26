@@ -2,6 +2,8 @@
   import type { DocumentData } from "./publish/types";
   import type { PageAppearances, SourcedRelation } from "./relations";
   import type { Relation, RelationType } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     pages: readonly DocumentData[];
@@ -13,14 +15,14 @@
 
   let { pages, sourcedRelations, titles, appearances, onOpenCard }: Props = $props();
 
-  const RELATION_LABELS: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const RELATION_LABELS: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   const relationColors: Record<RelationType, string> = {
@@ -69,7 +71,7 @@
 </script>
 
 {#if cards.length === 0}
-  <p class="cards-empty">No characters yet. Add a wiki page to the Characters folder first.</p>
+  <p class="cards-empty">{t("network.cardsEmpty")}</p>
 {:else}
   <div class="cards-grid">
     {#each cards as card (card.page.id)}
@@ -82,15 +84,15 @@
           </span>
         </span>
         <span class="card-meta">
-          {card.sceneCount} {card.sceneCount === 1 ? "scene" : "scenes"}
+          {t("common.sceneCount", { count: card.sceneCount })}
         </span>
         {#if card.chips.length > 0}
           <span class="card-divider" aria-hidden="true"></span>
           {#each card.chips as chip (chip.key)}
             <span class="card-chip">
               <span class="chip-arrow" aria-hidden="true">{chip.direction === "out" ? "→" : "←"}</span>
-              <span class="chip-name">{titles.get(chip.pageId) ?? "Unknown page"}</span>
-              <span class="chip-type" style:color={relationColors[chip.type]}>{RELATION_LABELS[chip.type]}</span>
+              <span class="chip-name">{titles.get(chip.pageId) ?? t("network.unknownPage")}</span>
+              <span class="chip-type" style:color={relationColors[chip.type]}>{t(RELATION_LABELS[chip.type])}</span>
             </span>
           {/each}
         {/if}

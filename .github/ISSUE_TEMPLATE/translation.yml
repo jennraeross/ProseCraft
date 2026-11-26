@@ -1,0 +1,54 @@
+name: Translation
+description: Volunteer to translate ProseCraft, improve an existing language, or report a translation or layout problem
+title: "[Translation] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping translate ProseCraft. Read the translation section of
+        [CONTRIBUTING.md](https://github.com/jennraeross/ProseCraft/blob/main/CONTRIBUTING.md#translating-the-interface)
+        before starting; it explains the message files, placeholders and the check command.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of help is this?
+      options:
+        - I want to translate a new language
+        - I want to improve an existing translation
+        - I found a translation or layout problem
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      description: Name and BCP 47 tag, for example “French (fr)”, “Brazilian Portuguese (pt-BR)” or “Chinese, Simplified (zh-Hans)”.
+      placeholder: French (fr)
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: |
+        For a new language, say whether you are a native speaker and whether you can review other contributors’ work.
+        For a problem, name the screen, the English string and what is wrong (missing translation, clipped text, wrong term, broken placeholder…).
+      placeholder: |
+        Screen: Settings → Data and sync
+        Problem: “Plain backup” is translated as …
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before you start
+      options:
+        - label: I have read the translation section of CONTRIBUTING.md.
+          required: true
+        - label: I can run `npm run i18n:check` locally (or I am only reporting a problem).
+          required: false

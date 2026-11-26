@@ -15,6 +15,8 @@
     uniqueTemplateName
   } from "./sheet-templates";
   import type { SheetFieldType, SheetTemplate } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   let {
     templates,
@@ -35,25 +37,25 @@
     onclose: () => void;
   } = $props();
 
-  const FIELD_TYPES: readonly { id: SheetFieldType; label: string }[] = [
-    { id: "text", label: "Text" },
-    { id: "longtext", label: "Long text" },
-    { id: "number", label: "Number" },
-    { id: "choice", label: "Choice" },
-    { id: "link", label: "Page link" }
+  const FIELD_TYPES: readonly { id: SheetFieldType; labelKey: MessageKey }[] = [
+    { id: "text", labelKey: "sheetTemplate.type.text" },
+    { id: "longtext", labelKey: "sheetTemplate.type.longtext" },
+    { id: "number", labelKey: "sheetTemplate.type.number" },
+    { id: "choice", labelKey: "sheetTemplate.type.choice" },
+    { id: "link", labelKey: "sheetTemplate.type.link" }
   ];
 
-  const SUGGESTED_FIELDS: readonly { label: string; type: SheetFieldType }[] = [
-    { label: "Role", type: "text" },
-    { label: "Age", type: "number" },
-    { label: "Appearance", type: "longtext" },
-    { label: "Voice", type: "longtext" },
-    { label: "Goals", type: "longtext" },
-    { label: "Flaws", type: "longtext" },
-    { label: "Secret", type: "longtext" },
-    { label: "Languages", type: "text" },
-    { label: "Birthplace", type: "link" },
-    { label: "Occupation", type: "text" }
+  const SUGGESTED_FIELDS: readonly { labelKey: MessageKey; type: SheetFieldType }[] = [
+    { labelKey: "sheetTemplate.suggested.role", type: "text" },
+    { labelKey: "sheetTemplate.suggested.age", type: "number" },
+    { labelKey: "sheetTemplate.suggested.appearance", type: "longtext" },
+    { labelKey: "sheetTemplate.suggested.voice", type: "longtext" },
+    { labelKey: "sheetTemplate.suggested.goals", type: "longtext" },
+    { labelKey: "sheetTemplate.suggested.flaws", type: "longtext" },
+    { labelKey: "sheetTemplate.suggested.secret", type: "longtext" },
+    { labelKey: "sheetTemplate.suggested.languages", type: "text" },
+    { labelKey: "sheetTemplate.suggested.birthplace", type: "link" },
+    { labelKey: "sheetTemplate.suggested.occupation", type: "text" }
   ];
 
   const uid = $props.id();
@@ -146,10 +148,11 @@
     );
   }
 
-  function addSuggestion(suggestion: { label: string; type: SheetFieldType }): void {
-    if (usedLabels.has(suggestion.label.toLowerCase())) return;
+  function addSuggestion(suggestion: { labelKey: MessageKey; type: SheetFieldType }): void {
+    const label = t(suggestion.labelKey);
+    if (usedLabels.has(label.toLowerCase())) return;
     updateDraft((list) =>
-      addField(list, draft.id, { label: suggestion.label, type: suggestion.type }, () =>
+      addField(list, draft.id, { label, type: suggestion.type }, () =>
         crypto.randomUUID()
       )
     );
@@ -195,7 +198,7 @@
   }
 
   function fieldCount(template: SheetTemplate): string {
-    return `${template.fields.length} ${template.fields.length === 1 ? "field" : "fields"}`;
+    return t("sheetTemplate.fieldCount", { count: template.fields.length });
   }
 </script>
 
@@ -222,39 +225,39 @@
   <div class="settings-header">
     <div>
       <span class="settings-kicker">WIKI</span>
-      <h2 id={`${uid}-title`}>Character sheet template</h2>
+      <h2 id={`${uid}-title`}>{t("sheetTemplate.title")}</h2>
       <p class="template-subtitle">{draft.name} · {fieldCount(draft)}</p>
     </div>
-    <button class="close-settings" type="button" aria-label="Close template editor" onclick={onclose}><X size={15} aria-hidden="true" /></button>
+    <button class="close-settings" type="button" aria-label={t("sheetTemplate.close")} onclick={onclose}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body template-body">
-    <aside class="template-column" aria-label="Templates">
-      <p class="template-section-label">Templates</p>
+    <aside class="template-column" aria-label={t("sheetTemplate.templates")}>
+      <p class="template-section-label">{t("sheetTemplate.templates")}</p>
       <div class="template-list">
         {#each catalog as template, index (template.id)}
           {#if templates.length > 0 && index === builtInCount}
-            <p class="template-section-label">My templates</p>
+            <p class="template-section-label">{t("sheetTemplate.myTemplates")}</p>
           {/if}
           {@render templateOption(template)}
         {/each}
       </div>
-      <p class="template-note">Built-in templates are fixed; saving one stores your own copy.</p>
+      <p class="template-note">{t("sheetTemplate.builtInNote")}</p>
     </aside>
 
-    <section class="template-column" aria-label="Fields">
-      <label class="template-section-label" for={`${uid}-name`}>Template name</label>
+    <section class="template-column" aria-label={t("sheetTemplate.fields")}>
+      <label class="template-section-label" for={`${uid}-name`}>{t("sheetTemplate.name")}</label>
       <input
         id={`${uid}-name`}
         class="template-input"
         type="text"
         spellcheck="false"
         value={draft.name}
-        placeholder="Untitled template"
+        placeholder={t("sheetTemplate.untitled")}
         onchange={changeName}
       />
       <div class="template-row">
-        <span class="template-section-label">Fields {draft.fields.length} of {MAX_TEMPLATE_FIELDS}</span>
-        <button type="button" class="template-add" disabled={fieldsFull} onclick={appendField}><Plus size={11} aria-hidden="true" /> Add field</button>
+        <span class="template-section-label">{t("sheetTemplate.fieldsCount", { count: draft.fields.length, max: MAX_TEMPLATE_FIELDS })}</span>
+        <button type="button" class="template-add" disabled={fieldsFull} onclick={appendField}><Plus size={11} aria-hidden="true" /> {t("sheetTemplate.addField")}</button>
       </div>
       <ul class="template-fields">
         {#each draft.fields as field, index (field.id)}
@@ -265,23 +268,23 @@
                 type="text"
                 spellcheck="false"
                 value={field.label}
-                aria-label={`Label of field ${index + 1}`}
+                aria-label={t("sheetTemplate.fieldLabel", { number: index + 1 })}
                 onchange={(event) => changeLabel(field.id, event)}
               />
               <select
                 class="template-select"
-                aria-label={`Type of ${field.label}`}
+                aria-label={t("sheetTemplate.fieldType", { label: field.label })}
                 value={field.type}
                 onchange={(event) => changeType(field.id, event)}
               >
                 {#each FIELD_TYPES as type (type.id)}
-                  <option value={type.id}>{type.label}</option>
+                  <option value={type.id}>{t(type.labelKey)}</option>
                 {/each}
               </select>
               <div class="template-field-actions">
-                <button type="button" class="template-icon" title="Move up" aria-label={`Move ${field.label} up`} disabled={index === 0} onclick={() => moveField(field.id, index - 1)}><ChevronUp size={12} aria-hidden="true" /></button>
-                <button type="button" class="template-icon" title="Move down" aria-label={`Move ${field.label} down`} disabled={index === draft.fields.length - 1} onclick={() => moveField(field.id, index + 1)}><ChevronDown size={12} aria-hidden="true" /></button>
-                <button type="button" class="template-icon template-icon-remove" title="Remove field" aria-label={`Remove ${field.label}`} onclick={() => dropField(field.id)}><Trash2 size={12} aria-hidden="true" /></button>
+                <button type="button" class="template-icon" title={t("sheetTemplate.moveUp")} aria-label={t("sheetTemplate.moveUpAria", { label: field.label })} disabled={index === 0} onclick={() => moveField(field.id, index - 1)}><ChevronUp size={12} aria-hidden="true" /></button>
+                <button type="button" class="template-icon" title={t("sheetTemplate.moveDown")} aria-label={t("sheetTemplate.moveDownAria", { label: field.label })} disabled={index === draft.fields.length - 1} onclick={() => moveField(field.id, index + 1)}><ChevronDown size={12} aria-hidden="true" /></button>
+                <button type="button" class="template-icon template-icon-remove" title={t("sheetTemplate.removeField")} aria-label={t("sheetTemplate.removeAria", { label: field.label })} onclick={() => dropField(field.id)}><Trash2 size={12} aria-hidden="true" /></button>
               </div>
             </div>
             {#if field.type === "choice"}
@@ -289,8 +292,8 @@
                 class="template-input template-field-options"
                 type="text"
                 spellcheck="false"
-                placeholder="Options, separated by commas"
-                aria-label={`Options of ${field.label}`}
+                placeholder={t("sheetTemplate.optionsPlaceholder")}
+                aria-label={t("sheetTemplate.optionsAria", { label: field.label })}
                 value={(field.options ?? []).join(", ")}
                 onchange={(event) => changeOptions(field.id, event)}
               />
@@ -299,32 +302,32 @@
         {/each}
       </ul>
       {#if draft.fields.length === 0}
-        <p class="template-note">This template has no fields yet. Add one or pick a suggestion below.</p>
+        <p class="template-note">{t("sheetTemplate.noFields")}</p>
       {/if}
-      <p class="template-section-label">Suggested fields</p>
+      <p class="template-section-label">{t("sheetTemplate.suggested")}</p>
       <div class="template-chips">
-        {#each SUGGESTED_FIELDS as suggestion (suggestion.label)}
+        {#each SUGGESTED_FIELDS as suggestion (suggestion.labelKey)}
           <button
             type="button"
             class="template-chip"
-            class:picked={usedLabels.has(suggestion.label.toLowerCase())}
-            aria-pressed={usedLabels.has(suggestion.label.toLowerCase())}
-            disabled={fieldsFull || usedLabels.has(suggestion.label.toLowerCase())}
+            class:picked={usedLabels.has(t(suggestion.labelKey).toLowerCase())}
+            aria-pressed={usedLabels.has(t(suggestion.labelKey).toLowerCase())}
+            disabled={fieldsFull || usedLabels.has(t(suggestion.labelKey).toLowerCase())}
             onclick={() => addSuggestion(suggestion)}
-          ><Plus size={9} aria-hidden="true" />{suggestion.label}</button>
+          ><Plus size={9} aria-hidden="true" />{t(suggestion.labelKey)}</button>
         {/each}
       </div>
-      <p class="template-note">Removing a field keeps the values pages already stored.</p>
+      <p class="template-note">{t("sheetTemplate.removeNote")}</p>
     </section>
 
-    <aside class="template-column template-preview" aria-label="Live preview">
-      <p class="template-section-label">Live preview {#if dirty}<span class="template-badge">unsaved</span>{/if}</p>
+    <aside class="template-column template-preview" aria-label={t("sheetTemplate.previewAria")}>
+      <p class="template-section-label">{t("sheetTemplate.livePreview")} {#if dirty}<span class="template-badge">{t("sheetTemplate.unsaved")}</span>{/if}</p>
       <div class="preview-card">
         <div class="preview-head">
           <span class="preview-portrait" aria-hidden="true">{previewInitial}</span>
           <div class="preview-identity">
-            <span class="preview-name">{preview.title.trim() || "Untitled"}</span>
-            <span class="preview-template">{draft.name || "Untitled template"} template</span>
+            <span class="preview-name">{preview.title.trim() || t("common.untitled")}</span>
+            <span class="preview-template">{t("sheet.templateName", { name: draft.name || t("sheetTemplate.untitled") })}</span>
           </div>
         </div>
         {#each draft.fields as field (field.id)}
@@ -336,17 +339,17 @@
           </div>
         {/each}
         {#if draft.fields.length === 0}
-          <p class="preview-empty">Empty sheet.</p>
+          <p class="preview-empty">{t("sheetTemplate.emptySheet")}</p>
         {/if}
       </div>
-      <p class="template-note">Preview updates as you edit.</p>
+      <p class="template-note">{t("sheetTemplate.previewNote")}</p>
     </aside>
   </div>
   <div class="settings-footer">
-    <span class="template-status" role="status">{status || "Existing pages keep their values when a template changes."}</span>
+    <span class="template-status" role="status">{status || t("sheetTemplate.status")}</span>
     <div class="template-actions">
-      <button type="button" class="template-button" disabled={saveDisabled} onclick={storeDraft}>Save as my template</button>
-      <button type="button" class="template-button primary" onclick={applyToPage}>Apply to this page</button>
+      <button type="button" class="template-button" disabled={saveDisabled} onclick={storeDraft}>{t("sheetTemplate.save")}</button>
+      <button type="button" class="template-button primary" onclick={applyToPage}>{t("sheetTemplate.apply")}</button>
     </div>
   </div>
 </dialog>

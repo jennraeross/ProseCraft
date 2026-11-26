@@ -56,9 +56,12 @@
     type CompiledCover,
     type CoverMode,
     type DocumentData,
+    type ExportFormat,
     type PublishOptions,
     type SceneSeparator
   } from "./publish/types";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     chapters: ChapterData[];
@@ -112,13 +115,82 @@
     message: ""
   });
 
-  const separatorOptions: Array<{ value: SceneSeparator; label: string }> = [
+  const separatorOptions: Array<{ value: SceneSeparator; label?: string; labelKey?: MessageKey }> = [
     { value: "hash", label: "#" },
     { value: "asterisks", label: "* * *" },
-    { value: "line", label: "A rule" },
-    { value: "blank", label: "Blank space" },
-    { value: "none", label: "No separator" }
+    { value: "line", labelKey: "separator.rule" },
+    { value: "blank", labelKey: "separator.blank" },
+    { value: "none", labelKey: "separator.none" }
   ];
+
+  const FORMAT_KEYS: Record<ExportFormat, { label: MessageKey; description: MessageKey }> = {
+    pdf: { label: "format.pdf.label", description: "format.pdf.description" },
+    epub: { label: "format.epub.label", description: "format.epub.description" },
+    docx: { label: "format.docx.label", description: "format.docx.description" },
+    markdown: { label: "format.markdown.label", description: "format.markdown.description" },
+    html: { label: "format.html.label", description: "format.html.description" },
+    text: { label: "format.text.label", description: "format.text.description" },
+    fountain: { label: "format.fountain.label", description: "format.fountain.description" },
+    "screenplay-pdf": {
+      label: "format.screenplayPdf.label",
+      description: "format.screenplayPdf.description"
+    }
+  };
+
+  const PRESET_KEYS: Record<string, { label: MessageKey; detail: MessageKey }> = {
+    manuscript: { label: "preset.manuscript.label", detail: "preset.manuscript.detail" },
+    classic: { label: "preset.classic.label", detail: "preset.classic.detail" },
+    modern: { label: "preset.modern.label", detail: "preset.modern.detail" },
+    ebook: { label: "preset.ebook.label", detail: "preset.ebook.detail" }
+  };
+
+  const COVER_DESIGN_KEYS: Record<string, { label: MessageKey; detail: MessageKey }> = {
+    classic: { label: "coverDesign.classic.label", detail: "coverDesign.classic.detail" },
+    modern: { label: "coverDesign.modern.label", detail: "coverDesign.modern.detail" },
+    minimal: { label: "coverDesign.minimal.label", detail: "coverDesign.minimal.detail" },
+    bold: { label: "coverDesign.bold.label", detail: "coverDesign.bold.detail" }
+  };
+
+  const COVER_PALETTE_KEYS: Record<string, MessageKey> = {
+    ink: "coverPalette.ink",
+    sage: "coverPalette.sage",
+    clay: "coverPalette.clay",
+    ocean: "coverPalette.ocean",
+    plum: "coverPalette.plum"
+  };
+
+  function formatLabel(format: ExportFormat): string {
+    return t(FORMAT_KEYS[format].label);
+  }
+
+  function formatDescription(format: ExportFormat): string {
+    return t(FORMAT_KEYS[format].description);
+  }
+
+  function styleLabel(entry: { id: string; label: string; custom: boolean }): string {
+    const keys = PRESET_KEYS[entry.id];
+    return entry.custom || !keys ? entry.label : t(keys.label);
+  }
+
+  function styleDetail(entry: { id: string; detail: string; custom: boolean }): string {
+    const keys = PRESET_KEYS[entry.id];
+    return entry.custom || !keys ? entry.detail : t(keys.detail);
+  }
+
+  function designLabel(design: { id: string; label: string }): string {
+    const keys = COVER_DESIGN_KEYS[design.id];
+    return keys ? t(keys.label) : design.label;
+  }
+
+  function designDetail(design: { id: string; detail: string }): string {
+    const keys = COVER_DESIGN_KEYS[design.id];
+    return keys ? t(keys.detail) : design.detail;
+  }
+
+  function paletteLabel(palette: { id: string; label: string }): string {
+    const key = COVER_PALETTE_KEYS[palette.id];
+    return key ? t(key) : palette.label;
+  }
 
   let compiled = $derived(compileBook({
     title: projectName,
@@ -142,6 +214,10 @@
   );
   let styleEntries = $derived(styleSummaries(options.customStyles));
   let selectedStyle = $derived(resolveStyleTokens(options.style, options.customStyles));
+  let selectedStyleName = $derived.by(() => {
+    const entry = styleEntries.find((item) => item.id === options.style);
+    return entry ? styleLabel(entry) : selectedStyle.label;
+  });
   let canAddStyle = $derived(options.customStyles.length < MAX_CUSTOM_STYLES);
   let canAddFrontMatter = $derived(options.frontMatter.length < MATTER_PAGE_LIMIT);
   let canAddBackMatter = $derived(options.backMatter.length < MATTER_PAGE_LIMIT);
@@ -159,6 +235,10 @@
     return { ...options, style: draft.id, customStyles };
   });
   let previewStyle = $derived(resolveStyleTokens(previewOptions.style, previewOptions.customStyles));
+  let previewStyleName = $derived.by(() => {
+    const entry = styleEntries.find((item) => item.id === previewOptions.style);
+    return entry ? styleLabel(entry) : previewStyle.label;
+  });
   let previewBook = $derived(coverAsset ? { ...compiled, cover: coverAsset } : compiled);
   let preparedPreviewBook = $state<CompiledBook | null>(null);
   let richPreparing = $state(false);
@@ -168,12 +248,12 @@
   );
   let coverSummary = $derived(
     options.cover.mode === "none"
-      ? "None"
+      ? t("publish.coverNone")
       : coverBusy
-        ? "Preparing…"
+        ? t("publish.preparing")
         : options.cover.mode === "image"
-          ? "Image"
-          : coverDesign.label
+          ? t("publish.coverImage")
+          : designLabel(coverDesign)
   );
   let previewSections = $derived(listManuscriptSections(previewBook, options));
   let activePreviewSection = $derived(
@@ -187,17 +267,17 @@
   let previewGroups = $derived([
     {
       id: "front",
-      label: "Front Matter",
+      label: t("publish.groupFront"),
       sections: previewSections.filter((section) => section.group === "front")
     },
     {
       id: "chapters",
-      label: "Chapters",
+      label: t("publish.groupChapters"),
       sections: previewSections.filter((section) => section.group === "chapters")
     },
     {
       id: "back",
-      label: "Back Matter",
+      label: t("publish.groupBack"),
       sections: previewSections.filter((section) => section.group === "back")
     }
   ].filter((group) => group.sections.length > 0));
@@ -268,7 +348,7 @@
       .catch((error) => {
         if (cancelled || request !== coverRequest) return;
         coverAsset = null;
-        coverError = error instanceof Error ? error.message : "Could not prepare that cover.";
+        coverError = error instanceof Error ? error.message : t("publish.coverErrorPrepare");
       })
       .finally(() => {
         if (!cancelled && request === coverRequest) coverBusy = false;
@@ -417,7 +497,7 @@
       const image = await imageFileToCoverDataUrl(file);
       updateCover({ mode: "image", image });
     } catch (error) {
-      coverError = error instanceof Error ? error.message : "Could not prepare that cover image.";
+      coverError = error instanceof Error ? error.message : t("publish.coverErrorImage");
     } finally {
       coverBusy = false;
     }
@@ -523,7 +603,7 @@
     if (!canExport) return;
     const exportOptions = { ...options };
     exporting = true;
-    status = { tone: "idle", message: "Preparing your manuscript…" };
+    status = { tone: "idle", message: t("publish.preparingManuscript") };
     try {
       await beforeExport();
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -548,17 +628,17 @@
       const payload = await renderExport(book, exportOptions);
       const result = await saveExport(payload);
       if (result.outcome === "cancelled") {
-        status = { tone: "idle", message: "Export cancelled." };
+        status = { tone: "idle", message: t("publish.cancelled") };
       } else if (result.outcome === "downloaded") {
-        status = { tone: "success", message: `Downloaded ${result.filename}.` };
+        status = { tone: "success", message: t("publish.downloaded", { file: result.filename }) };
       } else {
-        status = { tone: "success", message: `Saved ${result.filename}.` };
+        status = { tone: "success", message: t("publish.saved", { file: result.filename }) };
       }
     } catch (error) {
       console.error("Could not export the manuscript.", error);
       status = {
         tone: "error",
-        message: error instanceof Error ? error.message : "Could not export the manuscript."
+        message: error instanceof Error ? error.message : t("publish.exportFailed")
       };
     } finally {
       exporting = false;
@@ -566,25 +646,25 @@
   }
 </script>
 
-<section class="publish-view" aria-label="Publish manuscript">
+<section class="publish-view" aria-label={t("publish.aria")}>
   <div class="publish-grid">
     <aside class="publish-controls">
       <header class="publish-heading">
-        <span class="publish-eyebrow">PUBLISH</span>
-        <h1>Publish your manuscript</h1>
-        <p>Gather every chapter into one finished book, ready to share or print.</p>
+        <span class="publish-eyebrow">{t("publish.eyebrow")}</span>
+        <h1>{t("publish.title")}</h1>
+        <p>{t("publish.intro")}</p>
       </header>
 
-      <div class="publish-summary" aria-label="Manuscript summary">
-        <div><strong>{compiled.chapters.length}</strong><span>{compiled.chapters.length === 1 ? "chapter" : "chapters"}</span></div>
-        <div><strong>{compiled.scenes}</strong><span>{compiled.scenes === 1 ? "scene" : "scenes"}</span></div>
-        <div><strong>{compiled.words.toLocaleString()}</strong><span>words</span></div>
-        <div><strong>{pageEstimate === null ? "—" : pageEstimate}</strong><span>{pageEstimate === null ? "reflowable" : "pages"}</span></div>
+      <div class="publish-summary" aria-label={t("publish.summaryAria")}>
+        <div><strong>{compiled.chapters.length}</strong><span>{t("publish.chapters")}</span></div>
+        <div><strong>{compiled.scenes}</strong><span>{t("publish.scenes")}</span></div>
+        <div><strong>{compiled.words.toLocaleString()}</strong><span>{t("publish.words")}</span></div>
+        <div><strong>{pageEstimate === null ? "—" : pageEstimate}</strong><span>{pageEstimate === null ? t("publish.reflowable") : t("publish.pages")}</span></div>
       </div>
 
       <section class="publish-section">
         <div class="section-heading">
-          <h2>Format</h2>
+          <h2>{t("publish.format")}</h2>
           <span>{FORMAT_INFO[options.format].extension.toUpperCase()}</span>
         </div>
         <div class="format-grid">
@@ -596,9 +676,9 @@
               aria-pressed={options.format === format}
               onclick={() => update("format", format)}
             >
-              <span class="format-name">{FORMAT_INFO[format].label}</span>
+              <span class="format-name">{formatLabel(format)}</span>
               <span class="format-ext">.{FORMAT_INFO[format].extension}</span>
-              <span class="format-description">{FORMAT_INFO[format].description}</span>
+              <span class="format-description">{formatDescription(format)}</span>
             </button>
           {/each}
         </div>
@@ -606,8 +686,8 @@
 
       <section class="publish-section">
         <div class="section-heading">
-          <h2>Style</h2>
-          <span>{selectedStyle.label}</span>
+          <h2>{t("publish.style")}</h2>
+          <span>{selectedStyleName}</span>
         </div>
         <div class="style-list">
           {#each styleEntries as entry (entry.id)}
@@ -619,25 +699,25 @@
                 onclick={() => update("style", entry.id)}
               >
                 <span class="style-name">
-                  <span class="style-label">{entry.label}</span>
-                  {#if entry.custom}<span class="style-badge">Custom</span>{/if}
+                  <span class="style-label">{styleLabel(entry)}</span>
+                  {#if entry.custom}<span class="style-badge">{t("publish.custom")}</span>{/if}
                 </span>
-                <span class="style-detail">{entry.detail}</span>
+                <span class="style-detail">{styleDetail(entry)}</span>
               </button>
               {#if entry.custom}
                 <div class="style-actions">
                   <button
                     type="button"
                     class="style-action"
-                    title="Edit style"
-                    aria-label={`Edit ${entry.label}`}
+                    title={t("publish.editStyleAria", { name: entry.label })}
+                    aria-label={t("publish.editStyleAria", { name: entry.label })}
                     onclick={() => startEditStyle(entry.id)}
                   ><Pencil size={13} aria-hidden="true" /></button>
                   <button
                     type="button"
                     class="style-action style-action-delete"
-                    title="Delete style"
-                    aria-label={`Delete ${entry.label}`}
+                    title={t("publish.deleteStyleAria", { name: entry.label })}
+                    aria-label={t("publish.deleteStyleAria", { name: entry.label })}
                     onclick={() => startEditStyle(entry.id, true)}
                   ><Trash2 size={13} aria-hidden="true" /></button>
                 </div>
@@ -646,50 +726,50 @@
           {/each}
         </div>
         <button type="button" class="new-style-button" disabled={!canAddStyle} onclick={startNewStyle}>
-          <Plus size={14} aria-hidden="true" /> New style
+          <Plus size={14} aria-hidden="true" /> {t("publish.newStyle")}
         </button>
         <p class="style-hint">
           {#if canAddStyle}
-            Custom styles are saved with this project.
+            {t("publish.styleHint")}
           {:else}
-            You’ve reached the limit of {MAX_CUSTOM_STYLES} custom styles.
+            {t("publish.styleLimit", { max: MAX_CUSTOM_STYLES })}
           {/if}
         </p>
       </section>
 
       <section class="publish-section">
         <div class="section-heading">
-          <h2>Cover</h2>
+          <h2>{t("publish.cover")}</h2>
           <span>{coverSummary}</span>
         </div>
-        <div class="cover-mode-tabs" role="group" aria-label="Cover mode">
+        <div class="cover-mode-tabs" role="group" aria-label={t("publish.coverAria")}>
           <button
             type="button"
             class:selected={options.cover.mode === "none"}
             aria-pressed={options.cover.mode === "none"}
             onclick={() => setCoverMode("none")}
-          >None</button>
+          >{t("publish.coverNone")}</button>
           <button
             type="button"
             class:selected={options.cover.mode === "image"}
             aria-pressed={options.cover.mode === "image"}
             onclick={() => setCoverMode("image")}
-          >Image</button>
+          >{t("publish.coverImage")}</button>
           <button
             type="button"
             class:selected={options.cover.mode === "generated"}
             aria-pressed={options.cover.mode === "generated"}
             onclick={() => setCoverMode("generated")}
-          >Generated</button>
+          >{t("publish.coverGenerated")}</button>
         </div>
 
         {#if options.cover.mode === "image"}
           <div class="cover-image-panel">
             <div class="cover-thumb" class:empty={!coverAsset}>
               {#if coverAsset}
-                <img src={coverAsset.dataUrl} alt="Cover preview" />
+                <img src={coverAsset.dataUrl} alt={t("publish.coverPreviewAlt")} />
               {:else}
-                <span>No image</span>
+                <span>{t("publish.coverNoImage")}</span>
               {/if}
             </div>
             <div class="cover-image-copy">
@@ -698,16 +778,16 @@
                   type="button"
                   class="cover-action"
                   onclick={() => coverImageInput?.click()}
-                >{options.cover.image ? "Replace" : "Choose image"}</button>
+                >{options.cover.image ? t("publish.coverReplace") : t("publish.coverChoose")}</button>
                 {#if options.cover.image}
                   <button
                     type="button"
                     class="cover-action cover-action-quiet"
                     onclick={removeCoverImage}
-                  >Remove</button>
+                  >{t("publish.coverRemove")}</button>
                 {/if}
               </div>
-              <p>PNG, JPG, or WebP. Cropped to a 2:3 cover.</p>
+              <p>{t("publish.coverFormats")}</p>
             </div>
           </div>
           <input
@@ -721,9 +801,9 @@
           <div class="cover-generated-panel">
             <div class="cover-thumb" class:empty={!coverAsset}>
               {#if coverAsset}
-                <img src={coverAsset.dataUrl} alt="Generated cover preview" />
+                <img src={coverAsset.dataUrl} alt={t("publish.generatedPreviewAlt")} />
               {:else}
-                <span>Generating…</span>
+                <span>{t("publish.generating")}</span>
               {/if}
             </div>
             <div class="cover-generated-copy">
@@ -734,40 +814,40 @@
                     class="cover-design"
                     class:selected={options.cover.design === design.id}
                     aria-pressed={options.cover.design === design.id}
-                    title={design.detail}
+                    title={designDetail(design)}
                     onclick={() => updateCover({ design: design.id })}
                   >
-                    <span class="cover-design-name">{design.label}</span>
-                    <span class="cover-design-detail">{design.detail}</span>
+                    <span class="cover-design-name">{designLabel(design)}</span>
+                    <span class="cover-design-detail">{designDetail(design)}</span>
                   </button>
                 {/each}
               </div>
-              <div class="cover-palette-row" aria-label="Cover palette">
+              <div class="cover-palette-row" aria-label={t("publish.coverPalette")}>
                 {#each COVER_PALETTES as palette (palette.id)}
                   <button
                     type="button"
                     class="cover-palette"
                     class:selected={options.cover.palette === palette.id}
                     style={`--swatch:${palette.background};--swatch-ink:${palette.ink}`}
-                    aria-label={`${palette.label} palette`}
+                    aria-label={t("publish.paletteAria", { name: paletteLabel(palette) })}
                     aria-pressed={options.cover.palette === palette.id}
-                    title={palette.label}
+                    title={paletteLabel(palette)}
                     onclick={() => updateCover({ palette: palette.id })}
                   ></button>
                 {/each}
               </div>
             </div>
           </div>
-          <p class="cover-hint">Uses your title, subtitle, and author. Updates automatically.</p>
+          <p class="cover-hint">{t("publish.coverAutoHint")}</p>
         {/if}
         {#if coverError}
           <p class="cover-error" role="alert">{coverError}</p>
         {/if}
-        <p class="cover-hint">Included in PDF, EPUB, DOCX, and HTML exports.</p>
+        <p class="cover-hint">{t("publish.coverExportHint")}</p>
       </section>
 
       <section class="publish-section">
-        <div class="section-heading"><h2>Manuscript</h2></div>
+        <div class="section-heading"><h2>{t("publish.manuscript")}</h2></div>
         <div class="option-list">
           <label class="option-row">
             <input
@@ -776,8 +856,8 @@
               onchange={(event) => update("includeChapterTitles", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Chapter headings</strong>
-              <small>Use the same chapter names and numbering as the sidebar.</small>
+              <strong>{t("publish.chapterHeadings")}</strong>
+              <small>{t("publish.chapterHeadingsHint")}</small>
             </span>
           </label>
           <label class="option-row">
@@ -787,8 +867,8 @@
               onchange={(event) => update("includeSceneTitles", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Scene titles</strong>
-              <small>Include each scene's title above its text.</small>
+              <strong>{t("publish.sceneTitles")}</strong>
+              <small>{t("publish.sceneTitlesHint")}</small>
             </span>
           </label>
           <label class="option-row">
@@ -798,8 +878,8 @@
               onchange={(event) => update("pageBreakBeforeChapters", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Start chapters on a new page</strong>
-              <small>Give every chapter a clean opening page.</small>
+              <strong>{t("publish.pageBreak")}</strong>
+              <small>{t("publish.pageBreakHint")}</small>
             </span>
           </label>
           <label class="option-row">
@@ -809,21 +889,21 @@
               onchange={(event) => update("dropCaps", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Drop caps</strong>
-              <small>Use a large initial letter when the style supports it.</small>
+              <strong>{t("publish.dropCaps")}</strong>
+              <small>{t("publish.dropCapsHint")}</small>
             </span>
           </label>
           <label class="option-row option-row-select">
             <span>
-              <strong>Scene separator</strong>
-              <small>Shown between scenes inside a chapter.</small>
+              <strong>{t("publish.sceneSeparator")}</strong>
+              <small>{t("publish.sceneSeparatorHint")}</small>
             </span>
             <select
               value={options.sceneSeparator}
               onchange={(event) => update("sceneSeparator", (event.currentTarget as HTMLSelectElement).value as SceneSeparator)}
             >
               {#each separatorOptions as separator (separator.value)}
-                <option value={separator.value}>{separator.label}</option>
+                <option value={separator.value}>{separator.labelKey ? t(separator.labelKey) : separator.label}</option>
               {/each}
             </select>
           </label>
@@ -832,17 +912,17 @@
 
       <section class="publish-section">
         <div class="section-heading">
-          <h2>Citations</h2>
-          <span>{citationsCount} {citationsCount === 1 ? "source" : "sources"}</span>
+          <h2>{t("publish.citations")}</h2>
+          <span>{t("publish.sourcesCount", { count: citationsCount })}</span>
         </div>
         <div class="option-list">
           <label class="option-row option-row-select">
             <span>
-              <strong>Citation style</strong>
-              <small>Applied to inline citations and the bibliography.</small>
+              <strong>{t("publish.citationStyle")}</strong>
+              <small>{t("publish.citationStyleHint")}</small>
             </span>
             <select
-              aria-label="Citation style"
+              aria-label={t("publish.citationStyle")}
               value={options.citationStyle ?? "apa7"}
               onchange={(event) => update("citationStyle", (event.currentTarget as HTMLSelectElement).value as CitationStyleId)}
             >
@@ -853,11 +933,11 @@
           </label>
           <label class="option-row option-row-select">
             <span>
-              <strong>Citation language</strong>
-              <small>Used for terms like ed., pp., and n.d.</small>
+              <strong>{t("publish.citationLanguage")}</strong>
+              <small>{t("publish.citationLanguageHint")}</small>
             </span>
             <select
-              aria-label="Citation language"
+              aria-label={t("publish.citationLanguage")}
               value={options.citationLocale ?? "en"}
               onchange={(event) => update("citationLocale", (event.currentTarget as HTMLSelectElement).value as CitationLocale)}
             >
@@ -872,13 +952,13 @@
               onchange={(event) => update("includeBibliography", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Include bibliography</strong>
-              <small>Append a formatted reference list when citations are used.</small>
+              <strong>{t("publish.includeBibliography")}</strong>
+              <small>{t("publish.includeBibliographyHint")}</small>
             </span>
           </label>
           {#if onOpenSources}
             <button type="button" class="new-style-button" onclick={onOpenSources}>
-              Sources…
+              {t("toolbar.sources")}
             </button>
           {/if}
         </div>
@@ -886,8 +966,8 @@
 
       <details class="publish-section details-section">
         <summary>
-          <span>Front matter</span>
-          <span class="details-hint">Title page, copyright, contents</span>
+          <span>{t("publish.frontMatter")}</span>
+          <span class="details-hint">{t("publish.frontMatterHint")}</span>
         </summary>
         <div class="details-body">
           <label class="option-row">
@@ -897,29 +977,29 @@
               onchange={(event) => update("includeTitlePage", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Title page</strong>
-              <small>Project title, subtitle, author, and copyright.</small>
+              <strong>{t("publish.titlePage")}</strong>
+              <small>{t("publish.titlePageHint")}</small>
             </span>
           </label>
           <label class="text-field">
-            <span>Subtitle</span>
+            <span>{t("publish.subtitle")}</span>
             <input
               type="text"
               value={options.subtitle}
               data-undo-key="publish-subtitle"
               maxlength="200"
-              placeholder="Optional subtitle"
+              placeholder={t("publish.subtitlePlaceholder")}
               oninput={(event) => updateText("subtitle", (event.currentTarget as HTMLInputElement).value)}
             />
           </label>
           <label class="text-field">
-            <span>Copyright</span>
+            <span>{t("publish.copyright")}</span>
             <textarea
               value={options.copyright}
               data-undo-key="publish-copyright"
               maxlength="500"
               rows="2"
-              placeholder="© 2026 Author. All rights reserved."
+              placeholder={t("publish.copyrightPlaceholder")}
               oninput={(event) => updateText("copyright", (event.currentTarget as HTMLTextAreaElement).value)}
             ></textarea>
           </label>
@@ -930,18 +1010,18 @@
               onchange={(event) => update("includeCopyrightPage", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Copyright on its own page</strong>
-              <small>Move the copyright text off the title page.</small>
+              <strong>{t("publish.copyrightPage")}</strong>
+              <small>{t("publish.copyrightPageHint")}</small>
             </span>
           </label>
           <label class="text-field">
-            <span>Dedication</span>
+            <span>{t("publish.dedication")}</span>
             <textarea
               value={options.dedication}
               data-undo-key="publish-dedication"
               maxlength="1000"
               rows="2"
-              placeholder="For the people who kept the light on."
+              placeholder={t("publish.dedicationPlaceholder")}
               oninput={(event) => updateText("dedication", (event.currentTarget as HTMLTextAreaElement).value)}
             ></textarea>
           </label>
@@ -952,13 +1032,13 @@
               onchange={(event) => update("includeTableOfContents", (event.currentTarget as HTMLInputElement).checked)}
             />
             <span>
-              <strong>Table of contents</strong>
-              <small>List chapter titles at the front of the book.</small>
+              <strong>{t("publish.toc")}</strong>
+              <small>{t("publish.tocHint")}</small>
             </span>
           </label>
           <div class="matter-editor">
             <div class="matter-editor-heading">
-              <strong>Additional pages</strong>
+              <strong>{t("publish.additionalPages")}</strong>
               <span>{options.frontMatter.length}/{MATTER_PAGE_LIMIT}</span>
             </div>
             <div class="matter-add-row">
@@ -971,7 +1051,7 @@
                 type="button"
                 disabled={!canAddFrontMatter}
                 onclick={() => addMatterPage("front", frontMatterPreset)}
-              >Add page</button>
+              >{t("publish.addPage")}</button>
             </div>
             {#each options.frontMatter as page, index (page.id)}
               <div class="matter-page-card">
@@ -982,29 +1062,29 @@
                     value={page.title}
                     data-undo-key={`matter-title:${page.id}`}
                     maxlength={MATTER_TITLE_LIMIT}
-                    placeholder={page.blank && !page.title ? "Blank page" : "Page title"}
-                    aria-label="Front matter page title"
+                    placeholder={page.blank && !page.title ? t("publish.blankPage") : t("publish.pageTitlePlaceholder")}
+                    aria-label={t("publish.frontMatterTitleAria")}
                     oninput={(event) => updateMatterPage("front", page.id, { title: (event.currentTarget as HTMLInputElement).value })}
                   />
                   <button
                     type="button"
-                    title="Move page up"
-                    aria-label={`Move ${page.title || "front matter page"} up`}
+                    title={t("publish.movePageUp")}
+                    aria-label={t("publish.moveUpAria", { name: page.title || t("publish.frontMatterPage") })}
                     disabled={index === 0}
                     onclick={() => moveMatterPage("front", page.id, -1)}
                   ><ArrowUp size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
-                    title="Move page down"
-                    aria-label={`Move ${page.title || "front matter page"} down`}
+                    title={t("publish.movePageDown")}
+                    aria-label={t("publish.moveDownAria", { name: page.title || t("publish.frontMatterPage") })}
                     disabled={index === options.frontMatter.length - 1}
                     onclick={() => moveMatterPage("front", page.id, 1)}
                   ><ArrowDown size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
                     class="matter-page-remove"
-                    title="Remove page"
-                    aria-label={`Remove ${page.title || "front matter page"}`}
+                    title={t("publish.removePage")}
+                    aria-label={t("publish.removePageAria", { name: page.title || t("publish.frontMatterPage") })}
                     onclick={() => removeMatterPage("front", page.id)}
                   ><Trash2 size={14} aria-hidden="true" /></button>
                 </div>
@@ -1013,8 +1093,8 @@
                   data-undo-key={`matter-body:${page.id}`}
                   maxlength={MATTER_BODY_LIMIT}
                   rows="3"
-                  placeholder="Page text…"
-                  aria-label={`${page.title || "Front matter"} text`}
+                  placeholder={t("publish.pageText")}
+                  aria-label={t("publish.textAria", { name: page.title || t("publish.frontMatter") })}
                   oninput={(event) => updateMatterPage("front", page.id, { body: (event.currentTarget as HTMLTextAreaElement).value })}
                 ></textarea>
               </div>
@@ -1025,13 +1105,13 @@
 
       <details class="publish-section details-section">
         <summary>
-          <span>Back matter</span>
-          <span class="details-hint">Acknowledgments, author notes, appendices</span>
+          <span>{t("publish.backMatter")}</span>
+          <span class="details-hint">{t("publish.backMatterHint")}</span>
         </summary>
         <div class="details-body">
           <div class="matter-editor">
             <div class="matter-editor-heading">
-              <strong>Additional pages</strong>
+              <strong>{t("publish.additionalPages")}</strong>
               <span>{options.backMatter.length}/{MATTER_PAGE_LIMIT}</span>
             </div>
             <div class="matter-add-row">
@@ -1044,7 +1124,7 @@
                 type="button"
                 disabled={!canAddBackMatter}
                 onclick={() => addMatterPage("back", backMatterPreset)}
-              >Add page</button>
+              >{t("publish.addPage")}</button>
             </div>
             {#each options.backMatter as page, index (page.id)}
               <div class="matter-page-card">
@@ -1055,29 +1135,29 @@
                     value={page.title}
                     data-undo-key={`matter-title:${page.id}`}
                     maxlength={MATTER_TITLE_LIMIT}
-                    placeholder={page.blank && !page.title ? "Blank page" : "Page title"}
-                    aria-label="Back matter page title"
+                    placeholder={page.blank && !page.title ? t("publish.blankPage") : t("publish.pageTitlePlaceholder")}
+                    aria-label={t("publish.backMatterTitleAria")}
                     oninput={(event) => updateMatterPage("back", page.id, { title: (event.currentTarget as HTMLInputElement).value })}
                   />
                   <button
                     type="button"
-                    title="Move page up"
-                    aria-label={`Move ${page.title || "back matter page"} up`}
+                    title={t("publish.movePageUp")}
+                    aria-label={t("publish.moveUpAria", { name: page.title || t("publish.backMatterPage") })}
                     disabled={index === 0}
                     onclick={() => moveMatterPage("back", page.id, -1)}
                   ><ArrowUp size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
-                    title="Move page down"
-                    aria-label={`Move ${page.title || "back matter page"} down`}
+                    title={t("publish.movePageDown")}
+                    aria-label={t("publish.moveDownAria", { name: page.title || t("publish.backMatterPage") })}
                     disabled={index === options.backMatter.length - 1}
                     onclick={() => moveMatterPage("back", page.id, 1)}
                   ><ArrowDown size={14} aria-hidden="true" /></button>
                   <button
                     type="button"
                     class="matter-page-remove"
-                    title="Remove page"
-                    aria-label={`Remove ${page.title || "back matter page"}`}
+                    title={t("publish.removePage")}
+                    aria-label={t("publish.removePageAria", { name: page.title || t("publish.backMatterPage") })}
                     onclick={() => removeMatterPage("back", page.id)}
                   ><Trash2 size={14} aria-hidden="true" /></button>
                 </div>
@@ -1086,8 +1166,8 @@
                   data-undo-key={`matter-body:${page.id}`}
                   maxlength={MATTER_BODY_LIMIT}
                   rows="3"
-                  placeholder="Page text…"
-                  aria-label={`${page.title || "Back matter"} text`}
+                  placeholder={t("publish.pageText")}
+                  aria-label={t("publish.textAria", { name: page.title || t("publish.backMatter") })}
                   oninput={(event) => updateMatterPage("back", page.id, { body: (event.currentTarget as HTMLTextAreaElement).value })}
                 ></textarea>
               </div>
@@ -1098,11 +1178,11 @@
 
       <div class="export-panel">
         <div class="filename-row">
-          <span>File</span>
+          <span>{t("publish.file")}</span>
           <code>{filename}</code>
         </div>
         <button class="export-manuscript" type="button" disabled={!canExport} onclick={handleExport}>
-          {exporting ? "Preparing…" : `Export ${FORMAT_INFO[options.format].label}`}
+          {exporting ? t("publish.preparing") : t("publish.export", { format: formatLabel(options.format) })}
         </button>
         {#if status.message}
           <p class="export-status" class:success={status.tone === "success"} class:error={status.tone === "error"} role="status">
@@ -1112,37 +1192,37 @@
       </div>
     </aside>
 
-    <section class="publish-preview" aria-label="Manuscript preview">
+    <section class="publish-preview" aria-label={t("publish.previewAria")}>
       <header class="preview-header">
         <div>
-          <span class="publish-eyebrow">LIVE PREVIEW</span>
-          <h2>{projectName || "Untitled"}</h2>
+          <span class="publish-eyebrow">{t("publish.livePreview")}</span>
+          <h2>{projectName || t("common.untitled")}</h2>
         </div>
-        <span class="preview-badge">{previewStyle.label} · {FORMAT_INFO[options.format].label}</span>
+        <span class="preview-badge">{previewStyleName} · {formatLabel(options.format)}</span>
       </header>
       {#if !hasPreviewableContent || !activePreviewSection}
         <div class="publish-empty">
-          <strong>Nothing to publish yet</strong>
-          <p>Add a scene to a chapter and it will appear here, ready to export.</p>
+          <strong>{t("publish.emptyTitle")}</strong>
+          <p>{t("publish.emptyBody")}</p>
         </div>
       {:else}
         <div class="preview-workspace">
-          <nav class="preview-nav" aria-label="Document navigator" bind:this={previewNav}>
+          <nav class="preview-nav" aria-label={t("publish.navigator")} bind:this={previewNav}>
             <div class="preview-nav-head">
-              <span>Navigate</span>
+              <span>{t("publish.navigate")}</span>
               <div class="preview-nav-steps">
                 <button
                   type="button"
-                  aria-label="Previous section"
-                  title="Previous section"
+                  aria-label={t("publish.previousSection")}
+                  title={t("publish.previousSection")}
                   disabled={previewSectionIndex <= 0}
                   onclick={() => movePreviewSection(-1)}
                 ><ChevronLeft size={15} aria-hidden="true" /></button>
                 <span>{previewSectionIndex + 1} / {previewSections.length}</span>
                 <button
                   type="button"
-                  aria-label="Next section"
-                  title="Next section"
+                  aria-label={t("publish.nextSection")}
+                  title={t("publish.nextSection")}
                   disabled={previewSectionIndex >= previewSections.length - 1}
                   onclick={() => movePreviewSection(1)}
                 ><ChevronRight size={15} aria-hidden="true" /></button>
@@ -1178,7 +1258,7 @@
             <iframe
               class="preview-frame"
               class:dark={theme === "dark"}
-              title={`${activePreviewSection.label} preview`}
+              title={t("publish.previewFrame", { section: activePreviewSection.label })}
               sandbox="allow-same-origin allow-scripts"
               bind:this={previewFrame}
               onload={handlePreviewFrameLoad}
@@ -1188,13 +1268,13 @@
         </div>
         <p class="preview-caption">
           {#if paginatedPreview}
-            Paginated preview of {activePreviewSection.label}.
+            {t("publish.paginated", { section: activePreviewSection.label })}
           {:else}
-            Previewing {activePreviewSection.label}.
+            {t("publish.previewing", { section: activePreviewSection.label })}
           {/if}
-          Section {previewSectionIndex + 1} of {previewSections.length}.
-          {#if richPreparing}Rendering equations and diagrams…{/if}
-          {#if pageEstimate !== null}Estimated {pageEstimate} {pageEstimate === 1 ? "page" : "pages"} for the full book.{/if}
+          {t("publish.sectionOf", { current: previewSectionIndex + 1, total: previewSections.length })}
+          {#if richPreparing}{t("publish.rendering")}{/if}
+          {#if pageEstimate !== null}{t("publish.estimated", { count: pageEstimate })}{/if}
         </p>
       {/if}
     </section>

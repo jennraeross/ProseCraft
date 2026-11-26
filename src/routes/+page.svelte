@@ -69,6 +69,11 @@
   import "$lib/color-schemes.css";
   import { APP_AUTHOR, APP_LICENSE, APP_NAME, APP_REPOSITORY_URL, APP_VERSION, buildDiagnosticsReport } from "$lib/about";
   import { autoResize } from "$lib/auto-resize";
+  import Trans from "$lib/i18n/Trans.svelte";
+  import { formatNumber } from "$lib/i18n/format";
+  import { AVAILABLE_LOCALES, localeName, localeState, setLocale, t } from "$lib/i18n/state.svelte";
+  import { isPreviewLocale } from "$lib/i18n/catalog";
+  import type { MessageKey } from "$lib/i18n/state.svelte";
   import { confirmDestructiveAction } from "$lib/confirm";
   import {
     applyImageLayout,
@@ -288,7 +293,7 @@
   import type { DragDropEvent } from "@tauri-apps/api/webview";
   import { addLabel, countByLabel, DEFAULT_LABELS, LABEL_COLORS, labelById, projectLabels, removeLabel, setLabel } from "$lib/labels";
   import ShortcutsSheet from "$lib/ShortcutsSheet.svelte";
-  import { SHORTCUT_GROUPS, buildShortcutsPdf } from "$lib/shortcuts";
+  import { buildShortcutsPdf, localizedShortcutGroups } from "$lib/shortcuts";
   import { buildEpubProject, parseEpub } from "$lib/import/epub";
   import {
     buildScrivenerProject,
@@ -458,13 +463,13 @@
     start: BoardPoint;
     original: StoryboardDrawing;
   };
-  const storyboardDrawingTools: { tool: StoryboardDrawingTool; label: string; icon: typeof MousePointer2 }[] = [
-    { tool: "select", label: "Select", icon: MousePointer2 },
-    { tool: "pan", label: "Pan", icon: Hand },
-    { tool: "line", label: "Line", icon: Minus },
-    { tool: "arrow", label: "Arrow", icon: ArrowRight },
-    { tool: "box", label: "Box", icon: Square },
-    { tool: "text", label: "Text", icon: Type }
+  const storyboardDrawingTools: { tool: StoryboardDrawingTool; labelKey: MessageKey; icon: typeof MousePointer2 }[] = [
+    { tool: "select", labelKey: "storyboard.select", icon: MousePointer2 },
+    { tool: "pan", labelKey: "storyboard.pan", icon: Hand },
+    { tool: "line", labelKey: "storyboard.line", icon: Minus },
+    { tool: "arrow", labelKey: "storyboard.arrow", icon: ArrowRight },
+    { tool: "box", labelKey: "storyboard.box", icon: Square },
+    { tool: "text", labelKey: "storyboard.text", icon: Type }
   ];
   type ResearchTreeItem =
     | { kind: "folder"; folder: BinderFolder; depth: number }
@@ -491,13 +496,13 @@
   let settingsDialog: HTMLDialogElement;
   type SettingsCategory = "general" | "writing" | "proofreading" | "data" | "install" | "about";
   const settingsCategoryStorageKey = "prosecraft-settings-category";
-  const settingsCategories: { id: SettingsCategory; label: string; icon: typeof Settings }[] = [
-    { id: "general", label: "General", icon: SlidersHorizontal },
-    { id: "writing", label: "Writing", icon: PenLine },
-    { id: "proofreading", label: "Proofreading", icon: SpellCheck },
-    { id: "data", label: "Data and sync", icon: Database },
-    { id: "install", label: "Updates and install", icon: Download },
-    { id: "about", label: "About", icon: Info }
+  const settingsCategories: { id: SettingsCategory; labelKey: MessageKey; icon: typeof Settings }[] = [
+    { id: "general", labelKey: "settings.nav.general", icon: SlidersHorizontal },
+    { id: "writing", labelKey: "settings.nav.writing", icon: PenLine },
+    { id: "proofreading", labelKey: "settings.nav.proofreading", icon: SpellCheck },
+    { id: "data", labelKey: "settings.nav.data", icon: Database },
+    { id: "install", labelKey: "settings.nav.install", icon: Download },
+    { id: "about", labelKey: "settings.nav.about", icon: Info }
   ];
   let activeSettingsCategory = $state<SettingsCategory>("general");
   let aboutDialog: HTMLDialogElement;
@@ -851,6 +856,49 @@
   let publishOptions = $state<PublishOptions>(defaultPublishOptions());
   let dropTargetChapterId = $state<string | null>(null);
   let dropAfterChapter = $state(false);
+  const WEEKDAY_FULL_KEYS: MessageKey[] = [
+    "progress.weekday.sun",
+    "progress.weekday.mon",
+    "progress.weekday.tue",
+    "progress.weekday.wed",
+    "progress.weekday.thu",
+    "progress.weekday.fri",
+    "progress.weekday.sat"
+  ];
+  const WEEKDAY_SHORT_KEYS: MessageKey[] = [
+    "progress.weekdayShort.sun",
+    "progress.weekdayShort.mon",
+    "progress.weekdayShort.tue",
+    "progress.weekdayShort.wed",
+    "progress.weekdayShort.thu",
+    "progress.weekdayShort.fri",
+    "progress.weekdayShort.sat"
+  ];
+
+  const SHAPE_KEYS: Record<string, MessageKey> = {
+    line: "storyboard.shape.line",
+    arrow: "storyboard.shape.arrow",
+    box: "storyboard.shape.box"
+  };
+
+  function shapeLabel(type: string): string {
+    const key = SHAPE_KEYS[type];
+    return key ? t(key) : type;
+  }
+
+  function storyboardKindLabel(kind: string): string {
+    if (kind === "blank") return t("storyboard.kindBlank");
+    if (kind === "chapter") return t("storyboard.kindChapter");
+    if (kind === "scene") return t("storyboard.kindScene");
+    if (kind === "Wiki") return t("storyboard.kindWiki");
+    return kind;
+  }
+
+  function richNounLabel(): string {
+    if (richDialogKind === "math") return t("rich.noun.math");
+    if (richDialogKind === "diagram") return t("rich.noun.diagram");
+    return t("rich.noun.calc");
+  }
   let projectGoal = $state(50000);
   let chapterGoals = $state<Record<string, number>>({});
   let activity = $state<Record<string, ActivityRecord>>({});
@@ -1360,19 +1408,19 @@
 
   function handleStorageError(error: unknown) {
     console.error("Could not save changes.", error);
-    saveState = "Could not save changes";
+    saveState = t("status.saveFailed");
     storageError = isQuotaExceededError(error)
-      ? "Storage is full. Export a backup now, then remove large images or projects."
-      : "Could not save changes to this device. Export a backup to avoid losing work.";
+      ? t("status.storageFull")
+      : t("status.saveDeviceFailed");
   }
 
   function scheduleSaveState() {
     const sequence = ++saveSequence;
-    saveState = "Saving…";
+    saveState = t("status.saving");
     void flushVaultStorage()
       .then(() => {
         if (sequence !== saveSequence) return;
-        saveState = "All changes saved";
+        saveState = t("status.allSaved");
         storageError = "";
         void refreshStorageUsage();
       })
@@ -1401,12 +1449,52 @@
   }
 
   function storageUsageText(): string {
-    if (!storageUsage) return "Storage usage is unavailable.";
+    if (!storageUsage) return t("settings.data.storageUnavailable");
     const used = formatStorageBytes(storageUsage.usage);
     if (storageUsage.quota > 0) {
-      return `${used} used of ${formatStorageBytes(storageUsage.quota)} available.`;
+      return t("settings.data.storageAvailable", {
+        used,
+        available: formatStorageBytes(storageUsage.quota)
+      });
     }
-    return `${used} used.`;
+    return t("settings.data.storageUsed", { used });
+  }
+
+  async function syncNativeMenuLabels() {
+    try {
+      const { invoke, isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      await invoke("set_menu_labels", {
+        labels: [
+          ["settings", t("menu.settings")],
+          ["quit", t("menu.quit")],
+          ["keyboard-shortcuts", t("menu.shortcuts")],
+          ["file-menu", t("menu.file")],
+          ["new-scene", t("menu.newScene")],
+          ["new-project", t("menu.newProject")],
+          ["import-epub", t("menu.importEpub")],
+          ["project-settings", t("menu.projectSettings")],
+          ["export-document", t("menu.exportScene")],
+          ["publish-manuscript", t("menu.publish")],
+          ["projects-label", t("menu.projects")],
+          ["edit-menu", t("menu.edit")],
+          ["view-menu", t("menu.view")],
+          ["typewriter-mode", t("menu.typewriter")],
+          ["fade-other-paragraphs", t("menu.fade")],
+          ["zen-mode", t("menu.zen")]
+        ],
+        editLabels: [
+          t("menu.undo"),
+          t("menu.redo"),
+          t("menu.cut"),
+          t("menu.copy"),
+          t("menu.paste"),
+          t("menu.selectAll")
+        ]
+      });
+    } catch (error) {
+      console.error("Could not update the native menu labels.", error);
+    }
   }
 
   async function syncNativeProjectMenu() {
@@ -2115,15 +2203,19 @@
   }
 
   async function saveShortcutsPdf(isMac: boolean): Promise<{ ok: boolean; message: string } | null> {
-    const bytes = await buildShortcutsPdf(SHORTCUT_GROUPS, isMac);
+    const bytes = await buildShortcutsPdf(localizedShortcutGroups(t), isMac, {
+      title: t("shortcuts.pdfTitle"),
+      macLayout: t("shortcuts.macLayout"),
+      windowsLayout: t("shortcuts.windowsLayout")
+    });
     const result = await saveExport({
       blob: new Blob([bytes as BlobPart], { type: "application/pdf" }),
       filename: "prosecraft-shortcuts.pdf",
       extension: "pdf",
-      formatName: "PDF document"
+      formatName: t("common.pdfDocument")
     });
     if (result.outcome === "cancelled") return null;
-    return { ok: true, message: "Saved" };
+    return { ok: true, message: t("common.saved") };
   }
 
   function showZenInterface() {
@@ -2353,12 +2445,12 @@
     if (aboutCopyTimer) clearTimeout(aboutCopyTimer);
     try {
       await navigator.clipboard.writeText(aboutDiagnostics);
-      aboutCopyStatus = "Copied";
+      aboutCopyStatus = t("about.diagnostics.copied");
     } catch {
       // Clipboard access can be denied; select the report so it can be copied by hand.
       aboutDiagnosticsTextarea?.focus();
       aboutDiagnosticsTextarea?.select();
-      aboutCopyStatus = "Select the text and copy it with your keyboard.";
+      aboutCopyStatus = t("about.diagnostics.copyManual");
       return;
     }
     aboutCopyTimer = setTimeout(() => {
@@ -2525,7 +2617,7 @@
         ? `Saved as "${name}".`
         : "Could not save the template in this browser.";
     } catch {
-      starterNotice = "Could not save the template in this browser.";
+      starterNotice = t("status.starterSaveFailed");
     }
   }
 
@@ -2537,7 +2629,7 @@
       saveCustomStarters(localStorage, starterCustomStarters.filter((entry) => entry.id !== id));
       reloadStarterTemplates();
     } catch {
-      starterNotice = "Could not delete the template in this browser.";
+      starterNotice = t("status.starterDeleteFailed");
       return;
     }
     if (starterDraft === `custom:${id}`) selectStarter("blank");
@@ -2638,10 +2730,10 @@
         extension: "prosecraft",
         formatName: "ProseCraft backup"
       });
-      dataStatus = result.outcome === "cancelled" ? "" : "Backup exported.";
+      dataStatus = result.outcome === "cancelled" ? "" : t("status.backupExported");
     } catch (error) {
       console.error("Could not export a backup.", error);
-      dataStatus = "Could not export a backup.";
+      dataStatus = t("status.backupExportFailed");
     }
   }
 
@@ -2673,7 +2765,7 @@
       }
     } catch (error) {
       console.error("Could not import a backup.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not import that backup.";
+      dataStatus = error instanceof Error ? error.message : t("status.backupImportFailed");
     }
   }
 
@@ -2702,7 +2794,7 @@
       await importEpubData(name, new Uint8Array(bytes));
     } catch (error) {
       console.error("Could not open that EPUB.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not open that EPUB.";
+      dataStatus = error instanceof Error ? error.message : t("status.epubOpenFailed");
       openSettings();
     }
   }
@@ -2715,7 +2807,7 @@
     try {
       await importEpubData(file.name, new Uint8Array(await file.arrayBuffer()));
     } catch (error) {
-      dataStatus = error instanceof Error ? error.message : "Could not read that file.";
+      dataStatus = error instanceof Error ? error.message : t("status.fileReadFailed");
     }
   }
 
@@ -2738,17 +2830,17 @@
       );
       settingsDialog?.close();
       editor?.focus();
-      dataStatus = `Imported “${scene.title}” as a screenplay scene.`;
+      dataStatus = t("status.screenplayImported", { title: scene.title });
     } catch (error) {
       console.error("Could not import that screenplay.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not import that screenplay.";
+      dataStatus = error instanceof Error ? error.message : t("status.screenplayImportFailed");
     }
   }
 
   async function importEpubData(name: string, data: Uint8Array) {
     if (epubImportBusy) return;
     epubImportBusy = true;
-    dataStatus = "Reading EPUB…";
+    dataStatus = t("status.readingEpub");
     try {
       const manuscript = await parseEpub(data, {
         fallbackTitle: name,
@@ -2766,8 +2858,12 @@
       await flushVaultStorage();
       void syncNativeProjectMenu();
       const images = manuscript.skippedImages;
-      dataStatus = `Imported “${project.name}” — ${project.chapters.length} chapter(s), `
-        + `${project.documents.length} scene(s)${images ? `, ${images} image(s) skipped` : ""}.`;
+      dataStatus = t("status.importedEpub", {
+        project: project.name,
+        chapters: project.chapters.length,
+        scenes: project.documents.length,
+        images: images ? t("status.imagesSkipped", { count: images }) : ""
+      });
       settingsDialog?.close();
     } catch (error) {
       console.error("Could not import that EPUB.", error);
@@ -2796,13 +2892,13 @@
     input.value = "";
     if (!file || scrivenerImportBusy) return;
     scrivenerImportBusy = true;
-    dataStatus = "Reading Scrivener project…";
+    dataStatus = t("status.readingScrivener");
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       openScrivenerPreview(scrivenerFilesFromZip(bytes), "");
     } catch (error) {
       console.error("Could not read that Scrivener project.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not read that Scrivener project.";
+      dataStatus = error instanceof Error ? error.message : t("status.scrivenerReadFailed");
     } finally {
       scrivenerImportBusy = false;
     }
@@ -2814,7 +2910,7 @@
     input.value = "";
     if (!picked.length || scrivenerImportBusy) return;
     scrivenerImportBusy = true;
-    dataStatus = "Reading Scrivener project…";
+    dataStatus = t("status.readingScrivener");
     try {
       const entries: { path: string; bytes: Uint8Array }[] = [];
       const folderName = picked[0].webkitRelativePath.split("/")[0] || "";
@@ -2831,7 +2927,7 @@
       openScrivenerPreview(scrivenerFilesFromEntries(entries), folderName);
     } catch (error) {
       console.error("Could not read that Scrivener project.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not read that Scrivener project.";
+      dataStatus = error instanceof Error ? error.message : t("status.scrivenerReadFailed");
     } finally {
       scrivenerImportBusy = false;
     }
@@ -2877,13 +2973,17 @@
       loadProject(project);
       void syncNativeProjectMenu();
       const { report } = preview;
-      dataStatus = `Imported “${project.name}”: ${report.chapters} chapter(s), `
-        + `${report.scenes} scene(s), ${report.wikiPages} wiki page(s).`;
+      dataStatus = t("status.importedScrivener", {
+        project: project.name,
+        chapters: report.chapters,
+        scenes: report.scenes,
+        wikiPages: report.wikiPages
+      });
       scrivenerPreview = null;
       scrivenerImportDialog?.close();
       settingsDialog?.close();
     } catch (error) {
-      dataStatus = error instanceof Error ? error.message : "Could not import that Scrivener project.";
+      dataStatus = error instanceof Error ? error.message : t("status.scrivenerImportFailed");
     } finally {
       scrivenerImportBusy = false;
     }
@@ -2905,7 +3005,7 @@
     input.value = "";
     if (picked.length === 0) return;
     markdownImportBusy = true;
-    dataStatus = "Reading folder…";
+    dataStatus = t("status.readingFolder");
     try {
       const rootName = (picked[0].webkitRelativePath || picked[0].name).split("/")[0];
       const files: MarkdownFile[] = [];
@@ -2920,7 +3020,7 @@
         files.push({ path, text: await file.text() });
       }
       if (files.length === 0) {
-        dataStatus = "No Markdown files found in that folder.";
+        dataStatus = t("status.noMarkdown");
         return;
       }
       markdownImportFiles = files;
@@ -2934,7 +3034,7 @@
       markdownImportDialog.showModal();
     } catch (error) {
       console.error("Could not read that folder.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not read that folder.";
+      dataStatus = error instanceof Error ? error.message : t("status.folderReadFailed");
     } finally {
       markdownImportBusy = false;
     }
@@ -2973,15 +3073,22 @@
       projects = nextProjects;
       loadProject(project);
       void syncNativeProjectMenu();
-      const links = report.linksUnresolved > 0 ? `, ${report.linksUnresolved} link(s) without a target page` : "";
-      dataStatus = `Imported “${project.name}”: ${report.chapters} chapter(s), ${report.scenes} scene(s), `
-        + `${report.wikiPages} wiki page(s)${links}.`;
+      const links = report.linksUnresolved > 0
+        ? t("status.linksUnresolved", { count: report.linksUnresolved })
+        : "";
+      dataStatus = t("status.importedMarkdown", {
+        project: project.name,
+        chapters: report.chapters,
+        scenes: report.scenes,
+        wikiPages: report.wikiPages,
+        links
+      });
       markdownImportFiles = [];
       markdownImportDialog.close();
       settingsDialog?.close();
     } catch (error) {
       console.error("Could not import that folder.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not import that folder.";
+      dataStatus = error instanceof Error ? error.message : t("status.folderReadFailed");
     } finally {
       markdownImportBusy = false;
     }
@@ -2996,18 +3103,18 @@
       await importBackupText(await file.text());
     } catch (error) {
       console.error("Could not read a backup.", error);
-      dataStatus = "Could not read that backup.";
+      dataStatus = t("status.backupImportFailed");
     }
   }
 
   async function importBackupText(text: string) {
     try {
       const result = await importBundleText(text);
-      dataStatus = `Imported ${result.imported} of ${result.total} project(s). Reloading…`;
+      dataStatus = t("status.importedProjects", { imported: result.imported, total: result.total });
       setTimeout(() => location.reload(), 400);
     } catch (error) {
       console.error("Could not import a backup.", error);
-      dataStatus = error instanceof Error ? error.message : "Could not import that backup.";
+      dataStatus = error instanceof Error ? error.message : t("status.backupImportFailed");
     }
   }
 
@@ -3036,7 +3143,7 @@
     try {
       openEncryptedImport(await file.text());
     } catch {
-      dataStatus = "Could not read that file.";
+      dataStatus = t("status.fileReadFailed");
     }
   }
 
@@ -3056,11 +3163,11 @@
     passphraseError = "";
     const passphrase = passphraseDraft;
     if (passphrase.length < 8) {
-      passphraseError = "Use at least 8 characters.";
+      passphraseError = t("status.passTooShort");
       return;
     }
     if (passphraseMode === "export" && passphrase !== passphraseConfirm) {
-      passphraseError = "The passphrases do not match.";
+      passphraseError = t("status.passMismatch");
       return;
     }
     passphraseBusy = true;
@@ -3081,7 +3188,7 @@
           formatName: "Encrypted ProseCraft backup"
         });
         if (result.outcome === "cancelled") return;
-        dataStatus = "Encrypted backup exported.";
+        dataStatus = t("status.encryptedExported");
         passphraseDraft = "";
         passphraseConfirm = "";
         passphraseHint = "";
@@ -3089,7 +3196,7 @@
       } else {
         const result = await importEncryptedBundleText(pendingEncryptedImport, passphrase);
         pendingEncryptedImport = "";
-        dataStatus = `Imported ${result.imported} of ${result.total} project(s). Reloading…`;
+        dataStatus = t("status.importedProjects", { imported: result.imported, total: result.total });
         passphraseDraft = "";
         passphraseConfirm = "";
         passphraseDialog?.close();
@@ -3217,30 +3324,30 @@
   }
 
   function syncFolderReadyMessage(): string {
-    if (syncMode === "open-folder") return "Folder ready. Choose Sync now.";
-    return "Folder ready. Enter your passphrase and choose Sync now.";
+    if (syncMode === "open-folder") return t("status.folderReady");
+    return t("status.folderReadyPassphrase");
   }
 
   function syncCreatedMessage(count: number): string {
     if (syncMode === "open-folder") {
       return syncProviderType === "googledrive"
-        ? `Set up Google Drive as an open folder. ${count} project(s) synced.`
-        : `Set up the open folder. ${count} project(s) synced.`;
+        ? t("status.setUpOpenDrive", { count })
+        : t("status.setUpOpenFolder", { count });
     }
     if (syncMode === "encrypted-file") {
       return syncProviderType === "googledrive"
-        ? `Created an encrypted sync file in Google Drive. ${count} project(s) synced.`
-        : `Created an encrypted sync file. ${count} project(s) synced.`;
+        ? t("status.createdFileDrive", { count })
+        : t("status.createdFileFolder", { count });
     }
     return syncProviderType === "googledrive"
-      ? `Created an encrypted vault in Google Drive. ${count} project(s) synced.`
-      : `Created an encrypted vault in this folder. ${count} project(s) synced.`;
+      ? t("status.createdVaultDrive", { count })
+      : t("status.createdVaultFolder", { count });
   }
 
   function googleDriveReadyMessage(): string {
     return syncMode === "open-folder"
-      ? "Connected to Google Drive. Choose Sync now."
-      : "Connected to Google Drive. Enter your passphrase and choose Sync now.";
+      ? t("status.driveReady")
+      : t("status.driveReadyPassphrase");
   }
 
   function setSyncMode(next: SyncMode) {
@@ -3251,9 +3358,9 @@
     syncPassphrase = "";
     persistSyncSettings({});
     if (syncProviderType === "folder" && syncFolder) {
-      syncStatus = "Sync method changed. Use a folder already set up for this method, or an empty folder.";
+      syncStatus = t("status.syncMethodChangedFolder");
     } else if (syncProviderType === "googledrive" && googleDriveConfigured) {
-      syncStatus = "Sync method changed. Use a Google Drive setup already created for this method, or start fresh.";
+      syncStatus = t("status.syncMethodChangedDrive");
     } else {
       syncStatus = "";
     }
@@ -3279,15 +3386,15 @@
       if (same) {
         syncStatus = syncFolderReadyMessage();
       } else if (syncMode === "open-folder") {
-        syncStatus = "Folder saved. The first sync writes plain Markdown and JSON files.";
+        syncStatus = t("status.folderSavedOpen");
       } else if (syncMode === "encrypted-file") {
-        syncStatus = "Folder saved. The first sync creates one encrypted sync file.";
+        syncStatus = t("status.folderSavedFile");
       } else {
-        syncStatus = "Folder saved. The first sync creates an encrypted vault inside it.";
+        syncStatus = t("status.folderSavedVault");
       }
     } catch (error) {
       console.error("Could not choose a sync folder.", error);
-      syncStatus = "Could not open the folder picker.";
+      syncStatus = t("status.folderPickerFailed");
     }
   }
 
@@ -3339,7 +3446,7 @@
       } else if (result.cancelled) {
         googleDriveCodeVerifier = "";
         googleDriveAuthUrl = "";
-        syncStatus = "Google Drive authorization cancelled.";
+        syncStatus = t("status.driveAuthCancelled");
       } else if (result.pending) {
         googleDriveCodeVerifier = "pending";
         googleDriveAuthUrl = result.authorizationUrl ?? "";
@@ -3351,7 +3458,7 @@
       }
     } catch (error) {
       console.error("Could not connect to Google Drive.", error);
-      syncStatus = "Could not connect to Google Drive.";
+      syncStatus = t("status.driveConnectFailed");
     } finally {
       googleDriveAuthorizing = false;
       syncBusy = false;
@@ -3372,7 +3479,7 @@
       }
     } catch (error) {
       console.error("Could not exchange authorization code.", error);
-      syncStatus = "Could not exchange authorization code.";
+      syncStatus = t("status.driveExchangeFailed");
     } finally {
       syncBusy = false;
     }
@@ -3411,10 +3518,10 @@
       // rather than leaving unusable tokens behind. Projects in Drive are not
       // touched; the user can reconnect at any time.
       clearSyncState();
-      syncStatus = "Disconnected from Google Drive. Files in your app data folder were left untouched.";
+      syncStatus = t("status.driveDisconnected");
     } catch (error) {
       console.error("Could not disconnect from Google Drive.", error);
-      syncStatus = "Could not disconnect from Google Drive.";
+      syncStatus = t("status.driveDisconnectFailed");
     } finally {
       syncBusy = false;
     }
@@ -3437,8 +3544,8 @@
     syncProviderKey = "";
     syncPassphrase = "";
     syncStatus = syncProviderType === "folder"
-      ? "Sync folder forgotten. Files in the folder were left untouched."
-      : "Google Drive connection forgotten. Files in your app data folder were left untouched.";
+      ? t("status.syncFolderForgotten")
+      : t("status.driveForgotten");
   }
 
   async function runSync() {
@@ -3446,11 +3553,11 @@
     if (!configured || syncBusy) return;
     const encrypted = syncMode !== "open-folder";
     if (encrypted && syncPassphrase.length < 8) {
-      syncStatus = "Use a sync passphrase of at least 8 characters.";
+      syncStatus = t("status.syncPassTooShort");
       return;
     }
     syncBusy = true;
-    syncStatus = "Syncing…";
+    syncStatus = t("status.syncing");
     try {
       if (saveTimer) clearTimeout(saveTimer);
       persistNow();
@@ -3483,24 +3590,22 @@
       }
       void syncNativeProjectMenu();
       const details = [
-        result.imported ? `${result.imported} imported` : "",
-        result.exported ? `${result.exported} exported` : "",
-        result.removed ? `${result.removed} removed` : "",
-        result.conflicts
-          ? `${result.conflicts} conflicted ${result.conflicts === 1 ? "copy" : "copies"}`
-          : ""
+        result.imported ? t("status.syncImported", { count: result.imported }) : "",
+        result.exported ? t("status.syncExported", { count: result.exported }) : "",
+        result.removed ? t("status.syncRemoved", { count: result.removed }) : "",
+        result.conflicts ? t("status.syncConflicted", { count: result.conflicts }) : ""
       ].filter(Boolean).join(", ");
       syncStatus = result.created
         ? syncCreatedMessage(result.projects.length)
-        : `Synced ${result.projects.length} project(s)${details ? ` (${details})` : ""}.`;
+        : t("status.synced", { count: result.projects.length, details: details ? ` (${details})` : "" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Sync failed.";
       if (message !== "Incorrect passphrase.") {
         console.error("Device sync failed.", error);
       }
       syncStatus = message === "Incorrect passphrase."
-        ? "Incorrect passphrase."
-        : `Sync failed: ${message}`;
+        ? t("status.incorrectPassphrase")
+        : t("status.syncFailed", { message });
     } finally {
       syncBusy = false;
     }
@@ -3731,7 +3836,9 @@
     avif: "image/avif"
   };
   const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/avif"];
-  const IMAGE_ERROR_MESSAGE = "Use a PNG, JPG, WebP, GIF, BMP, or AVIF image.";
+  function imageTypeMessage(): string {
+    return t("status.imageType");
+  }
 
   function imageFiles(files: FileList | null | undefined): File[] {
     return Array.from(files ?? []).filter((file) =>
@@ -3771,8 +3878,8 @@
   }
 
   async function imageFileToDataUrl(file: File): Promise<string> {
-    if (!isSupportedImage(file)) throw new Error(IMAGE_ERROR_MESSAGE);
-    if (file.size > MAX_IMAGE_FILE_BYTES) throw new Error("Images must be 15 MB or smaller.");
+    if (!isSupportedImage(file)) throw new Error(imageTypeMessage());
+    if (file.size > MAX_IMAGE_FILE_BYTES) throw new Error(t("status.imageTooLarge"));
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
     const source = !file.type || file.type === "application/octet-stream"
       ? new Blob([file], { type: IMAGE_MIME_BY_EXTENSION[extension] })
@@ -3782,7 +3889,7 @@
     try {
       await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve();
-        image.onerror = () => reject(new Error("Could not decode that image."));
+        image.onerror = () => reject(new Error(t("status.imageDecodeFailed")));
         image.src = imageUrl;
       });
     } catch (error) {
@@ -3846,16 +3953,20 @@
     handleInput();
   }
 
-  const IMAGE_SIZE_OPTIONS: { size: Exclude<ImageLayoutSize, "custom">; label: string; ariaLabel: string }[] = [
-    { size: "small", label: "Small", ariaLabel: "Small image size" },
-    { size: "medium", label: "Medium", ariaLabel: "Medium image size" },
-    { size: "large", label: "Large", ariaLabel: "Large image size" },
-    { size: "full", label: "Full", ariaLabel: "Full width" }
+  const IMAGE_SIZE_OPTIONS: {
+    size: Exclude<ImageLayoutSize, "custom">;
+    labelKey: MessageKey;
+    ariaKey: MessageKey;
+  }[] = [
+    { size: "small", labelKey: "image.sizeSmall", ariaKey: "image.sizeAriaSmall" },
+    { size: "medium", labelKey: "image.sizeMedium", ariaKey: "image.sizeAriaMedium" },
+    { size: "large", labelKey: "image.sizeLarge", ariaKey: "image.sizeAriaLarge" },
+    { size: "full", labelKey: "image.sizeFull", ariaKey: "image.sizeAriaFull" }
   ];
-  const IMAGE_ALIGN_OPTIONS: { align: ImageLayoutAlign; label: string }[] = [
-    { align: "left", label: "Left" },
-    { align: "center", label: "Center" },
-    { align: "right", label: "Right" }
+  const IMAGE_ALIGN_OPTIONS: { align: ImageLayoutAlign; labelKey: MessageKey }[] = [
+    { align: "left", labelKey: "image.alignLeft" },
+    { align: "center", labelKey: "image.alignCenter" },
+    { align: "right", labelKey: "image.alignRight" }
   ];
 
   function selectedImageWidthPercent(): number {
@@ -4222,7 +4333,7 @@
   async function insertImageFiles(files: File[], range: Range | null, markdownPosition: number | null) {
     const documentId = activeDocumentId;
     if (files.some((file) => !isSupportedImage(file))) {
-      imageInsertError = IMAGE_ERROR_MESSAGE;
+      imageInsertError = imageTypeMessage();
       return;
     }
     imageInsertError = "";
@@ -4241,7 +4352,7 @@
       }
     } catch (error) {
       console.error("Could not insert image.", error);
-      imageInsertError = error instanceof Error ? error.message : "Could not insert that image.";
+      imageInsertError = error instanceof Error ? error.message : t("status.insertImageFailed");
     }
   }
 
@@ -4308,10 +4419,10 @@
     }
     readDroppedImagePaths(uris).then((read) => {
       if (read.length) void insertImageFiles(read, range, position);
-      else imageInsertError = IMAGE_ERROR_MESSAGE;
+      else imageInsertError = imageTypeMessage();
     }).catch((error) => {
       console.error("Could not read the dropped file.", error);
-      imageInsertError = "Could not read the dropped file.";
+      imageInsertError = t("status.droppedFileFailed");
     });
   }
 
@@ -4785,7 +4896,7 @@
     try {
       persistProjectCollection();
     } catch {
-      saveState = "Could not save writing progress";
+      saveState = t("status.saveWritingProgress");
     }
   }
 
@@ -4849,15 +4960,15 @@
     commitPageState();
     try {
       persistProjectCollection();
-      saveState = "All changes saved";
+      saveState = t("status.allSaved");
     } catch {
-      saveState = "Could not save changes";
+      saveState = t("status.saveFailed");
     }
   }
 
   function persist() {
     pageStateDirty = true;
-    saveState = "Saving…";
+    saveState = t("status.saving");
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(persistNow, 350);
   }
@@ -5098,7 +5209,7 @@
     } catch (error) {
       if (request !== harperRequest) return;
       console.error("Could not check spelling and grammar.", error);
-      harperError = "Proofreading is unavailable on this device right now.";
+      harperError = t("status.proofreadingUnavailable");
     } finally {
       if (request === harperRequest) harperChecking = false;
     }
@@ -7443,9 +7554,9 @@
     pageStateDirty = true;
     try {
       persistProjectCollection();
-      saveState = "All changes saved";
+      saveState = t("status.allSaved");
     } catch {
-      saveState = "Could not save changes";
+      saveState = t("status.saveFailed");
     }
   }
 
@@ -7613,10 +7724,10 @@
   }
 
   function researchImportStatus(added: number, failures: string[]): string {
-    const noun = added === 1 ? "file" : "files";
-    if (added === 0 && failures.length > 0) return `Could not add files. ${failures[0]}`;
-    if (failures.length > 0) return `Added ${added} ${noun}. ${failures[0]}`;
-    return `Added ${added} ${noun}.`;
+    const summary = t("status.researchAdded", { count: added });
+    if (added === 0 && failures.length > 0) return t("status.researchFailedOnly", { message: failures[0] });
+    if (failures.length > 0) return `${summary}${t("status.researchFailed", { count: failures.length })} ${failures[0]}`;
+    return summary;
   }
 
   async function ensureResearchRoot(): Promise<string | null> {
@@ -7633,11 +7744,11 @@
       if (typeof picked !== "string" || !picked) return null;
       researchRoot = picked;
       savePreferences();
-      researchStatus = "Wiki files folder saved for this device.";
+      researchStatus = t("status.wikiFolderSaved");
       return picked;
     } catch (error) {
       console.error("Could not choose a wiki files folder.", error);
-      researchStatus = "Could not open the folder picker.";
+      researchStatus = t("status.folderPickerFailed");
       return null;
     }
   }
@@ -7656,10 +7767,10 @@
       if (typeof picked !== "string" || !picked) return;
       researchRoot = picked;
       savePreferences();
-      researchSettingsStatus = "Wiki files folder saved. Existing files remain in the previous folder.";
+      researchSettingsStatus = t("status.wikiFolderSavedMoved");
     } catch (error) {
       console.error("Could not choose a wiki files folder.", error);
-      researchSettingsStatus = "Could not open the folder picker.";
+      researchSettingsStatus = t("status.folderPickerFailed");
     }
   }
 
@@ -7678,7 +7789,7 @@
       researchSettingsStatus = "";
     } catch (error) {
       console.error("Could not reveal the wiki folder.", error);
-      researchSettingsStatus = researchErrorMessage(error, "Could not reveal the wiki folder.");
+      researchSettingsStatus = researchErrorMessage(error, t("status.revealWikiFolderFailed"));
     }
   }
 
@@ -7703,7 +7814,7 @@
       if (paths.length === 0) return;
 
       researchBusy = true;
-      researchStatus = "Adding files…";
+      researchStatus = t("status.addingFiles");
       const projectFolder = ensureResearchFolderName();
       const importProjectId = activeProjectId;
       const { invoke } = await import("@tauri-apps/api/core");
@@ -7754,7 +7865,7 @@
       }
     } catch (error) {
       console.error("Could not add wiki files.", error);
-      researchStatus = "Could not open the file picker.";
+      researchStatus = t("status.filePickerFailed");
     } finally {
       researchBusy = false;
     }
@@ -7769,7 +7880,7 @@
     if (files.length === 0) return;
 
     researchBusy = true;
-    researchStatus = "Adding files…";
+    researchStatus = t("status.addingFiles");
     const importProjectId = activeProjectId;
     let added = 0;
     const failures: string[] = [];
@@ -8560,13 +8671,13 @@
       researchStatus = "";
     } catch (error) {
       console.error("Could not open a wiki file.", error);
-      researchStatus = researchErrorMessage(error, "Could not open that file.");
+      researchStatus = researchErrorMessage(error, t("status.revealFailed"));
     }
   }
 
   async function revealResearchFile(item: ResearchFile) {
     if (!desktopRuntime) {
-      researchStatus = "Revealing files in a folder is only available in the desktop app.";
+      researchStatus = t("status.revealDesktopOnly");
       return;
     }
     researchStatus = "";
@@ -8585,14 +8696,14 @@
       researchStatus = "";
     } catch (error) {
       console.error("Could not reveal a wiki file.", error);
-      researchStatus = researchErrorMessage(error, "Could not reveal that file.");
+      researchStatus = researchErrorMessage(error, t("status.revealFileFailed"));
     }
   }
 
   async function openResearchLink(item: ResearchLink) {
     const url = normalizeResearchUrl(item.url);
     if (!url) {
-      researchStatus = "That wiki link is not a valid web address.";
+      researchStatus = t("status.invalidLink");
       return;
     }
     try {
@@ -8602,7 +8713,7 @@
       } else {
         const opened = window.open(url, "_blank");
         if (!opened) {
-          researchStatus = "The browser blocked the link. Allow pop-ups for ProseCraft and try again.";
+          researchStatus = t("status.popupBlocked");
           return;
         }
         try {
@@ -8614,7 +8725,7 @@
       researchStatus = "";
     } catch (error) {
       console.error("Could not open a wiki link.", error);
-      researchStatus = "Could not open that link.";
+      researchStatus = t("status.openLinkFailed");
     }
   }
 
@@ -8648,7 +8759,7 @@
     expandedSpaces.Wiki = true;
     if (researchLinkFolderId) expandResearchFolderPath(researchLinkFolderId);
     persist();
-    researchStatus = "Link added.";
+    researchStatus = t("status.linkAdded");
     researchLinkDialog.close();
   }
 
@@ -8677,7 +8788,7 @@
       researchStatus = "";
     } catch (error) {
       console.error("Could not delete a wiki file.", error);
-      researchStatus = "The item was removed, but its file could not be deleted.";
+      researchStatus = t("status.removeFileFailed");
     }
   }
 
@@ -9521,7 +9632,7 @@
         persistProjectCollection();
       }
     } catch {
-      saveState = "Could not load saved document";
+      saveState = t("status.loadDocumentFailed");
       chapters = [{ id: "chapter-1", title: "Chapter 1", expanded: true, summary: "" }];
       documents = [{ id: "welcome", title, content: starterContent, chapterId: chapters[0].id }];
       setEditorContent(starterContent);
@@ -9531,6 +9642,7 @@
     lastEditorWordCount = wordCount;
     refreshPageStateBaseline();
     void syncNativeProjectMenu();
+    void syncNativeMenuLabels();
     void refreshStorageUsage();
   }
 
@@ -9901,7 +10013,7 @@
         void googleDriveAccessTokenForRequest().catch((error) => {
           console.error("Could not refresh the Google Drive session.", error);
           googleDriveAuthenticated = false;
-          syncStatus = "Google Drive session expired. Please reconnect.";
+          syncStatus = t("status.driveSessionExpired");
         });
       }
     }
@@ -10114,10 +10226,10 @@
     try {
       const files = await readImagePaths(payload.paths);
       if (files.length) await insertImageFiles(files, range, position);
-      else imageInsertError = IMAGE_ERROR_MESSAGE;
+      else imageInsertError = imageTypeMessage();
     } catch (error) {
       console.error("Could not read the dropped file.", error);
-      imageInsertError = "Could not read the dropped file.";
+      imageInsertError = t("status.droppedFileFailed");
     }
   }
 
@@ -10175,14 +10287,14 @@
 
 <div class="app-shell" class:zen-hidden={zenInterfaceHidden}>
   {#if focusHintVisible}
-    <p class="focus-hint" role="status">Focus mode · {modifierName}+Shift+Enter or Escape to leave</p>
+    <p class="focus-hint" role="status">{t("app.focusHint", { shortcut: `${modifierName}+Shift+Enter` })}</p>
   {/if}
   {#if mobileDrawerOpen}
     <button
       type="button"
       class="drawer-backdrop"
       tabindex="-1"
-      aria-label="Close side panel"
+      aria-label={t("app.closeSidePanel")}
       onclick={() => closeSidebarDrawers()}
     ></button>
   {/if}
@@ -10191,51 +10303,51 @@
     class:peek={!leftSidebarShown()}
     class:peek-open={!leftSidebarShown() && leftSidebarHovered}
     inert={zenInterfaceHidden || (!leftSidebarShown() && !leftSidebarHovered)}
-    aria-label="Chapter and story navigation"
+    aria-label={t("app.chapterNavigation")}
   >
     <div class="sidebar-mobile-head">
-      <span class="nav-label">NAVIGATION</span>
+      <span class="nav-label">{t("sidebar.navigation")}</span>
       <button
         class="sidebar-mobile-close"
         type="button"
-        aria-label="Close chapters sidebar"
+        aria-label={t("sidebar.close")}
         onclick={() => closeSidebarDrawers()}
       ><X size={18} aria-hidden="true" /></button>
     </div>
     <div class="project-identity">
-      <select aria-label="Switch project" value={activeProjectId} onchange={(event) => switchProject((event.currentTarget as HTMLSelectElement).value)}>
+      <select aria-label={t("project.switch")} value={activeProjectId} onchange={(event) => switchProject((event.currentTarget as HTMLSelectElement).value)}>
         {#each liveProjects as project (project.id)}
           <option value={project.id}>{project.name}</option>
         {/each}
       </select>
       <div class="project-identity-actions">
-        <button aria-label="Project settings" title="Project settings" onclick={openProjectSettings}><Settings size={14} aria-hidden="true" /></button>
+        <button aria-label={t("project.settings")} title={t("project.settings")} onclick={openProjectSettings}><Settings size={14} aria-hidden="true" /></button>
         <button
-          aria-label="Move current project to Trash"
-          title={liveProjects.length > 1 ? "Move project to Trash" : "The last project cannot be moved to Trash"}
+          aria-label={t("project.trash")}
+          title={liveProjects.length > 1 ? t("project.trashTitle") : t("project.trashLast")}
           disabled={liveProjects.length <= 1}
           onclick={trashActiveProject}
         ><Trash2 size={14} aria-hidden="true" /></button>
         <button
-          aria-label="Import EPUB"
-          title="Import EPUB…"
+          aria-label={t("project.importEpub")}
+          title={t("settings.data.importEpub")}
           disabled={epubImportBusy}
           onclick={triggerEpubImport}
         ><Download size={14} aria-hidden="true" /></button>
-        <button aria-label="Create project" title="Create project" onclick={createProject}><Plus size={14} aria-hidden="true" /></button>
+        <button aria-label={t("project.create")} title={t("project.create")} onclick={createProject}><Plus size={14} aria-hidden="true" /></button>
       </div>
-      <span class="author-name">{authorName ? `by ${authorName}` : "Add author name"}</span>
+      <span class="author-name">{authorName ? t("project.by", { author: authorName }) : t("project.addAuthor")}</span>
     </div>
 
     <div class="sidebar-tree">
       <div class="tree-heading">
-        <span class="nav-label">CHAPTERS</span>
-        <button class="tree-add" aria-label="Add chapter" title="Add chapter" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /></button>
+        <span class="nav-label">{t("tree.chapters")}</span>
+        <button class="tree-add" aria-label={t("tree.addChapter")} title={t("tree.addChapter")} onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /></button>
       </div>
       <div class="label-filter">
-        <label class="label-filter-label" for="label-filter-select">Filter scenes by label</label>
+        <label class="label-filter-label" for="label-filter-select">{t("tree.filterLabel")}</label>
         <select id="label-filter-select" class="label-filter-select" bind:value={labelFilter}>
-          <option value="">All labels</option>
+          <option value="">{t("tree.allLabels")}</option>
           {#each projectLabelList as label (label.id)}
             <option value={label.id}>{label.name}</option>
           {/each}
@@ -10244,11 +10356,11 @@
           <button
             class="label-filter-chip"
             type="button"
-            aria-label="Clear label filter: {filterLabelDef.name}"
+            aria-label={t("tree.clearFilter", { name: filterLabelDef.name })}
             onclick={() => (labelFilter = "")}
           >
             <span class="label-filter-dot" style={`--label-color: ${labelColorCss(filterLabelDef.color)}`} aria-hidden="true"></span>
-            <span>Filter: {filterLabelDef.name} · clear</span>
+            <span>{t("tree.filterChip", { name: filterLabelDef.name })}</span>
           </button>
         {/if}
       </div>
@@ -10261,7 +10373,7 @@
             class:drop-before={dropTargetChapterId === chapter.id && !dropAfterChapter}
             class:drop-after={dropTargetChapterId === chapter.id && dropAfterChapter}
             role="group"
-            aria-label="{chapterLabel(chapter)} chapter"
+            aria-label={t("tree.chapterGroup", { chapter: chapterLabel(chapter) })}
             data-chapter-id={chapter.id}
           >
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
@@ -10280,15 +10392,15 @@
             >
               <button
                 class="chapter-drag"
-                aria-label="Drag to reorder {chapterLabel(chapter)}"
-                title="Drag to reorder"
+                aria-label={t("tree.dragChapter", { chapter: chapterLabel(chapter) })}
+                title={t("tree.dragToReorder")}
                 onpointerdown={(event) => startChapterDrag(event, chapter.id)}
               ><GripVertical size={14} aria-hidden="true" /></button>
               {#if editingChapterId === chapter.id}
                   <input
                     bind:this={chapterNameInput}
                     class="chapter-name-input"
-                    aria-label="Rename {chapterLabel(chapter)}"
+                    aria-label={t("tree.renameChapter", { chapter: chapterLabel(chapter) })}
                     autocapitalize="sentences"
                     enterkeyhint="done"
                     bind:value={chapterNameDraft}
@@ -10301,19 +10413,19 @@
                     onpointerdown={(event) => event.stopPropagation()}
                   />
               {:else}
-                <button class="chapter-toggle" aria-label="Open {chapterLabel(chapter)}" aria-expanded={isChapterOpen(chapter.id)} onclick={() => openChapter(chapter.id)}>
+                <button class="chapter-toggle" aria-label={t("tree.openChapter", { chapter: chapterLabel(chapter) })} aria-expanded={isChapterOpen(chapter.id)} onclick={() => openChapter(chapter.id)}>
                   <span class:rotated={isChapterOpen(chapter.id)} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
                   <span class="folder-icon"><Folder size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
                   <span class="tree-name">{chapterLabel(chapter)}</span>
                 </button>
               {/if}
               <div class="chapter-actions">
-                <button class="row-add" aria-label="Add scene to {chapterLabel(chapter)}" title="Add scene" onclick={() => createScene(chapter.id)}><Plus size={13} aria-hidden="true" /></button>
+                <button class="row-add" aria-label={t("tree.addSceneTo", { chapter: chapterLabel(chapter) })} title={t("tree.addScene")} onclick={() => createScene(chapter.id)}><Plus size={13} aria-hidden="true" /></button>
                 <button
                   class="label-trigger"
                   class:has-label={chapterLabelDef !== undefined}
-                  aria-label="Label for {chapterLabel(chapter)}: {chapterLabelDef?.name ?? 'none'}. Activate for label options."
-                  title={chapterLabelDef ? `Label: ${chapterLabelDef.name}` : "Set label"}
+                  aria-label={t("tree.labelAria", { title: chapterLabel(chapter), label: chapterLabelDef?.name ?? t("ctx.noLabel") })}
+                  title={chapterLabelDef ? t("tree.labelTitle", { label: chapterLabelDef.name }) : t("tree.setLabel")}
                   onclick={(event) => { const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); openContextMenu({ kind: "chapter", id: chapter.id }, Math.max(8, rect.left - 170), rect.bottom + 4); }}
                 >
                   <span class="label-dot" style={chapterLabelDef ? `--label-color: ${labelColorCss(chapterLabelDef.color)}` : undefined}></span>
@@ -10339,7 +10451,7 @@
                     class:drop-before={sceneDropTarget?.id === doc.id && !sceneDropTarget.after}
                     class:drop-after={sceneDropTarget?.id === doc.id && sceneDropTarget.after}
                     role="group"
-                    aria-label={doc.title || "Untitled scene"}
+                    aria-label={doc.title || t("tree.untitledScene")}
                     draggable="true"
                     ondragstart={(event) => startSceneDrag(event, doc.id)}
                     ondragover={(event) => handleSceneDragOver(event, doc.id)}
@@ -10356,7 +10468,7 @@
                       <input
                         bind:this={sceneNameInput}
                         class="chapter-name-input"
-                        aria-label="Rename {doc.title || 'Untitled scene'}"
+                        aria-label={t("tree.renameScene", { scene: doc.title || t("tree.untitledScene") })}
                         autocapitalize="sentences"
                         enterkeyhint="done"
                         bind:value={sceneTitleDraft}
@@ -10372,14 +10484,14 @@
                     {:else}
                       <button class="document-select" aria-current={doc.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(doc.id))) return; openSidebarDocument(doc.id); }}>
                         <span class="scene-mark">¶</span>
-                        <span class="tree-name">{doc.title || "Untitled scene"}</span>
+                        <span class="tree-name">{doc.title || t("tree.untitledScene")}</span>
                       </button>
                     {/if}
                     <button
                       class="label-trigger"
                       class:has-label={sceneLabel !== undefined}
-                      aria-label="Label for {doc.title || 'Untitled scene'}: {sceneLabel?.name ?? 'none'}. Activate for label options."
-                      title={sceneLabel ? `Label: ${sceneLabel.name}` : "Set label"}
+                      aria-label={t("tree.labelAria", { title: doc.title || t("tree.untitledScene"), label: sceneLabel?.name ?? t("ctx.noLabel") })}
+                      title={sceneLabel ? t("tree.labelTitle", { label: sceneLabel.name }) : t("tree.setLabel")}
                       onclick={(event) => { const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); openContextMenu({ kind: "scene", id: doc.id }, Math.max(8, rect.left - 170), rect.bottom + 4); }}
                     >
                       <span class="label-dot" style={sceneLabel ? `--label-color: ${labelColorCss(sceneLabel.color)}` : undefined}></span>
@@ -10387,7 +10499,7 @@
                   </div>
                 {/each}
                 {#if !documents.some((doc) => doc.chapterId === chapter.id && !doc.trashed && (!filterLabelDef || doc.labelId === filterLabelDef.id))}
-                  <span class="empty-tree">No scenes yet</span>
+                  <span class="empty-tree">{t("tree.noScenes")}</span>
                 {/if}
               </div>
             {/if}
@@ -10395,9 +10507,9 @@
         {/each}
         {#if visibleChapters.length === 0}
           {#if filterLabelDef}
-            <span class="empty-tree">No scenes with this label</span>
+            <span class="empty-tree">{t("tree.noScenesLabel")}</span>
           {:else}
-            <button class="empty-action" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /> Add your first chapter</button>
+            <button class="empty-action" onclick={() => createChapter()}><Plus size={14} aria-hidden="true" /> {t("tree.firstChapter")}</button>
           {/if}
         {/if}
       </div>
@@ -10412,14 +10524,14 @@
         onpointerup={cancelPressTimer}
         onpointercancel={cancelPressTimer}
         onkeydown={(event) => handleRowKeydown(event, { kind: "wiki-root" }, event.currentTarget as HTMLElement)}
-      ><span class="nav-label">WIKI</span><button class="tree-add" aria-label="Add to Wiki" title="Add to Wiki" aria-haspopup="menu" onclick={(event) => openWikiAddMenu(event, null)}><Plus size={14} aria-hidden="true" /></button></div>
+      ><span class="nav-label">{t("tree.wiki")}</span><button class="tree-add" aria-label={t("tree.addToWiki")} title={t("tree.addToWiki")} aria-haspopup="menu" onclick={(event) => openWikiAddMenu(event, null)}><Plus size={14} aria-hidden="true" /></button></div>
       <div class="space-group">
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="space-items wiki-items"
             class:wiki-drop-root={wikiDropRoot}
             role="group"
-            aria-label="Wiki root drop zone"
+            aria-label={t("tree.wikiDropZone")}
             ondragover={handleWikiRootDragOver}
             ondragleave={handleWikiRootDragLeave}
             ondrop={handleWikiRootDrop}
@@ -10454,7 +10566,7 @@
                     <input
                       bind:this={researchFolderInput}
                       class="chapter-name-input note-folder-name-input"
-                      aria-label="Rename folder {item.folder.title}"
+                      aria-label={t("tree.renameFolder", { folder: item.folder.title })}
                       autocapitalize="sentences"
                       enterkeyhint="done"
                       bind:value={researchFolderNameDraft}
@@ -10481,7 +10593,7 @@
                     </button>
                   {/if}
                   <div class="note-folder-actions">
-                    <button class="row-add research-add" aria-label="Add to {item.folder.title}" title="Add to folder" aria-haspopup="menu" onclick={(event) => openWikiAddMenu(event, item.folder.id)}><Plus size={13} aria-hidden="true" /></button>
+                    <button class="row-add research-add" aria-label={t("tree.addToFolder", { folder: item.folder.title })} title={t("tree.addToFolderTitle")} aria-haspopup="menu" onclick={(event) => openWikiAddMenu(event, item.folder.id)}><Plus size={13} aria-hidden="true" /></button>
                   </div>
                 </div>
               {:else if item.kind === "document"}
@@ -10493,7 +10605,7 @@
                   class:drop-before={wikiDropTarget?.key === wikiRowKey("document", item.document.id) && !wikiDropTarget.after}
                   class:drop-after={wikiDropTarget?.key === wikiRowKey("document", item.document.id) && wikiDropTarget.after}
                   role="group"
-                  aria-label={item.document.title || "wiki page"}
+                  aria-label={item.document.title || t("tree.wikiPage")}
                   style={`padding-left: ${item.depth * 14 + 2}px`}
                   draggable="true"
                   ondragstart={(event) => { startTargetDrag(event, docTarget(item.document.id)); startWikiDrag(event, "document", item.document.id); }}
@@ -10509,7 +10621,7 @@
                 >
                   <button class="document-select" aria-current={item.document.id === activeDocumentId ? "page" : undefined} onclick={(event) => { if (openRowBeside(event, docTarget(item.document.id))) return; openSidebarDocument(item.document.id); }}>
                     <span class="scene-mark">¶</span>
-                    <span class="tree-name">{item.document.title || "Untitled"}</span>
+                    <span class="tree-name">{item.document.title || t("common.untitled")}</span>
                   </button>
                 </div>
               {:else if item.kind === "file"}
@@ -10581,7 +10693,7 @@
               {/if}
             {/each}
             {#if researchEmpty}
-              <span class="empty-tree">Add a page, file, or link</span>
+              <span class="empty-tree">{t("tree.wikiEmpty")}</span>
             {/if}
             {#if researchStatus}
               <p class="research-status" role="status">{researchStatus}</p>
@@ -10595,7 +10707,7 @@
           <button class="space-toggle" aria-expanded={expandedSpaces.Trash} onclick={() => expandedSpaces.Trash = !expandedSpaces.Trash}>
             <span class:rotated={expandedSpaces.Trash} class="chevron"><ChevronRight size={14} color="var(--text-faint)" aria-hidden="true" /></span>
             <span class="space-icon"><Trash2 size={15} strokeWidth={1.5} color="var(--text-muted)" aria-hidden="true" /></span>
-            <span class="tree-name">Trash</span>
+            <span class="tree-name">{t("tree.trash")}</span>
             <span class="trash-count">{trashCount || ""}</span>
           </button>
         </div>
@@ -10607,8 +10719,8 @@
                   <span class="scene-mark"><Folder size={14} aria-hidden="true" /></span>
                   <span class="tree-name">{chapterLabel(chapter)}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore {chapterLabel(chapter)} and its scenes" title="Restore chapter and scenes" onclick={() => restoreChapter(chapter.id)}><RotateCcw size={13} aria-hidden="true" /></button>
-                <button class="row-action delete-action" aria-label="Permanently delete {chapterLabel(chapter)} and its scenes" title="Delete chapter and scenes permanently" onclick={() => permanentlyDeleteChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                <button class="row-action restore-action" aria-label={t("tree.restoreChapter", { chapter: chapterLabel(chapter) })} title={t("tree.restoreChapterTitle")} onclick={() => restoreChapter(chapter.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label={t("tree.deleteChapter", { chapter: chapterLabel(chapter) })} title={t("tree.deleteChapterTitle")} onclick={() => permanentlyDeleteChapter(chapter.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#each projects.filter((project) => project.trashed) as project (project.id)}
@@ -10617,22 +10729,22 @@
                   <span class="scene-mark"><BookOpen size={14} aria-hidden="true" /></span>
                   <span class="tree-name">{project.name}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore project {project.name}" title="Restore project" onclick={() => restoreProject(project.id)}><RotateCcw size={13} aria-hidden="true" /></button>
-                <button class="row-action delete-action" aria-label="Permanently delete project {project.name}" title="Delete project permanently" onclick={() => permanentlyDeleteProject(project.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                <button class="row-action restore-action" aria-label={t("tree.restoreProject", { name: project.name })} title={t("tree.restoreProjectTitle")} onclick={() => restoreProject(project.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label={t("tree.deleteProject", { name: project.name })} title={t("tree.deleteProjectTitle")} onclick={() => permanentlyDeleteProject(project.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#each documents.filter((doc) => doc.trashed && !chapters.some((chapter) => chapter.id === doc.chapterId && chapter.trashed)) as doc (doc.id)}
               <div class="document-row">
                 <span class="document-select trashed-document">
                   <span class="scene-mark">¶</span>
-                  <span class="tree-name">{doc.title || "Untitled"}</span>
+                  <span class="tree-name">{doc.title || t("common.untitled")}</span>
                 </span>
-                <button class="row-action restore-action" aria-label="Restore {doc.title}" title="Restore" onclick={() => restoreDocument(doc.id)}><RotateCcw size={13} aria-hidden="true" /></button>
-                <button class="row-action delete-action" aria-label="Permanently delete {doc.title}" title="Delete permanently" onclick={() => permanentlyDelete(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
+                <button class="row-action restore-action" aria-label={t("tree.restoreDocument", { document: doc.title || t("common.untitled") })} title={t("tree.restore")} onclick={() => restoreDocument(doc.id)}><RotateCcw size={13} aria-hidden="true" /></button>
+                <button class="row-action delete-action" aria-label={t("tree.deleteDocument", { document: doc.title || t("common.untitled") })} title={t("tree.deletePermanently")} onclick={() => permanentlyDelete(doc.id)}><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             {/each}
             {#if trashCount === 0}
-              <span class="empty-tree">Trash is empty</span>
+              <span class="empty-tree">{t("tree.trashEmpty")}</span>
             {/if}
           </div>
         {/if}
@@ -10652,131 +10764,131 @@
         class="ctx-menu"
         role="menu"
         tabindex="-1"
-        aria-label="Row actions"
+        aria-label={t("ctx.actions")}
         bind:this={contextMenuElement}
         style={`left: ${contextMenu.x}px; top: ${contextMenu.y}px;`}
         onpointerdown={(event) => event.stopPropagation()}
         oncontextmenu={(event) => event.preventDefault()}
       >
         {#if ctx.kind === "chapter" && ctxChapter}
-          <div class="ctx-section" role="group" aria-label="Labels">
+          <div class="ctx-section" role="group" aria-label={t("ctx.labels")}>
             {#each projectLabelList as label (label.id)}
               <button type="button" role="menuitemradio" aria-checked={ctxChapter.labelId === label.id} onclick={() => { applyLabel("chapter", ctxChapter.id, label.id); closeContextMenu(); }}>
                 <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
                 <span class="label-menu-name">{label.name}</span>
               </button>
             {/each}
-            <button type="button" role="menuitemradio" aria-checked={!ctxChapter.labelId} class="label-menu-none" onclick={() => { applyLabel("chapter", ctxChapter.id, undefined); closeContextMenu(); }}>No label</button>
+            <button type="button" role="menuitemradio" aria-checked={!ctxChapter.labelId} class="label-menu-none" onclick={() => { applyLabel("chapter", ctxChapter.id, undefined); closeContextMenu(); }}>{t("ctx.noLabel")}</button>
           </div>
           <div class="ctx-divider"></div>
-          <button type="button" role="menuitem" disabled={!chapterFirstScene(ctxChapter.id)} onclick={() => { const scene = chapterFirstScene(ctxChapter.id); closeContextMenu(); if (scene) openBesideTarget(docTarget(scene.id)); }}>Open beside</button>
-          <button type="button" role="menuitem" onclick={() => { startChapterRename(ctxChapter); closeContextMenu(); }}>Rename chapter</button>
-          <button type="button" role="menuitem" disabled={ctxChapterIndex <= 0} onclick={() => { moveChapter(ctxChapter.id, -1); closeContextMenu(); }}>Move up</button>
-          <button type="button" role="menuitem" disabled={ctxChapterIndex < 0 || ctxChapterIndex >= liveChapters.length - 1} onclick={() => { moveChapter(ctxChapter.id, 1); closeContextMenu(); }}>Move down</button>
-          <button type="button" role="menuitem" onclick={() => { createScene(ctxChapter.id); closeContextMenu(); }}>Add scene</button>
-          <button type="button" role="menuitem" class="danger" onclick={() => { trashChapter(ctxChapter.id); closeContextMenu(); }}>Move to Trash</button>
+          <button type="button" role="menuitem" disabled={!chapterFirstScene(ctxChapter.id)} onclick={() => { const scene = chapterFirstScene(ctxChapter.id); closeContextMenu(); if (scene) openBesideTarget(docTarget(scene.id)); }}>{t("ctx.openBeside")}</button>
+          <button type="button" role="menuitem" onclick={() => { startChapterRename(ctxChapter); closeContextMenu(); }}>{t("ctx.renameChapter")}</button>
+          <button type="button" role="menuitem" disabled={ctxChapterIndex <= 0} onclick={() => { moveChapter(ctxChapter.id, -1); closeContextMenu(); }}>{t("ctx.moveUp")}</button>
+          <button type="button" role="menuitem" disabled={ctxChapterIndex < 0 || ctxChapterIndex >= liveChapters.length - 1} onclick={() => { moveChapter(ctxChapter.id, 1); closeContextMenu(); }}>{t("ctx.moveDown")}</button>
+          <button type="button" role="menuitem" onclick={() => { createScene(ctxChapter.id); closeContextMenu(); }}>{t("ctx.addScene")}</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { trashChapter(ctxChapter.id); closeContextMenu(); }}>{t("ctx.moveToTrash")}</button>
           <div class="ctx-divider"></div>
-          <button type="button" role="menuitem" onclick={() => { openLabelsDialog(); closeContextMenu(); }}>Manage labels…</button>
+          <button type="button" role="menuitem" onclick={() => { openLabelsDialog(); closeContextMenu(); }}>{t("ctx.manageLabels")}</button>
         {:else if ctx.kind === "scene" && ctxScene}
-          <div class="ctx-section" role="group" aria-label="Labels">
+          <div class="ctx-section" role="group" aria-label={t("ctx.labels")}>
             {#each projectLabelList as label (label.id)}
               <button type="button" role="menuitemradio" aria-checked={ctxScene.labelId === label.id} onclick={() => { applyLabel("scene", ctxScene.id, label.id); closeContextMenu(); }}>
                 <span class="label-dot" style={`--label-color: ${labelColorCss(label.color)}`}></span>
                 <span class="label-menu-name">{label.name}</span>
               </button>
             {/each}
-            <button type="button" role="menuitemradio" aria-checked={!ctxScene.labelId} class="label-menu-none" onclick={() => { applyLabel("scene", ctxScene.id, undefined); closeContextMenu(); }}>No label</button>
+            <button type="button" role="menuitemradio" aria-checked={!ctxScene.labelId} class="label-menu-none" onclick={() => { applyLabel("scene", ctxScene.id, undefined); closeContextMenu(); }}>{t("ctx.noLabel")}</button>
           </div>
           <div class="ctx-divider"></div>
-          <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxScene.id); closeContextMenu(); }}>Open scene</button>
-          <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxScene.id)); closeContextMenu(); }}>Open beside</button>
-          <button type="button" role="menuitem" onclick={() => { const scene = documents.find((doc) => doc.id === ctxScene.id); closeContextMenu(); if (scene) startSceneRename(scene); }}>Rename scene</button>
+          <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxScene.id); closeContextMenu(); }}>{t("ctx.openScene")}</button>
+          <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxScene.id)); closeContextMenu(); }}>{t("ctx.openBeside")}</button>
+          <button type="button" role="menuitem" onclick={() => { const scene = documents.find((doc) => doc.id === ctxScene.id); closeContextMenu(); if (scene) startSceneRename(scene); }}>{t("ctx.renameScene")}</button>
           {#if ctxScene.format !== "screenplay"}
-            <button type="button" role="menuitem" onclick={() => { const id = ctxScene.id; closeContextMenu(); void convertToScreenplay(id); }}>Convert this scene to screenplay</button>
+            <button type="button" role="menuitem" onclick={() => { const id = ctxScene.id; closeContextMenu(); void convertToScreenplay(id); }}>{t("editor.convertScreenplay")}</button>
           {/if}
           {@const ctxSceneList = ctxScene.chapterId ? scenesInChapter(ctxScene.chapterId) : []}
           {@const ctxSceneIndex = ctxSceneList.findIndex((entry) => entry.id === ctxScene.id)}
-          <button type="button" role="menuitem" disabled={ctxSceneIndex <= 0} onclick={() => { moveScene(ctxScene.id, -1); closeContextMenu(); }}>Move up</button>
-          <button type="button" role="menuitem" disabled={ctxSceneIndex < 0 || ctxSceneIndex >= ctxSceneList.length - 1} onclick={() => { moveScene(ctxScene.id, 1); closeContextMenu(); }}>Move down</button>
+          <button type="button" role="menuitem" disabled={ctxSceneIndex <= 0} onclick={() => { moveScene(ctxScene.id, -1); closeContextMenu(); }}>{t("ctx.moveUp")}</button>
+          <button type="button" role="menuitem" disabled={ctxSceneIndex < 0 || ctxSceneIndex >= ctxSceneList.length - 1} onclick={() => { moveScene(ctxScene.id, 1); closeContextMenu(); }}>{t("ctx.moveDown")}</button>
           {#if liveChapters.length > 1}
-            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to chapter…</button>
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>{t("ctx.moveToChapter")}</button>
             {#if contextMenuMoveOpen}
-              <div class="ctx-subsection" role="group" aria-label="Move to chapter">
+              <div class="ctx-subsection" role="group" aria-label={t("ctx.moveToChapterGroup")}>
                 {#each liveChapters as targetChapter (targetChapter.id)}
                   <button type="button" role="menuitemradio" aria-checked={ctxScene.chapterId === targetChapter.id} onclick={() => { moveSceneToChapterEnd(ctxScene.id, targetChapter.id); closeContextMenu(); }}>{chapterLabel(targetChapter)}</button>
                 {/each}
               </div>
             {/if}
           {/if}
-          <button type="button" role="menuitem" class="danger" onclick={() => { moveToTrash(ctxScene.id); closeContextMenu(); }}>Move to Trash</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { moveToTrash(ctxScene.id); closeContextMenu(); }}>{t("ctx.moveToTrash")}</button>
           <div class="ctx-divider"></div>
-          <button type="button" role="menuitem" onclick={() => { openLabelsDialog(); closeContextMenu(); }}>Manage labels…</button>
+          <button type="button" role="menuitem" onclick={() => { openLabelsDialog(); closeContextMenu(); }}>{t("ctx.manageLabels")}</button>
         {:else if ctx.kind === "wiki-root"}
-          <button type="button" role="menuitem" onclick={() => { createSpaceDocument("Wiki"); closeContextMenu(); }}>Add page</button>
-          <button type="button" role="menuitem" onclick={() => { createResearchFolder(); closeContextMenu(); }}>Add folder</button>
-          <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(); closeContextMenu(); }}>Add file</button>
-          <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(); closeContextMenu(); }}>Add web link</button>
+          <button type="button" role="menuitem" onclick={() => { createSpaceDocument("Wiki"); closeContextMenu(); }}>{t("ctx.addPage")}</button>
+          <button type="button" role="menuitem" onclick={() => { createResearchFolder(); closeContextMenu(); }}>{t("ctx.addFolder")}</button>
+          <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(); closeContextMenu(); }}>{t("ctx.addFile")}</button>
+          <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(); closeContextMenu(); }}>{t("ctx.addWebLink")}</button>
         {:else if ctx.kind === "wiki-folder" && ctxFolder}
           {@const folderSiblings = researchFolders.filter((entry) => entry.parentId === ctxFolder.parentId)}
           {@const folderIndex = folderSiblings.findIndex((entry) => entry.id === ctxFolder.id)}
-          <button type="button" role="menuitem" onclick={() => { createSpaceDocument("Wiki", ctxFolder.id); closeContextMenu(); }}>Add page</button>
-          <button type="button" role="menuitem" onclick={() => { createResearchFolder(ctxFolder.id); closeContextMenu(); }}>Add subfolder</button>
-          <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(ctxFolder.id); closeContextMenu(); }}>Add file</button>
-          <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(ctxFolder.id); closeContextMenu(); }}>Add web link</button>
+          <button type="button" role="menuitem" onclick={() => { createSpaceDocument("Wiki", ctxFolder.id); closeContextMenu(); }}>{t("ctx.addPage")}</button>
+          <button type="button" role="menuitem" onclick={() => { createResearchFolder(ctxFolder.id); closeContextMenu(); }}>{t("ctx.addSubfolder")}</button>
+          <button type="button" role="menuitem" disabled={researchBusy} onclick={() => { addResearchFiles(ctxFolder.id); closeContextMenu(); }}>{t("ctx.addFile")}</button>
+          <button type="button" role="menuitem" onclick={() => { openResearchLinkDialog(ctxFolder.id); closeContextMenu(); }}>{t("ctx.addWebLink")}</button>
           <div class="ctx-divider"></div>
-          <button type="button" role="menuitem" onclick={() => { startResearchFolderRename(ctxFolder); closeContextMenu(); }}>Rename folder</button>
-          <button type="button" role="menuitem" disabled={folderIndex <= 0} onclick={() => { moveWikiFolder(ctxFolder.id, -1); closeContextMenu(); }}>Move up</button>
-          <button type="button" role="menuitem" disabled={folderIndex < 0 || folderIndex >= folderSiblings.length - 1} onclick={() => { moveWikiFolder(ctxFolder.id, 1); closeContextMenu(); }}>Move down</button>
-          <button type="button" role="menuitem" disabled={ctxFolder.parentId === null} onclick={() => { moveWikiFolderToTop(ctxFolder.id); closeContextMenu(); }}>Move to top level</button>
-          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchFolder(ctxFolder); closeContextMenu(); }}>Remove folder</button>
+          <button type="button" role="menuitem" onclick={() => { startResearchFolderRename(ctxFolder); closeContextMenu(); }}>{t("ctx.renameFolder")}</button>
+          <button type="button" role="menuitem" disabled={folderIndex <= 0} onclick={() => { moveWikiFolder(ctxFolder.id, -1); closeContextMenu(); }}>{t("ctx.moveUp")}</button>
+          <button type="button" role="menuitem" disabled={folderIndex < 0 || folderIndex >= folderSiblings.length - 1} onclick={() => { moveWikiFolder(ctxFolder.id, 1); closeContextMenu(); }}>{t("ctx.moveDown")}</button>
+          <button type="button" role="menuitem" disabled={ctxFolder.parentId === null} onclick={() => { moveWikiFolderToTop(ctxFolder.id); closeContextMenu(); }}>{t("ctx.moveToTop")}</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchFolder(ctxFolder); closeContextMenu(); }}>{t("ctx.removeFolder")}</button>
         {:else if ctx.kind === "wiki-doc" && ctxDoc}
-          <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxDoc.id); closeContextMenu(); }}>Open page</button>
-          <button type="button" role="menuitem" onclick={() => { openCharacterCard(ctxDoc.id); closeContextMenu(); }}>Open character card</button>
-          <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxDoc.id)); closeContextMenu(); }}>Open beside</button>
+          <button type="button" role="menuitem" onclick={() => { openSidebarDocument(ctxDoc.id); closeContextMenu(); }}>{t("ctx.openPage")}</button>
+          <button type="button" role="menuitem" onclick={() => { openCharacterCard(ctxDoc.id); closeContextMenu(); }}>{t("ctx.openCharacterCard")}</button>
+          <button type="button" role="menuitem" onclick={() => { openBesideTarget(docTarget(ctxDoc.id)); closeContextMenu(); }}>{t("ctx.openBeside")}</button>
           {#if researchFolderChoices.length > 0}
-            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>{t("ctx.moveToFolder")}</button>
             {#if contextMenuMoveOpen}
-              <div class="ctx-subsection" role="group" aria-label="Move to folder">
-                <button type="button" role="menuitemradio" aria-checked={!ctxDoc.folderId} onclick={() => { moveResearchDocument(ctxDoc.id, ""); closeContextMenu(); }}>Unfiled</button>
+              <div class="ctx-subsection" role="group" aria-label={t("ctx.moveToFolderGroup")}>
+                <button type="button" role="menuitemradio" aria-checked={!ctxDoc.folderId} onclick={() => { moveResearchDocument(ctxDoc.id, ""); closeContextMenu(); }}>{t("ctx.unfiled")}</button>
                 {#each researchFolderChoices as choice (choice.folder.id)}
                   <button type="button" role="menuitemradio" aria-checked={ctxDoc.folderId === choice.folder.id} onclick={() => { moveResearchDocument(ctxDoc.id, choice.folder.id); closeContextMenu(); }}><span style={`padding-left: ${choice.depth * 12}px`}>{choice.folder.title}</span></button>
                 {/each}
               </div>
             {/if}
           {/if}
-          <button type="button" role="menuitem" class="danger" onclick={() => { moveToTrash(ctxDoc.id); closeContextMenu(); }}>Move to Trash</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { moveToTrash(ctxDoc.id); closeContextMenu(); }}>{t("ctx.moveToTrash")}</button>
         {:else if ctx.kind === "wiki-file" && ctxFile}
-          <button type="button" role="menuitem" onclick={(event) => { const file = ctxFile as ResearchFile; const beside = openRowBeside(event as unknown as MouseEvent, fileTarget(file.id)); closeContextMenu(); if (!beside) openResearchFile(file); }}>Open file</button>
-          <button type="button" role="menuitem" onclick={() => { openBesideTarget(fileTarget(ctxFile.id)); closeContextMenu(); }}>Open beside</button>
+          <button type="button" role="menuitem" onclick={(event) => { const file = ctxFile as ResearchFile; const beside = openRowBeside(event as unknown as MouseEvent, fileTarget(file.id)); closeContextMenu(); if (!beside) openResearchFile(file); }}>{t("ctx.openFile")}</button>
+          <button type="button" role="menuitem" onclick={() => { openBesideTarget(fileTarget(ctxFile.id)); closeContextMenu(); }}>{t("ctx.openBeside")}</button>
           {#if desktopRuntime}
-            <button type="button" role="menuitem" onclick={() => { revealResearchFile(ctxFile as ResearchFile); closeContextMenu(); }}>Reveal in folder</button>
+            <button type="button" role="menuitem" onclick={() => { revealResearchFile(ctxFile as ResearchFile); closeContextMenu(); }}>{t("ctx.revealInFolder")}</button>
           {/if}
           {#if researchFolderChoices.length > 0}
-            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>{t("ctx.moveToFolder")}</button>
             {#if contextMenuMoveOpen}
-              <div class="ctx-subsection" role="group" aria-label="Move to folder">
-                <button type="button" role="menuitemradio" aria-checked={!ctxFile.folderId} onclick={() => { moveResearchItem(ctxFile.id, ""); closeContextMenu(); }}>Unfiled</button>
+              <div class="ctx-subsection" role="group" aria-label={t("ctx.moveToFolderGroup")}>
+                <button type="button" role="menuitemradio" aria-checked={!ctxFile.folderId} onclick={() => { moveResearchItem(ctxFile.id, ""); closeContextMenu(); }}>{t("ctx.unfiled")}</button>
                 {#each researchFolderChoices as choice (choice.folder.id)}
                   <button type="button" role="menuitemradio" aria-checked={ctxFile.folderId === choice.folder.id} onclick={() => { moveResearchItem(ctxFile.id, choice.folder.id); closeContextMenu(); }}><span style={`padding-left: ${choice.depth * 12}px`}>{choice.folder.title}</span></button>
                 {/each}
               </div>
             {/if}
           {/if}
-          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchItem(ctxFile as ResearchItem); closeContextMenu(); }}>Remove and delete file</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchItem(ctxFile as ResearchItem); closeContextMenu(); }}>{t("ctx.removeFile")}</button>
         {:else if ctx.kind === "wiki-link" && ctxLink}
-          <button type="button" role="menuitem" onclick={() => { openResearchLink(ctxLink as ResearchLink); closeContextMenu(); }}>Open link</button>
+          <button type="button" role="menuitem" onclick={() => { openResearchLink(ctxLink as ResearchLink); closeContextMenu(); }}>{t("ctx.openLink")}</button>
           {#if researchFolderChoices.length > 0}
-            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>Move to folder…</button>
+            <button type="button" role="menuitem" aria-expanded={contextMenuMoveOpen} onclick={() => (contextMenuMoveOpen = !contextMenuMoveOpen)}>{t("ctx.moveToFolder")}</button>
             {#if contextMenuMoveOpen}
-              <div class="ctx-subsection" role="group" aria-label="Move to folder">
-                <button type="button" role="menuitemradio" aria-checked={!ctxLink.folderId} onclick={() => { moveResearchItem(ctxLink.id, ""); closeContextMenu(); }}>Unfiled</button>
+              <div class="ctx-subsection" role="group" aria-label={t("ctx.moveToFolderGroup")}>
+                <button type="button" role="menuitemradio" aria-checked={!ctxLink.folderId} onclick={() => { moveResearchItem(ctxLink.id, ""); closeContextMenu(); }}>{t("ctx.unfiled")}</button>
                 {#each researchFolderChoices as choice (choice.folder.id)}
                   <button type="button" role="menuitemradio" aria-checked={ctxLink.folderId === choice.folder.id} onclick={() => { moveResearchItem(ctxLink.id, choice.folder.id); closeContextMenu(); }}><span style={`padding-left: ${choice.depth * 12}px`}>{choice.folder.title}</span></button>
                 {/each}
               </div>
             {/if}
           {/if}
-          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchItem(ctxLink as ResearchItem); closeContextMenu(); }}>Remove link</button>
+          <button type="button" role="menuitem" class="danger" onclick={() => { removeResearchItem(ctxLink as ResearchItem); closeContextMenu(); }}>{t("ctx.removeLink")}</button>
         {/if}
       </div>
     {/if}
@@ -10784,40 +10896,38 @@
     <div class="sidebar-footer">
       <button
         class="settings-button"
-        aria-label="Settings"
+        aria-label={t("common.settings")}
         onclick={openSettings}
       >
         <Settings size={15} aria-hidden="true" />
-        <span>Settings</span>
+        <span>{t("common.settings")}</span>
       </button>
-      <div class="sync-status"><span class="sync-dot"></span> Your writing is private<button type="button" class="shortcuts-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" onclick={toggleShortcuts}><Keyboard size={13} aria-hidden="true" /></button><button type="button" class="version-button" aria-label="About {APP_NAME}" onclick={openAbout}>v{APP_VERSION}</button></div>
+      <div class="sync-status"><span class="sync-dot"></span> {t("app.privateWriting")}<button type="button" class="shortcuts-button" aria-label={t("sidebar.shortcuts")} title={t("sidebar.shortcuts")} onclick={toggleShortcuts}><Keyboard size={13} aria-hidden="true" /></button><button type="button" class="version-button" aria-label={t("sidebar.about", { app: APP_NAME })} onclick={openAbout}>v{APP_VERSION}</button></div>
     </div>
   </aside>
 
   <main class="main-panel" class:left-hidden={!leftSidebarShown()} class:right-hidden={!rightSidebarShown()} inert={mobileDrawerOpen}>
     {#if showUpdateBanner}
       <div class="app-banner" role="status">
-        <span class="app-banner-message"><strong>A new version is ready.</strong> Reload when you reach a stopping point.</span>
+        <span class="app-banner-message"><strong>{t("update.ready")}</strong> {t("update.readyHelp")}</span>
         <span class="app-banner-actions">
           <button type="button" class="data-button" onclick={applyServiceWorkerUpdate} disabled={updateApplying}>
-            {updateApplying ? "Updating…" : "Reload to update"}
+            {updateApplying ? t("update.updating") : t("update.reload")}
           </button>
-          <button type="button" class="app-banner-dismiss" aria-label="Dismiss update notice" onclick={() => updateDismissed = true}><X size={14} aria-hidden="true" /></button>
+          <button type="button" class="app-banner-dismiss" aria-label={t("update.dismiss")} onclick={() => updateDismissed = true}><X size={14} aria-hidden="true" /></button>
         </span>
       </div>
     {:else if showInstallBanner}
       <div class="app-banner" role="status">
         <span class="app-banner-message">
-          <strong>Install ProseCraft.</strong>
-          {isIosDevice
-            ? "Add it to your Home Screen for full-screen, offline writing."
-            : "Keep it on your Home Screen and write offline."}
+          <strong>{t("install.bannerTitle")}</strong>
+          {isIosDevice ? t("install.bannerIos") : t("install.bannerOther")}
         </span>
         <span class="app-banner-actions">
           <button type="button" class="data-button" onclick={handleInstallAction}>
-            {isIosDevice && !canInstallApp ? "How to install" : "Install"}
+            {isIosDevice && !canInstallApp ? t("install.howTo") : t("install.install")}
           </button>
-          <button type="button" class="app-banner-dismiss" aria-label="Dismiss install suggestion" onclick={dismissInstallBanner}><X size={14} aria-hidden="true" /></button>
+          <button type="button" class="app-banner-dismiss" aria-label={t("install.dismiss")} onclick={dismissInstallBanner}><X size={14} aria-hidden="true" /></button>
         </span>
       </div>
     {/if}
@@ -10825,30 +10935,30 @@
       <div class="storage-banner" role="alert">
         <span class="storage-banner-message">{storageError}</span>
         <span class="storage-banner-actions">
-          <button type="button" class="data-button" onclick={exportDataBundle}>Export backup</button>
-          <button type="button" class="data-button" onclick={openSettings}>Settings</button>
-          <button type="button" class="storage-banner-dismiss" aria-label="Dismiss storage warning" onclick={() => storageError = ""}><X size={14} aria-hidden="true" /></button>
+          <button type="button" class="data-button" onclick={exportDataBundle}>{t("settings.data.exportBackup")}</button>
+          <button type="button" class="data-button" onclick={openSettings}>{t("common.settings")}</button>
+          <button type="button" class="storage-banner-dismiss" aria-label={t("storage.dismiss")} onclick={() => storageError = ""}><X size={14} aria-hidden="true" /></button>
         </span>
       </div>
     {/if}
     <section class="writing-area" class:storyboard-active={workspaceView === "storyboard"} id="editor">
-      <div class="workspace-controls" aria-label="Workspace panels">
-        <div class="workspace-modes" role="tablist" aria-label="Workspace view">
-          <button class="workspace-mode" class:active={workspaceView === "outline"} role="tab" aria-selected={workspaceView === "outline"} onclick={openOutlineView}>Outline</button>
-          <button class="workspace-mode" class:active={workspaceView === "writing"} role="tab" aria-selected={workspaceView === "writing"} onclick={() => setWorkspaceView("writing")}>Write</button>
+      <div class="workspace-controls" aria-label={t("workspace.panels")}>
+        <div class="workspace-modes" role="tablist" aria-label={t("workspace.view")}>
+          <button class="workspace-mode" class:active={workspaceView === "outline"} role="tab" aria-selected={workspaceView === "outline"} onclick={openOutlineView}>{t("workspace.outline")}</button>
+          <button class="workspace-mode" class:active={workspaceView === "writing"} role="tab" aria-selected={workspaceView === "writing"} onclick={() => setWorkspaceView("writing")}>{t("workspace.write")}</button>
           {#if !compactChapterLayout}
-          <button class="workspace-mode" class:active={workspaceView === "storyboard"} role="tab" aria-selected={workspaceView === "storyboard"} onclick={() => setWorkspaceView("storyboard")}>Storyboard</button>
+          <button class="workspace-mode" class:active={workspaceView === "storyboard"} role="tab" aria-selected={workspaceView === "storyboard"} onclick={() => setWorkspaceView("storyboard")}>{t("workspace.storyboard")}</button>
           {/if}
           {#if timelineEnabled}
-          <button class="workspace-mode" class:active={workspaceView === "timeline"} role="tab" aria-selected={workspaceView === "timeline"} onclick={() => setWorkspaceView("timeline")}>Timeline</button>
+          <button class="workspace-mode" class:active={workspaceView === "timeline"} role="tab" aria-selected={workspaceView === "timeline"} onclick={() => setWorkspaceView("timeline")}>{t("workspace.timeline")}</button>
           {/if}
-          <button class="workspace-mode" class:active={workspaceView === "network"} role="tab" aria-selected={workspaceView === "network"} onclick={() => setWorkspaceView("network")}>Network</button>
-          <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>Publish</button>
+          <button class="workspace-mode" class:active={workspaceView === "network"} role="tab" aria-selected={workspaceView === "network"} onclick={() => setWorkspaceView("network")}>{t("workspace.network")}</button>
+          <button class="workspace-mode" class:active={workspaceView === "publish"} role="tab" aria-selected={workspaceView === "publish"} onclick={openPublishView}>{t("workspace.publish")}</button>
         </div>
         {#if workspaceView === "storyboard"}
-          <div class="board-controls" role="toolbar" aria-label="Storyboard tools">
-            <button class="add-timeline-row" title="Add blank card" aria-label="Add blank card" onclick={() => addStoryboardCard("blank", "")}><Plus size={14} aria-hidden="true" /><span>Add blank card</span></button>
-            <button class="add-timeline-row" title="Reset zoom and position" aria-label="Reset zoom and position" onclick={resetBoardView}><RotateCcw size={14} aria-hidden="true" /><span>Reset view</span></button>
+          <div class="board-controls" role="toolbar" aria-label={t("storyboard.tools")}>
+            <button class="add-timeline-row" title={t("storyboard.addCard")} aria-label={t("storyboard.addCard")} onclick={() => addStoryboardCard("blank", "")}><Plus size={14} aria-hidden="true" /><span>{t("storyboard.addCard")}</span></button>
+            <button class="add-timeline-row" title={t("storyboard.resetViewTitle")} aria-label={t("storyboard.resetViewTitle")} onclick={resetBoardView}><RotateCcw size={14} aria-hidden="true" /><span>{t("storyboard.resetView")}</span></button>
             <span class="board-zoom-level" aria-live="polite">{Math.round(boardZoom * 100)}%</span>
             <span class="board-divider" aria-hidden="true"></span>
             {#each storyboardDrawingTools as item (item.tool)}
@@ -10856,21 +10966,21 @@
               <button
                 class="drawing-tool"
                 class:active={activeDrawingTool === item.tool}
-                aria-label={`${item.label} tool`}
+                aria-label={t("storyboard.tool", { tool: t(item.labelKey) })}
                 aria-pressed={activeDrawingTool === item.tool}
-                title={`${item.label} tool`}
+                title={t("storyboard.tool", { tool: t(item.labelKey) })}
                 onclick={() => { activeDrawingTool = item.tool; }}
-              ><Icon size={15} aria-hidden="true" /><span>{item.label}</span></button>
+              ><Icon size={15} aria-hidden="true" /><span>{t(item.labelKey)}</span></button>
             {/each}
             {#if activeDrawingTool === "text" || selectedStoryboardTextDrawing()}
               <label class="drawing-font-size">
-                <span>Text size</span>
+                <span>{t("storyboard.textSize")}</span>
                 <input
                   type="range"
                   min="8"
                   max="72"
                   step="1"
-                  aria-label="Diagram text font size"
+                  aria-label={t("storyboard.textFontSize")}
                   value={selectedStoryboardTextDrawing()?.fontSize ?? defaultStoryboardTextFontSize}
                   oninput={(event) => updateStoryboardTextFontSize((event.currentTarget as HTMLInputElement).value)}
                 />
@@ -10879,48 +10989,48 @@
             {/if}
             <button
               class="drawing-delete"
-              aria-label="Delete selected diagram element"
-              title="Delete selected element"
+              aria-label={t("storyboard.deleteSelected")}
+              title={t("storyboard.deleteSelectedTitle")}
               disabled={!selectedDrawingId}
               onclick={() => { if (selectedDrawingId) removeStoryboardDrawing(selectedDrawingId); }}
-            >Delete</button>
+            >{t("storyboard.delete")}</button>
           </div>
         {/if}
         <div class="panel-toggles">
           {#if workspaceView === "writing"}
-          <button class="panel-toggle" aria-label="Search project" title="Search project (Ctrl+F)" onclick={() => openProjectSearch()}>
+          <button class="panel-toggle" aria-label={t("editor.searchProject")} title={t("editor.searchProjectTitle", { mod: modifierName })} onclick={() => openProjectSearch()}>
             <Search size={15} aria-hidden="true" />
-            <span>Search</span>
+            <span>{t("editor.search")}</span>
           </button>
-          <button class="panel-toggle split-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? "Close split view" : "Open split view"} title={splitPanes.length > 0 ? "Close split view" : "Open split view"} onclick={toggleSplitView}>
+          <button class="panel-toggle split-toggle" class:active={splitPanes.length > 0} aria-pressed={splitPanes.length > 0} aria-label={splitPanes.length > 0 ? t("editor.closeSplit") : t("editor.openSplit")} title={splitPanes.length > 0 ? t("editor.closeSplit") : t("editor.openSplit")} onclick={toggleSplitView}>
             <Columns2 size={15} aria-hidden="true" />
-            <span>Split</span>
+            <span>{t("editor.split")}</span>
           </button>
           {/if}
           {#if workspaceView !== "storyboard"}
-          <button class="panel-toggle" aria-label={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} title={leftSidebarVisible ? "Hide chapter sidebar" : "Show chapter sidebar"} aria-pressed={leftSidebarVisible} onclick={toggleLeftSidebar}>
+          <button class="panel-toggle" aria-label={leftSidebarVisible ? t("editor.hideChapters") : t("editor.showChapters")} title={leftSidebarVisible ? t("editor.hideChapters") : t("editor.showChapters")} aria-pressed={leftSidebarVisible} onclick={toggleLeftSidebar}>
             <PanelLeft size={15} aria-hidden="true" />
-            <span>Chapters</span>
+            <span>{t("editor.chapters")}</span>
           </button>
-          <button class="panel-toggle" aria-label={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} title={rightSidebarVisible ? "Hide progress sidebar" : "Show progress sidebar"} aria-pressed={rightSidebarVisible} onclick={toggleRightSidebar}>
+          <button class="panel-toggle" aria-label={rightSidebarVisible ? t("editor.hideProgress") : t("editor.showProgress")} title={rightSidebarVisible ? t("editor.hideProgress") : t("editor.showProgress")} aria-pressed={rightSidebarVisible} onclick={toggleRightSidebar}>
             <PanelRight size={15} aria-hidden="true" />
-            <span>Progress</span>
+            <span>{t("progress.title")}</span>
           </button>
           {/if}
-          <button class="panel-toggle shortcuts-toggle" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (Ctrl/Cmd+/)" aria-pressed={shortcutsOpen} onclick={toggleShortcuts}>
+          <button class="panel-toggle shortcuts-toggle" aria-label={t("sidebar.shortcuts")} title={t("editor.shortcutsTitle", { mod: modifierName })} aria-pressed={shortcutsOpen} onclick={toggleShortcuts}>
             <Keyboard size={15} aria-hidden="true" />
-            <span>Shortcuts</span>
+            <span>{t("editor.shortcuts")}</span>
           </button>
         </div>
       </div>
       <div class="editor-panel" class:editor-panel-hidden={workspaceView !== "writing"} class:typewriter-mode={typewriterMode} class:split-open={tilesOpen}>
-      <div class="tile-grid" class:split-open={tilesOpen} class:stacked-tiles={tilesOpen && splitColumns === 1} class:target-drop-active={gridDropActive} style={`--tile-columns: ${splitColumns}; --tile-rows: ${tileRows}; --tile-grid-top: ${tileGridTop}px; --tile-grid-bottom: ${tileGridBottom}px`} bind:this={tileGridElement} bind:clientWidth={tileGridWidth} role="group" aria-label="Editor and reference tiles" ondragenter={handleGridDragEnter} ondragover={handleTargetDragOver} ondragleave={handleGridDragLeave} ondrop={handleTargetDrop}>
+      <div class="tile-grid" class:split-open={tilesOpen} class:stacked-tiles={tilesOpen && splitColumns === 1} class:target-drop-active={gridDropActive} style={`--tile-columns: ${splitColumns}; --tile-rows: ${tileRows}; --tile-grid-top: ${tileGridTop}px; --tile-grid-bottom: ${tileGridBottom}px`} bind:this={tileGridElement} bind:clientWidth={tileGridWidth} role="group" aria-label={t("editor.tiles")} ondragenter={handleGridDragEnter} ondragover={handleTargetDragOver} ondragleave={handleGridDragLeave} ondrop={handleTargetDrop}>
       <div
         class="editor-column"
         bind:this={editorColumn}
         class:image-drop-active={imageDropActive}
         role="region"
-        aria-label="Writing editor. Drop images here to insert them."
+        aria-label={t("editor.writingArea")}
         ondragover={handleImageDragOver}
         ondragleave={handleImageDragLeave}
         ondrop={handleImageDrop}
@@ -10943,9 +11053,9 @@
                 class="markdown-mode-toggle"
                 aria-pressed={markdownEditorMode}
                 onclick={toggleEditorMode}
-              >Rich text editor</button>
+              >{t("editor.richText")}</button>
             {/if}
-            <button type="button" class="markdown-mode-toggle" onclick={openImagePicker}>Insert image</button>
+            <button type="button" class="markdown-mode-toggle" onclick={openImagePicker}>{t("editor.insertImage")}</button>
           </div>
         {/if}
         {#if imageInsertError}
@@ -10955,8 +11065,8 @@
         <input
           class="title-input"
           data-undo-key={inChapterMode && activeChapter ? `title:chapter:${activeChapter.id}` : `title:${activeDocumentId}`}
-          aria-label={inChapterMode ? "Chapter title" : "Document title"}
-          placeholder="Untitled"
+          aria-label={inChapterMode ? t("editor.chapterTitle") : t("editor.documentTitle")}
+          placeholder={t("common.untitled")}
           autocapitalize="sentences"
           enterkeyhint="done"
           bind:value={title}
@@ -11002,48 +11112,48 @@
                 type="button"
                 class="screenplay-convert-button"
                 onclick={() => void convertToScreenplay(activeDocument.id)}
-              >Convert this scene to screenplay</button>
+              >{t("editor.convertScreenplay")}</button>
             {/if}
           </div>
         {/if}
         {#if !markdownEditorMode}
-        <div class="toolbar" role="toolbar" aria-label="Text formatting">
-          <label class="sr-only" for="block-style">Text style</label>
-          <select id="block-style" class="style-select" aria-label="Text style" onchange={changeBlock}>
-            <option value="">Normal text</option>
-            <option value="h1">Title</option>
-            <option value="h2">Heading</option>
-            <option value="h3">Subheading</option>
-            <option value="blockquote">Quote</option>
+        <div class="toolbar" role="toolbar" aria-label={t("toolbar.formatting")}>
+          <label class="sr-only" for="block-style">{t("toolbar.style")}</label>
+          <select id="block-style" class="style-select" aria-label={t("toolbar.style")} onchange={changeBlock}>
+            <option value="">{t("toolbar.normal")}</option>
+            <option value="h1">{t("toolbar.title")}</option>
+            <option value="h2">{t("toolbar.heading")}</option>
+            <option value="h3">{t("toolbar.subheading")}</option>
+            <option value="blockquote">{t("toolbar.quote")}</option>
           </select>
           <span class="toolbar-divider"></span>
-          <button class="tool-button" aria-label="Bold" title="Bold" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("bold")}><strong>B</strong></button>
-          <button class="tool-button italic" aria-label="Italic" title="Italic" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("italic")}>I</button>
-          <button class="tool-button underline" aria-label="Underline" title="Underline" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("underline")}>U</button>
-          <button class="tool-button strike" aria-label="Strikethrough" title="Strikethrough" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("strikeThrough")}>S</button>
+          <button class="tool-button" aria-label={t("shortcuts.action.bold")} title={t("shortcuts.action.bold")} onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("bold")}><strong>B</strong></button>
+          <button class="tool-button italic" aria-label={t("shortcuts.action.italic")} title={t("shortcuts.action.italic")} onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("italic")}>I</button>
+          <button class="tool-button underline" aria-label={t("shortcuts.action.underline")} title={t("shortcuts.action.underline")} onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("underline")}>U</button>
+          <button class="tool-button strike" aria-label={t("toolbar.strikethrough")} title={t("toolbar.strikethrough")} onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("strikeThrough")}>S</button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button" aria-label="Bulleted list" title="Bulleted list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertUnorderedList")}><List size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Numbered list" title="Numbered list" onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertOrderedList")}><ListOrdered size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("toolbar.bulletedList")} title={t("toolbar.bulletedList")} onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertUnorderedList")}><List size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("toolbar.numberedList")} title={t("toolbar.numberedList")} onpointerdown={(event) => event.preventDefault()} onclick={() => runCommand("insertOrderedList")}><ListOrdered size={16} aria-hidden="true" /></button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button" aria-label="Add link" title="Add link" onpointerdown={(event) => event.preventDefault()} onclick={addLink}><LinkIcon size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Undo" title="Undo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "undo")}><Undo2 size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Redo" title="Redo" onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "redo")}><Redo2 size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("toolbar.addLink")} title={t("toolbar.addLink")} onpointerdown={(event) => event.preventDefault()} onclick={addLink}><LinkIcon size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("shortcuts.action.undo")} title={t("shortcuts.action.undo")} onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "undo")}><Undo2 size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("shortcuts.action.redo")} title={t("shortcuts.action.redo")} onpointerdown={(event) => event.preventDefault()} onclick={() => runFieldHistory(editor, "redo")}><Redo2 size={16} aria-hidden="true" /></button>
           <span class="toolbar-divider"></span>
-          <button class="tool-button image-tool-button" aria-label="Insert image" title="Insert image" onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><ImagePlus size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Comments" title="Comments" onpointerdown={(event) => event.preventDefault()} onclick={openComments}><MessageSquareText size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Snapshots" title="Snapshots" onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Insert footnote" title="Insert footnote" onpointerdown={(event) => event.preventDefault()} onclick={insertFootnoteAtCaret}><Superscript size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Insert citation" title="Insert citation" onpointerdown={(event) => event.preventDefault()} onclick={openCitationPickerAtCaret}><Quote size={16} aria-hidden="true" /></button>
-          <button class="tool-button tool-button-wide" aria-label="Sources" title="Sources…" onpointerdown={(event) => event.preventDefault()} onclick={openCitationLibrary}>Sources…</button>
-          <button class="tool-button" aria-label="Insert equation" title="Insert equation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Insert diagram" title="Insert diagram" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
-          <button class="tool-button" aria-label="Insert calculation" title="Insert calculation" onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
+          <button class="tool-button image-tool-button" aria-label={t("editor.insertImage")} title={t("editor.insertImage")} onpointerdown={(event) => event.preventDefault()} onclick={openImagePicker}><ImagePlus size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("progress.tab.comments")} title={t("progress.tab.comments")} onpointerdown={(event) => event.preventDefault()} onclick={openComments}><MessageSquareText size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("progress.tab.snapshots")} title={t("progress.tab.snapshots")} onpointerdown={(event) => event.preventDefault()} onclick={openSnapshots}><History size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("shortcuts.action.insertFootnote")} title={t("shortcuts.action.insertFootnote")} onpointerdown={(event) => event.preventDefault()} onclick={insertFootnoteAtCaret}><Superscript size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("shortcuts.action.insertCitation")} title={t("shortcuts.action.insertCitation")} onpointerdown={(event) => event.preventDefault()} onclick={openCitationPickerAtCaret}><Quote size={16} aria-hidden="true" /></button>
+          <button class="tool-button tool-button-wide" aria-label={t("toolbar.sourcesAria")} title={t("toolbar.sources")} onpointerdown={(event) => event.preventDefault()} onclick={openCitationLibrary}>{t("toolbar.sources")}</button>
+          <button class="tool-button" aria-label={t("toolbar.insertEquation")} title={t("toolbar.insertEquation")} onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("math")}><Sigma size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("toolbar.insertDiagram")} title={t("toolbar.insertDiagram")} onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("diagram")}><Workflow size={16} aria-hidden="true" /></button>
+          <button class="tool-button" aria-label={t("toolbar.insertCalculation")} title={t("toolbar.insertCalculation")} onpointerdown={(event) => event.preventDefault()} onclick={() => openRichDialog("calc")}><Calculator size={16} aria-hidden="true" /></button>
           {#if markdownEditorEnabled}
             {@const screenplayChapter = inChapterMode && chapterHasScreenplayScene(activeChapter?.id)}
             <button
               class="tool-button tool-button-wide"
-              aria-label="Markdown editor"
-              title={screenplayChapter ? "Not available in a chapter with screenplay scenes" : "Markdown editor"}
+              aria-label={t("toolbar.markdown")}
+              title={screenplayChapter ? t("toolbar.markdownUnavailable") : t("toolbar.markdown")}
               disabled={screenplayChapter}
               onpointerdown={(event) => event.preventDefault()}
               onclick={toggleEditorMode}
@@ -11057,36 +11167,36 @@
             class="image-edit-toolbar"
             role="toolbar"
             tabindex="0"
-            aria-label="Selected image tools"
+            aria-label={t("image.tools")}
             onkeydown={(event) => {
               if (event.key !== "Escape") return;
               selectEditorImage(null);
               editor.focus();
             }}
           >
-            <span class="image-edit-label">Image size</span>
+            <span class="image-edit-label">{t("image.size")}</span>
             <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(50)}>50%</button>
             <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(75)}>75%</button>
-            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(100)}>Fit width</button>
-            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(null)}>Original size</button>
+            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(100)}>{t("image.fitWidth")}</button>
+            <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWidth(null)}>{t("image.originalSize")}</button>
             <span class="toolbar-divider" aria-hidden="true"></span>
-            <span class="image-edit-label">Column width</span>
-            <div class="image-layout-group" role="group" aria-label="Image column width">
+            <span class="image-edit-label">{t("image.columnWidth")}</span>
+            <div class="image-layout-group" role="group" aria-label={t("image.columnWidthGroup")}>
               {#each IMAGE_SIZE_OPTIONS as option (option.size)}
                 <button
                   type="button"
-                  aria-label={option.ariaLabel}
+                  aria-label={t(option.ariaKey)}
                   aria-pressed={selectedImageLayout.size === option.size}
                   onpointerdown={(event) => event.preventDefault()}
                   onclick={() => setSelectedImageSize(option.size)}
-                >{option.label}</button>
+                >{t(option.labelKey)}</button>
               {/each}
               <button
                 type="button"
                 aria-pressed={selectedImageLayout.size === "custom"}
                 onpointerdown={(event) => event.preventDefault()}
                 onclick={useCustomImageWidth}
-              >Custom</button>
+              >{t("image.custom")}</button>
               {#if selectedImageLayout.size === "custom" || customImageWidthEditing}
                 <label class="image-custom-width">
                   <input
@@ -11094,7 +11204,7 @@
                     min={MIN_IMAGE_WIDTH}
                     max={MAX_IMAGE_WIDTH}
                     step="5"
-                    aria-label="Custom image width in percent"
+                    aria-label={t("image.customWidthAria")}
                     value={customImageWidthDraft ?? String(selectedImageLayout.width ?? MAX_IMAGE_WIDTH)}
                     oninput={handleImageWidthInput}
                     onblur={() => { customImageWidthDraft = null; }}
@@ -11104,25 +11214,25 @@
                 </label>
               {/if}
             </div>
-            <span class="image-edit-label">Align</span>
-            <div class="image-layout-group" role="group" aria-label="Image alignment">
+            <span class="image-edit-label">{t("image.align")}</span>
+            <div class="image-layout-group" role="group" aria-label={t("image.alignGroup")}>
               {#each IMAGE_ALIGN_OPTIONS as option (option.align)}
                 <button
                   type="button"
-                  aria-label={`Align image ${option.label.toLowerCase()}`}
+                  aria-label={t("image.alignAria", { align: t(option.labelKey) })}
                   aria-pressed={selectedImageLayout.align === option.align}
                   onpointerdown={(event) => event.preventDefault()}
                   onclick={() => setSelectedImageAlign(option.align)}
-                >{option.label}</button>
+                >{t(option.labelKey)}</button>
               {/each}
             </div>
-            <span class="image-edit-label">Text flow</span>
-            <div class="image-layout-group" role="group" aria-label="Text flow around image">
-              <button type="button" aria-label="Image on its own line" aria-pressed={selectedImageLayout.wrap === "block"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("block")}>Own line</button>
-              <button type="button" aria-label="Wrap text beside left-aligned image" aria-pressed={selectedImageLayout.wrap === "wrap-left"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("wrap-left")}>Wrap left</button>
-              <button type="button" aria-label="Wrap text beside right-aligned image" aria-pressed={selectedImageLayout.wrap === "wrap-right"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("wrap-right")}>Wrap right</button>
+            <span class="image-edit-label">{t("image.textFlow")}</span>
+            <div class="image-layout-group" role="group" aria-label={t("image.textFlowGroup")}>
+              <button type="button" aria-label={t("image.ownLineAria")} aria-pressed={selectedImageLayout.wrap === "block"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("block")}>{t("image.ownLine")}</button>
+              <button type="button" aria-label={t("image.wrapLeftAria")} aria-pressed={selectedImageLayout.wrap === "wrap-left"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("wrap-left")}>{t("image.wrapLeft")}</button>
+              <button type="button" aria-label={t("image.wrapRightAria")} aria-pressed={selectedImageLayout.wrap === "wrap-right"} onpointerdown={(event) => event.preventDefault()} onclick={() => setSelectedImageWrap("wrap-right")}>{t("image.wrapRight")}</button>
             </div>
-            <button type="button" class="remove-image-button" onpointerdown={(event) => event.preventDefault()} onclick={removeSelectedImage}>Remove image</button>
+            <button type="button" class="remove-image-button" onpointerdown={(event) => event.preventDefault()} onclick={removeSelectedImage}>{t("image.remove")}</button>
           </div>
         {/if}
         </div>
@@ -11133,7 +11243,7 @@
             class="markdown-source-editor"
             class:fade-other-paragraphs={fadeOtherParagraphs}
             role="textbox"
-            aria-label="Markdown source"
+            aria-label={t("editor.markdownSource")}
             aria-multiline="true"
           ></div>
         {/if}
@@ -11146,7 +11256,7 @@
           contenteditable="true"
           role="textbox"
           tabindex="0"
-          aria-label="Document text"
+          aria-label={t("editor.documentText")}
           aria-multiline="true"
           spellcheck="true"
           onbeforeinput={handleEditorBeforeInput}
@@ -11187,7 +11297,7 @@
             class="image-resize-handle"
             role="slider"
             tabindex="0"
-            aria-label="Image width"
+            aria-label={t("editor.imageWidth")}
             aria-valuemin={MIN_IMAGE_WIDTH}
             aria-valuemax={MAX_IMAGE_WIDTH}
             aria-valuenow={Math.round(selectedImageWidthPercent())}
@@ -11215,7 +11325,7 @@
           <aside
             class="comment-preview"
             role="group"
-            aria-label="Comment on this text"
+            aria-label={t("comment.onText")}
             style={`left: ${commentPreview.left}px; top: ${commentPreview.top}px`}
             onpointerenter={keepCommentPreview}
             onpointerleave={hideCommentPreviewSoon}
@@ -11232,12 +11342,12 @@
                     type="button"
                     onpointerdown={(event) => event.preventDefault()}
                     onclick={() => goToCommentFromPreview(comment)}
-                  >Go to</button>
+                  >{t("comment.goTo")}</button>
                   <button
                     type="button"
                     onpointerdown={(event) => event.preventDefault()}
                     onclick={() => resolveComment(comment.id, true)}
-                  >Resolve</button>
+                  >{t("comment.resolve")}</button>
                 </div>
               </div>
             {/each}
@@ -11248,18 +11358,18 @@
           <div
             class="comment-selection-popover"
             role="toolbar"
-            aria-label="Comment on selection"
+            aria-label={t("comment.onSelection")}
             style={`left: ${commentSelectionPopover.left}px; top: ${commentSelectionPopover.top}px`}
           >
             <button
               type="button"
               onpointerdown={(event) => event.preventDefault()}
               onclick={openComments}
-              aria-label="Add comment"
-              title="Add comment"
+              aria-label={t("comment.add")}
+              title={t("comment.add")}
             >
               <MessageSquareText size={14} aria-hidden="true" />
-              <span>Comment</span>
+              <span>{t("comment.label")}</span>
             </button>
           </div>
         {/if}
@@ -11302,7 +11412,7 @@
             class="harper-popover"
             role="dialog"
             tabindex="-1"
-            aria-label="Proofreading suggestion"
+            aria-label={t("proofread.suggestion")}
             style={`left: ${harperPopover.left}px; top: ${harperPopover.top}px`}
             onpointerdown={(event) => event.stopPropagation()}
             onkeydown={(event) => { if (event.key === "Escape") hideHarperPopover(); }}
@@ -11318,17 +11428,17 @@
                 {/each}
               </div>
             {:else}
-              <p class="harper-no-suggestion">No automatic fix — edit the passage directly.</p>
+              <p class="harper-no-suggestion">{t("proofread.noFix")}</p>
             {/if}
             <div class="harper-actions">
               <button
                 type="button"
                 onclick={() => harperPopover && ignoreHarperLint(harperPopover.lint)}
-              >Ignore</button>
+              >{t("proofread.ignore")}</button>
               <button
                 type="button"
                 onclick={hideHarperPopover}
-              >Close</button>
+              >{t("proofread.close")}</button>
             </div>
           </div>
         {/if}
@@ -11401,59 +11511,59 @@
           />
         {/if}
         <div class="storyboard-view" class:storyboard-view-hidden={workspaceView !== "storyboard"} class:left-hidden={!leftSidebarShown()} class:right-hidden={!rightSidebarShown()}>
-          <aside class="storyboard-sources" aria-label="Story elements to add">
+          <aside class="storyboard-sources" aria-label={t("storyboard.sourcesAria")}>
             <div class="board-sources-heading">
-              <span class="board-eyebrow">STORY ELEMENTS</span>
-              <h2>Add to storyboard</h2>
-              <p>Drag an element onto the canvas, or use + to place it near the center.</p>
+              <span class="board-eyebrow">{t("storyboard.eyebrow")}</span>
+              <h2>{t("storyboard.title")}</h2>
+              <p>{t("storyboard.intro")}</p>
             </div>
             <section class="board-source-group">
-              <h3>Cards</h3>
+              <h3>{t("storyboard.cards")}</h3>
               <div class="board-source">
-                <button class="source-drag-handle" aria-label="Drag a blank card onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}><GripVertical size={14} aria-hidden="true" /></button>
-                <Square size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">Blank card</span>
-                <button class="source-add" aria-label="Add a blank card near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("blank", "")}><Plus size={13} aria-hidden="true" /></button>
+                <button class="source-drag-handle" aria-label={t("storyboard.dragBlankAria")} title={t("storyboard.dragTitle")} onpointerdown={(event) => startStoryboardDrag(event, "blank", "")}><GripVertical size={14} aria-hidden="true" /></button>
+                <Square size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{t("storyboard.blankCard")}</span>
+                <button class="source-add" aria-label={t("storyboard.addBlankAria")} title={t("storyboard.addTitle")} onclick={() => addStoryboardCard("blank", "")}><Plus size={13} aria-hidden="true" /></button>
               </div>
             </section>
             <section class="board-source-group">
-              <h3>Chapters</h3>
+              <h3>{t("storyboard.chapters")}</h3>
               {#each liveChapters as chapter (chapter.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {chapterLabel(chapter)} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <button class="source-drag-handle" aria-label={t("storyboard.dragAria", { name: chapterLabel(chapter) })} title={t("storyboard.dragTitle")} onpointerdown={(event) => startStoryboardDrag(event, "chapter", chapter.id)}><GripVertical size={14} aria-hidden="true" /></button>
                   <Folder size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{chapterLabel(chapter)}</span>
-                  <button class="source-add" aria-label="Add {chapterLabel(chapter)} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("chapter", chapter.id)}><Plus size={13} aria-hidden="true" /></button>
+                  <button class="source-add" aria-label={t("storyboard.addAria", { name: chapterLabel(chapter) })} title={t("storyboard.addTitle")} onclick={() => addStoryboardCard("chapter", chapter.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
-                <p class="board-source-empty">No chapters yet</p>
+                <p class="board-source-empty">{t("storyboard.noChapters")}</p>
               {/each}
             </section>
             <section class="board-source-group">
-              <h3>Scenes</h3>
+              <h3>{t("storyboard.scenes")}</h3>
               {#each documents.filter((doc) => doc.chapterId && !doc.trashed) as doc (doc.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled scene'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
-                  <FileText size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{doc.title || "Untitled scene"}</span>
-                  <button class="source-add" aria-label="Add {doc.title || 'Untitled scene'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("scene", doc.id)}><Plus size={13} aria-hidden="true" /></button>
+                  <button class="source-drag-handle" aria-label={t("storyboard.dragAria", { name: doc.title || t("tree.untitledScene") })} title={t("storyboard.dragTitle")} onpointerdown={(event) => startStoryboardDrag(event, "scene", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <FileText size={16} color="var(--eyebrow)" aria-hidden="true" /><span class="source-name">{doc.title || t("tree.untitledScene")}</span>
+                  <button class="source-add" aria-label={t("storyboard.addAria", { name: doc.title || t("tree.untitledScene") })} title={t("storyboard.addTitle")} onclick={() => addStoryboardCard("scene", doc.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
-                <p class="board-source-empty">No scenes yet</p>
+                <p class="board-source-empty">{t("tree.noScenes")}</p>
               {/each}
             </section>
             <section class="board-source-group">
-              <h3>Wiki</h3>
+              <h3>{t("storyboard.wiki")}</h3>
               {#each documents.filter((doc) => doc.space === "Wiki" && !doc.trashed) as doc (doc.id)}
                 <div class="board-source">
-                  <button class="source-drag-handle" aria-label="Drag {doc.title || 'Untitled'} onto the storyboard canvas" title="Drag onto canvas" onpointerdown={(event) => startStoryboardDrag(event, "Wiki", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
+                  <button class="source-drag-handle" aria-label={t("storyboard.dragAria", { name: doc.title || t("common.untitled") })} title={t("storyboard.dragTitle")} onpointerdown={(event) => startStoryboardDrag(event, "Wiki", doc.id)}><GripVertical size={14} aria-hidden="true" /></button>
                   <BookOpen size={16} color="var(--eyebrow)" aria-hidden="true" />
-                  <span class="source-name">{doc.title || "Untitled"}</span>
-                  <button class="source-add" aria-label="Add {doc.title || 'Untitled'} near the canvas center" title="Add to canvas" onclick={() => addStoryboardCard("Wiki", doc.id)}><Plus size={13} aria-hidden="true" /></button>
+                  <span class="source-name">{doc.title || t("common.untitled")}</span>
+                  <button class="source-add" aria-label={t("storyboard.addAria", { name: doc.title || t("common.untitled") })} title={t("storyboard.addTitle")} onclick={() => addStoryboardCard("Wiki", doc.id)}><Plus size={13} aria-hidden="true" /></button>
                 </div>
               {:else}
-                <p class="board-source-empty">No wiki pages yet</p>
+                <p class="board-source-empty">{t("storyboard.noWikiPages")}</p>
               {/each}
             </section>
           </aside>
-          <section class="storyboard-canvas" aria-label="Freeform storyboard">
+          <section class="storyboard-canvas" aria-label={t("storyboard.canvasAria")}>
             <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
             <div
               class="storyboard-viewport"
@@ -11464,14 +11574,14 @@
               onpointerdown={startStoryboardCanvasInteraction}
               class:board-pan-tool={activeDrawingTool === "pan"}
               style={boardGridStyle()}
-              aria-label="Freeform storyboard canvas. Select a diagram tool to draw. Hold Space while dragging to pan, pinch to zoom, or use two fingers on touch screens."
+              aria-label={t("storyboard.canvasHint")}
             >
               <div class="storyboard-pan-surface" aria-hidden="true" onpointerdown={startStoryboardPan}></div>
               <div
                 class="storyboard-world"
                 style:transform={`scale(${boardZoom}) translate3d(${-boardPan.x}px, ${-boardPan.y}px, 0)`}
               >
-                <svg class="storyboard-drawing-layer" role="group" aria-label="Diagram shapes">
+                <svg class="storyboard-drawing-layer" role="group" aria-label={t("storyboard.shapes")}>
                   <defs>
                     <marker id="storyboard-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
                       <path d="M 0 0 L 8 4 L 0 8 z" />
@@ -11484,7 +11594,7 @@
                       data-drawing-id={drawing.id}
                       role="button"
                       tabindex="0"
-                      aria-label={`Select ${drawing.type} diagram element`}
+                      aria-label={t("storyboard.selectShape", { type: shapeLabel(drawing.type) })}
                       aria-pressed={selectedDrawingId === drawing.id}
                       onfocus={() => { selectedDrawingId = drawing.id; }}
                       onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}
@@ -11521,8 +11631,8 @@
                         class="storyboard-text-editor"
                         data-undo-key={`label:${drawing.id}`}
                         style:font-size={`${drawing.fontSize}px`}
-                        aria-label="Diagram text"
-                        placeholder="Type a label…"
+                        aria-label={t("storyboard.diagramText")}
+                        placeholder={t("storyboard.textPlaceholder")}
                         maxlength="2000"
                         value={drawing.text}
                         onfocus={() => { selectedDrawingId = drawing.id; }}
@@ -11531,8 +11641,8 @@
                         onblur={() => finishStoryboardTextEdit(drawing.id)}
                       ></textarea>
                       {#if selectedDrawingId === drawing.id}
-                        <button class="drawing-move-handle" aria-label="Move text label" title="Drag to move" onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}><GripVertical size={14} aria-hidden="true" /></button>
-                        <button class="drawing-resize-handle" aria-label="Resize text area" title="Drag to resize" onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
+                        <button class="drawing-move-handle" aria-label={t("storyboard.moveText")} title={t("storyboard.dragMove")} onpointerdown={(event) => startStoryboardDrawingMove(event, drawing)}><GripVertical size={14} aria-hidden="true" /></button>
+                        <button class="drawing-resize-handle" aria-label={t("storyboard.resizeText")} title={t("storyboard.dragResize")} onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
                       {/if}
                     </div>
                   {:else if drawing.type === "box" && selectedDrawingId === drawing.id}
@@ -11543,7 +11653,7 @@
                       style:width={`${drawing.width}px`}
                       style:height={`${drawing.height}px`}
                     >
-                      <button class="drawing-resize-handle" aria-label="Resize box" title="Drag to resize" onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
+                      <button class="drawing-resize-handle" aria-label={t("storyboard.resizeBox")} title={t("storyboard.dragResize")} onpointerdown={(event) => startStoryboardDrawingResize(event, drawing)}></button>
                     </div>
                   {/if}
                 {/each}
@@ -11560,20 +11670,20 @@
                     <div class="storyboard-card-top">
                       <button
                         class="card-drag-handle"
-                        aria-label="Move {card.title}. Use arrow keys to nudge the card, or drag to position it."
-                        title="Drag to move; arrow keys to nudge"
+                        aria-label={t("storyboard.moveCardAria", { title: card.title })}
+                        title={t("storyboard.moveCardTitle")}
                         onpointerdown={(event) => startStoryboardDrag(event, "board-card", card.id)}
                         onkeydown={(event) => handleStoryboardCardKeydown(event, card.id)}
                       ><GripVertical size={14} aria-hidden="true" /></button>
-                      <span class="card-kind">{card.kind === "blank" ? "blank" : card.kind}</span>
-                      <button class="remove-board-card" aria-label="Remove {card.title} from storyboard" title="Remove from storyboard" onclick={() => removeStoryboardCard(card.id)}><X size={14} aria-hidden="true" /></button>
+                      <span class="card-kind">{storyboardKindLabel(card.kind)}</span>
+                      <button class="remove-board-card" aria-label={t("storyboard.removeCardAria", { title: card.title })} title={t("storyboard.removeCardTitle")} onclick={() => removeStoryboardCard(card.id)}><X size={14} aria-hidden="true" /></button>
                     </div>
-                    <input class="board-card-title" data-undo-key={`card-title:${card.id}`} aria-label="Storyboard card title" autocapitalize="sentences" enterkeyhint="done" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
+                    <input class="board-card-title" data-undo-key={`card-title:${card.id}`} aria-label={t("storyboard.cardTitle")} autocapitalize="sentences" enterkeyhint="done" value={card.title} maxlength="120" oninput={(event) => updateStoryboardCard(card.id, "title", (event.currentTarget as HTMLInputElement).value)} />
                     <textarea
                       class="board-card-note"
                       data-undo-key={card.kind === "chapter" ? `chapter-summary:${card.sourceId}` : `card-note:${card.id}`}
-                      aria-label={card.kind === "chapter" ? `Chapter summary for ${card.title}` : `Planning notes for ${card.title}`}
-                      placeholder={card.kind === "chapter" ? "Chapter summary — synced with Outline" : "Write a note about this story element…"}
+                      aria-label={card.kind === "chapter" ? t("storyboard.chapterSummaryAria", { title: card.title }) : t("storyboard.notesAria", { title: card.title })}
+                      placeholder={card.kind === "chapter" ? t("storyboard.chapterSummaryPlaceholder") : t("storyboard.notesPlaceholder")}
                       value={card.note}
                       maxlength={card.kind === "chapter" ? 4000 : undefined}
                       use:autoResize={card.note}
@@ -11582,14 +11692,14 @@
                   </article>
                 {/each}
                 {#if boardDragSource && boardDragSource.kind !== "board-card" && boardDropPosition}
-                  <div class="storyboard-drop-preview" style:left={`${boardDropPosition.x}px`} style:top={`${boardDropPosition.y}px`}>Drop to add card</div>
+                  <div class="storyboard-drop-preview" style:left={`${boardDropPosition.x}px`} style:top={`${boardDropPosition.y}px`}>{t("storyboard.dropToAdd")}</div>
                 {/if}
               </div>
               {#if storyboardCards.length === 0 && storyboardDrawings.length === 0}
-                <p class="storyboard-empty-hint">Add a card or choose a diagram tool to start planning on the canvas.</p>
+                <p class="storyboard-empty-hint">{t("storyboard.emptyHint")}</p>
               {/if}
             </div>
-            <p class="storyboard-pan-hint">Draw with the toolbar · Pan tool, Space + drag, or middle mouse · Pinch or two fingers to zoom and move</p>
+            <p class="storyboard-pan-hint">{t("storyboard.panHint")}</p>
           </section>
         </div>
         {#if workspaceView === "timeline"}
@@ -11645,47 +11755,47 @@
       class:peek={!rightSidebarShown()}
       class:peek-open={!rightSidebarShown() && rightSidebarHovered}
       inert={zenInterfaceHidden || (!rightSidebarShown() && !rightSidebarHovered)}
-      aria-label="Sidebar"
+      aria-label={t("progress.sidebar")}
     >
-      <div class="sidebar-tabs" role="tablist" aria-label="Sidebar views">
-        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "progress"} aria-selected={rightSidebarTab === "progress"} onclick={() => (rightSidebarTab = "progress")}>Progress</button>
-        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "comments"} aria-selected={rightSidebarTab === "comments"} onclick={() => (rightSidebarTab = "comments")}>Comments</button>
-        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "snapshots"} aria-selected={rightSidebarTab === "snapshots"} onclick={() => (rightSidebarTab = "snapshots")}>Snapshots</button>
-        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "footnotes"} aria-selected={rightSidebarTab === "footnotes"} onclick={() => (rightSidebarTab = "footnotes")}>Footnotes</button>
-        <button class="progress-close" type="button" aria-label="Hide progress sidebar" title="Hide progress sidebar" onclick={() => closeSidebarDrawers()}><X size={15} aria-hidden="true" /></button>
+      <div class="sidebar-tabs" role="tablist" aria-label={t("progress.sidebarViews")}>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "progress"} aria-selected={rightSidebarTab === "progress"} onclick={() => (rightSidebarTab = "progress")}>{t("progress.title")}</button>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "comments"} aria-selected={rightSidebarTab === "comments"} onclick={() => (rightSidebarTab = "comments")}>{t("progress.tab.comments")}</button>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "snapshots"} aria-selected={rightSidebarTab === "snapshots"} onclick={() => (rightSidebarTab = "snapshots")}>{t("progress.tab.snapshots")}</button>
+        <button type="button" role="tab" class="sidebar-tab" class:active={rightSidebarTab === "footnotes"} aria-selected={rightSidebarTab === "footnotes"} onclick={() => (rightSidebarTab = "footnotes")}>{t("progress.tab.footnotes")}</button>
+        <button class="progress-close" type="button" aria-label={t("progress.hideSidebar")} title={t("progress.hideSidebar")} onclick={() => closeSidebarDrawers()}><X size={15} aria-hidden="true" /></button>
       </div>
 
       {#if rightSidebarTab === "progress"}
       <div class="progress-header">
         <div>
-          <span class="progress-eyebrow">YOUR WRITING</span>
-          <h2>Progress</h2>
+          <span class="progress-eyebrow">{t("progress.eyebrow")}</span>
+          <h2>{t("progress.title")}</h2>
         </div>
       </div>
 
       <section class="progress-section project-progress">
-        <div class="section-title"><strong>Project goal</strong><span class="goal-tag">PROJECT</span></div>
+        <div class="section-title"><strong>{t("progress.projectGoal")}</strong><span class="goal-tag">{t("progress.projectTag")}</span></div>
         <div class="progress-numbers">
-          <strong>{projectWordCount.toLocaleString()}</strong>
-          <span>{projectGoal > 0 ? `of ${projectGoal.toLocaleString()} words` : "words written"}</span>
+          <strong>{formatNumber(projectWordCount, localeState.locale)}</strong>
+          <span>{projectGoal > 0 ? t("progress.goalOf", { goal: projectGoal }) : t("progress.wordsWritten", { count: projectWordCount })}</span>
         </div>
         {#if projectGoal > 0}
-          <div class="progress-track" role="progressbar" aria-label="Project goal progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPercent(projectWordCount, projectGoal)}>
+          <div class="progress-track" role="progressbar" aria-label={t("progress.goalProgress")} aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPercent(projectWordCount, projectGoal)}>
             <span style:width="{progressPercent(projectWordCount, projectGoal)}%"></span>
           </div>
-          <div class="progress-caption">{progressPercent(projectWordCount, projectGoal)}% of project goal</div>
+          <div class="progress-caption">{t("progress.percentOfGoal", { percent: progressPercent(projectWordCount, projectGoal) })}</div>
         {:else}
-          <div class="progress-caption">Set a goal to track project progress</div>
+          <div class="progress-caption">{t("progress.setGoal")}</div>
         {/if}
-        <label class="goal-label" for="project-goal">Word count goal</label>
+        <label class="goal-label" for="project-goal">{t("progress.wordGoal")}</label>
         <div class="goal-input-wrap">
           <input id="project-goal" class="goal-input" type="number" min="0" step="500" value={projectGoal} onchange={(event) => setProjectGoal(Number((event.currentTarget as HTMLInputElement).value))} />
-          <span>words</span>
+          <span>{t("progress.words")}</span>
         </div>
       </section>
 
       <section class="progress-section chapters-progress">
-        <div class="section-title"><strong>Chapter goals</strong><span>{liveChapters.length}</span></div>
+        <div class="section-title"><strong>{t("progress.chapterGoals")}</strong><span>{liveChapters.length}</span></div>
         {#if liveChapters.length > 0}
           <div class="chapter-goal-list">
             {#each liveChapters as chapter (chapter.id)}
@@ -11694,50 +11804,50 @@
               <div class="chapter-goal">
                 <div class="chapter-goal-heading">
                   <strong title={chapterLabel(chapter)}>{chapterLabel(chapter)}</strong>
-                  <span>{count.toLocaleString()}</span>
+                  <span>{formatNumber(count, localeState.locale)}</span>
                 </div>
                 {#if goal > 0}
-                  <div class="progress-track chapter-track" role="progressbar" aria-label="{chapterLabel(chapter)} goal progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPercent(count, goal)}>
+                  <div class="progress-track chapter-track" role="progressbar" aria-label={t("progress.goalProgressAria", { chapter: chapterLabel(chapter) })} aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPercent(count, goal)}>
                     <span style:width="{progressPercent(count, goal)}%"></span>
                   </div>
                   <div class="chapter-goal-footer">
-                    <span>{progressPercent(count, goal)}% complete</span>
+                    <span>{t("progress.percentComplete", { percent: progressPercent(count, goal) })}</span>
                     <label class="chapter-goal-input">
-                      <span class="sr-only">{chapterLabel(chapter)} word goal</span>
+                      <span class="sr-only">{t("progress.chapterWordGoalAria", { chapter: chapterLabel(chapter) })}</span>
                       <input type="number" min="0" step="100" value={goal} onchange={(event) => setChapterGoal(chapter.id, Number((event.currentTarget as HTMLInputElement).value))} />
-                      <span>goal</span>
+                      <span>{t("progress.goal")}</span>
                     </label>
                   </div>
                 {:else}
                   <label class="chapter-goal-input unset-goal">
-                    <span class="sr-only">{chapterLabel(chapter)} word goal</span>
-                    <input type="number" min="0" step="100" value="0" placeholder="Set word goal" onchange={(event) => setChapterGoal(chapter.id, Number((event.currentTarget as HTMLInputElement).value))} />
-                    <span>words</span>
+                    <span class="sr-only">{t("progress.chapterWordGoalAria", { chapter: chapterLabel(chapter) })}</span>
+                    <input type="number" min="0" step="100" value="0" placeholder={t("progress.setWordGoal")} onchange={(event) => setChapterGoal(chapter.id, Number((event.currentTarget as HTMLInputElement).value))} />
+                    <span>{t("progress.words")}</span>
                   </label>
                 {/if}
               </div>
             {/each}
           </div>
         {:else}
-          <p class="empty-progress">Add a chapter to set chapter goals.</p>
+          <p class="empty-progress">{t("progress.addChapterForGoals")}</p>
         {/if}
       </section>
 
       <section class="progress-section activity-section">
         <div class="section-title activity-title">
-          <strong>Writing activity</strong>
-          <span>{activeDaysThisMonth} active {activeDaysThisMonth === 1 ? "day" : "days"}</span>
+          <strong>{t("progress.writingActivity")}</strong>
+          <span>{t("progress.activeDays", { count: activeDaysThisMonth })}</span>
         </div>
         <div class="calendar-heading">
-          <strong>{viewedMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</strong>
+          <strong>{viewedMonth.toLocaleDateString(localeState.locale, { month: "long", year: "numeric" })}</strong>
           <div class="calendar-navigation">
-            <button aria-label="Previous month" onclick={() => changeViewedMonth(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
-            <button aria-label="Next month" onclick={() => changeViewedMonth(1)}><ChevronRight size={14} aria-hidden="true" /></button>
+            <button aria-label={t("progress.previousMonth")} onclick={() => changeViewedMonth(-1)}><ChevronLeft size={14} aria-hidden="true" /></button>
+            <button aria-label={t("progress.nextMonth")} onclick={() => changeViewedMonth(1)}><ChevronRight size={14} aria-hidden="true" /></button>
           </div>
         </div>
-        <div class="calendar-grid" role="grid" aria-label="Writing activity calendar">
-          {#each ["S", "M", "T", "W", "T", "F", "S"] as dayName, index (`${dayName}-${index}`)}
-            <span class="calendar-weekday" role="columnheader" aria-label={["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][index]}>{dayName}</span>
+        <div class="calendar-grid" role="grid" aria-label={t("progress.activityCalendar")}>
+          {#each WEEKDAY_SHORT_KEYS as dayKey, index (dayKey)}
+            <span class="calendar-weekday" role="columnheader" aria-label={t(WEEKDAY_FULL_KEYS[index])}>{t(dayKey)}</span>
           {/each}
           {#each calendarCells as cell, index (`${cell?.key ?? "blank"}-${index}`)}
             {#if cell}
@@ -11749,45 +11859,45 @@
                 class:activity-3={level === 3}
                 class:activity-4={level === 4}
                 role="gridcell"
-                aria-label="{cell.key}: {cell.record?.edits ?? 0} writing edits, {cell.record?.wordsAdded ?? 0} words added"
-                title="{cell.key}: {cell.record?.edits ?? 0} edits, {cell.record?.wordsAdded ?? 0} words added"
+                aria-label={t("progress.cellAria", { date: cell.key, edits: formatNumber(cell.record?.edits ?? 0, localeState.locale), words: formatNumber(cell.record?.wordsAdded ?? 0, localeState.locale) })}
+                title={t("progress.cellTitle", { date: cell.key, edits: formatNumber(cell.record?.edits ?? 0, localeState.locale), words: formatNumber(cell.record?.wordsAdded ?? 0, localeState.locale) })}
               >{cell.day}</span>
             {:else}
               <span class="calendar-day empty-day" aria-hidden="true"></span>
             {/if}
           {/each}
         </div>
-        <div class="calendar-legend"><span>Less</span><i></i><i></i><i></i><i></i><span>More</span></div>
-        <p class="activity-note">Activity is recorded when you edit a scene. Added words are estimated from each edit.</p>
+        <div class="calendar-legend"><span>{t("progress.less")}</span><i></i><i></i><i></i><i></i><span>{t("progress.more")}</span></div>
+        <p class="activity-note">{t("progress.activityNote")}</p>
       </section>
       {:else if rightSidebarTab === "comments"}
-      <div class="progress-header"><div><span class="progress-eyebrow">FEEDBACK</span><h2>Comments</h2></div></div>
+      <div class="progress-header"><div><span class="progress-eyebrow">{t("comments.kicker")}</span><h2>{t("progress.tab.comments")}</h2></div></div>
       <section class="progress-section">
-        <div class="section-title"><strong>New comment</strong></div>
-        <p class="section-subtitle">Notes for yourself or a proofreader. Never part of the text or any export.</p>
+        <div class="section-title"><strong>{t("comments.new")}</strong></div>
+        <p class="section-subtitle">{t("comments.newHintPanel")}</p>
         {#if pendingAnchor}
           <form class="comment-form side-form" onsubmit={addComment}>
             <blockquote class="comment-quote">{pendingAnchor.quote.length > 160 ? `${pendingAnchor.quote.slice(0, 160)}…` : pendingAnchor.quote}</blockquote>
-            <textarea class="preference-select" rows="2" placeholder="Your comment" maxlength="4000" bind:value={commentDraft} aria-label="Comment text" required></textarea>
+            <textarea class="preference-select" rows="2" placeholder={t("comments.placeholder")} maxlength="4000" bind:value={commentDraft} aria-label={t("comments.placeholder")} required></textarea>
             <div class="comment-form-row">
-              <input class="preference-select" type="text" placeholder="Name" maxlength="60" bind:value={commentAuthor} aria-label="Author name" />
-              <button class="data-button" type="submit">Add comment</button>
+              <input class="preference-select" type="text" placeholder={t("comments.name")} maxlength="60" bind:value={commentAuthor} aria-label={t("comments.authorAria")} />
+              <button class="data-button" type="submit">{t("comments.add")}</button>
             </div>
           </form>
         {:else if markdownEditorMode}
-          <p class="data-help">Comments attach to the rich text editor. Switch back to it to add or jump to a comment.</p>
+          <p class="data-help">{t("comments.richOnly")}</p>
         {:else}
-          <p class="data-help">Select some text in the scene, then use the comment button in the toolbar.</p>
+          <p class="data-help">{t("comments.selectTextPanel")}</p>
         {/if}
       </section>
       <section class="progress-section">
-        <div class="section-title"><strong>{showAllComments ? "All comments" : "This chapter"}</strong><span>{activeComments.length}</span></div>
-        <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showAllComments} /> Show all project comments</label>
+        <div class="section-title"><strong>{showAllComments ? t("comments.all") : t("comments.thisChapter")}</strong><span>{activeComments.length}</span></div>
+        <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showAllComments} /> {t("comments.showAll")}</label>
         {#if resolvedCommentCount > 0}
-          <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showResolvedComments} /> Show resolved ({resolvedCommentCount})</label>
+          <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showResolvedComments} /> {t("comments.showResolved", { count: resolvedCommentCount })}</label>
         {/if}
         {#if activeComments.length === 0}
-          <p class="empty-progress">No comments yet. Select text in the editor, then add one above.</p>
+          <p class="empty-progress">{t("comments.emptyPanel")}</p>
         {:else}
           <ul class="comment-list">
             {#each activeComments as comment (comment.id)}
@@ -11797,11 +11907,11 @@
                 {/if}
                 <blockquote class="comment-quote">{comment.quote.length > 120 ? `${comment.quote.slice(0, 120)}…` : comment.quote}</blockquote>
                 <p class="comment-body">{comment.body}</p>
-                <div class="comment-meta">{comment.author} · {new Date(comment.createdAt).toLocaleDateString()}{commentPositions[comment.id] === null ? " · text not found any more" : ""}</div>
+                <div class="comment-meta">{comment.author} · {new Date(comment.createdAt).toLocaleDateString(localeState.locale)}{commentPositions[comment.id] === null ? ` · ${t("comments.missingText")}` : ""}</div>
                 <div class="comment-actions">
-                  <button class="side-action" type="button" disabled={markdownEditorMode || commentPositions[comment.id] === null} onclick={() => goToComment(comment)}>Go to</button>
-                  <button class="side-action" type="button" onclick={() => resolveComment(comment.id, !comment.resolved)}>{comment.resolved ? "Reopen" : "Resolve"}</button>
-                  <button class="side-action danger" type="button" aria-label="Delete comment" onclick={() => deleteComment(comment.id)}>Delete</button>
+                  <button class="side-action" type="button" disabled={markdownEditorMode || commentPositions[comment.id] === null} onclick={() => goToComment(comment)}>{t("comments.goTo")}</button>
+                  <button class="side-action" type="button" onclick={() => resolveComment(comment.id, !comment.resolved)}>{comment.resolved ? t("comments.reopen") : t("comments.resolve")}</button>
+                  <button class="side-action danger" type="button" aria-label={t("comments.deleteAria")} onclick={() => deleteComment(comment.id)}>{t("comments.delete")}</button>
                 </div>
               </li>
             {/each}
@@ -11809,32 +11919,32 @@
         {/if}
       </section>
       {:else if rightSidebarTab === "snapshots"}
-      <div class="progress-header"><div><span class="progress-eyebrow">VERSIONS</span><h2>Snapshots</h2></div></div>
+      <div class="progress-header"><div><span class="progress-eyebrow">{t("progress.tab.snapshots")}</span><h2>{t("progress.tab.snapshots")}</h2></div></div>
       <section class="progress-section">
-        <div class="section-title"><strong>Save this version</strong></div>
-        <p class="section-subtitle">Keeps a copy of “{title || "Untitled"}” as it is now. Up to ten are kept per scene.</p>
+        <div class="section-title"><strong>{t("snapshots.save")}</strong></div>
+        <p class="section-subtitle">{t("snapshots.saveHint", { title: title || t("common.untitled") })}</p>
         <form class="snapshot-form side-form" onsubmit={takeSnapshot}>
-          <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" autocapitalize="sentences" bind:value={snapshotNote} aria-label="Snapshot note" />
-          <button class="data-button" type="submit">Take snapshot</button>
+          <input class="preference-select" type="text" placeholder={t("snapshots.notePlaceholder")} maxlength="120" autocapitalize="sentences" bind:value={snapshotNote} aria-label={t("snapshots.noteAria")} />
+          <button class="data-button" type="submit">{t("snapshots.take")}</button>
         </form>
       </section>
       <section class="progress-section">
-        <div class="section-title"><strong>Earlier versions</strong><span>{activeSnapshots.length}</span></div>
-        <p class="section-subtitle">Restoring first saves the current text, so you can go back.</p>
+        <div class="section-title"><strong>{t("snapshots.earlier")}</strong><span>{activeSnapshots.length}</span></div>
+        <p class="section-subtitle">{t("snapshots.restoreHint")}</p>
         {#if activeSnapshots.length === 0}
-          <p class="empty-progress">No snapshots yet. Save one above to freeze this moment.</p>
+          <p class="empty-progress">{t("snapshots.emptyPanel")}</p>
         {:else}
           <ul class="snapshot-list">
             {#each activeSnapshots as snapshot (snapshot.id)}
               <li class="snapshot-item">
                 <div class="snapshot-meta">
                   <strong>{snapshotLabel(snapshot)}</strong>
-                  <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshotHtml(snapshot)))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                  <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{t("outline.words", { count: countWords(htmlToPlainText(snapshotHtml(snapshot))) })}{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
                 </div>
                 <div class="snapshot-actions">
-                  <button class="side-action" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
-                  <button class="side-action" type="button" onclick={() => restoreSnapshot(snapshot.id)}>Restore</button>
-                  <button class="side-action danger" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
+                  <button class="side-action" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? t("snapshots.hide") : t("snapshots.preview")}</button>
+                  <button class="side-action" type="button" onclick={() => restoreSnapshot(snapshot.id)}>{t("snapshots.restore")}</button>
+                  <button class="side-action danger" type="button" aria-label={t("snapshots.deleteAria")} onclick={() => deleteSnapshot(snapshot.id)}>{t("snapshots.delete")}</button>
                 </div>
                 {#if snapshotPreviewId === snapshot.id}
                   <div class="snapshot-preview">{@html cleanHtml(snapshotHtml(snapshot))}</div>
@@ -11845,17 +11955,17 @@
         {/if}
       </section>
       {:else}
-      <div class="progress-header"><div><span class="progress-eyebrow">NOTES</span><h2>Footnotes</h2></div></div>
+      <div class="progress-header"><div><span class="progress-eyebrow">{t("footnotes.eyebrow")}</span><h2>{t("progress.tab.footnotes")}</h2></div></div>
       <section class="progress-section">
         <div class="section-title">
-          <strong>{inChapterMode ? "This chapter" : "This document"}</strong>
+          <strong>{inChapterMode ? t("footnotes.thisChapter") : t("footnotes.thisDocument")}</strong>
           <span>{activeFootnoteScope.notes.length}</span>
         </div>
         {#if markdownEditorMode}
-          <p class="data-help">Switch back to the rich text editor to jump to or edit footnote popovers.</p>
+          <p class="data-help">{t("footnotes.richOnly")}</p>
         {/if}
         {#if activeFootnoteScope.notes.length === 0}
-          <p class="empty-progress">No footnotes yet. Place the cursor in the text and use Insert footnote to add one.</p>
+          <p class="empty-progress">{t("footnotes.empty")}</p>
         {:else}
           <ul class="footnote-list">
             {#each activeFootnoteScope.notes as note (note.id)}
@@ -11863,17 +11973,17 @@
                 <div class="footnote-item-head">
                   <span class="footnote-badge">{note.number}</span>
                   {#if note.missingDefinition}
-                    <span class="footnote-empty">Missing definition</span>
+                    <span class="footnote-empty">{t("footnotes.missing")}</span>
                   {:else if !htmlToPlainText(note.html).trim()}
-                    <span class="footnote-empty">Empty footnote</span>
+                    <span class="footnote-empty">{t("footnotes.emptyNote")}</span>
                   {:else}
                     <div class="footnote-preview">{@html sanitizeInlineHtml(note.html)}</div>
                   {/if}
                 </div>
                 <div class="footnote-actions">
-                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => goToFootnote(note.id)}>Go to</button>
-                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => editFootnoteFromSidebar(note.id)}>Edit</button>
-                  <button class="side-action danger" type="button" disabled={markdownEditorMode} aria-label="Remove footnote {note.number}" onclick={() => removeFootnoteById(note.id)}>Remove</button>
+                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => goToFootnote(note.id)}>{t("footnotes.goTo")}</button>
+                  <button class="side-action" type="button" disabled={markdownEditorMode} onclick={() => editFootnoteFromSidebar(note.id)}>{t("footnotes.edit")}</button>
+                  <button class="side-action danger" type="button" disabled={markdownEditorMode} aria-label={t("footnotes.removeAria", { number: note.number })} onclick={() => removeFootnoteById(note.id)}>{t("footnotes.remove")}</button>
                 </div>
               </li>
             {/each}
@@ -11882,14 +11992,14 @@
       </section>
       <section class="progress-section">
         <div class="section-title">
-          <strong>Unused definitions</strong>
+          <strong>{t("footnotes.unused")}</strong>
           <span>{activeFootnoteScope.orphans.length}</span>
         </div>
         {#if activeFootnoteScope.orphans.length > 0}
-          <p class="section-subtitle">These footnote definitions no longer have a marker in the text.</p>
+          <p class="section-subtitle">{t("footnotes.unusedHint")}</p>
           <ul class="footnote-orphan-list">
             {#each activeFootnoteScope.orphans as orphan (orphan.id)}
-              <li class="footnote-orphan-item">{htmlToPlainText(orphan.html).trim() || "Empty footnote"}</li>
+              <li class="footnote-orphan-item">{htmlToPlainText(orphan.html).trim() || t("footnotes.emptyNote")}</li>
             {/each}
           </ul>
           <button
@@ -11897,10 +12007,10 @@
             type="button"
             disabled={markdownEditorMode}
             onclick={cleanupOrphanFootnotes}
-          >Clean up {activeFootnoteScope.orphans.length} orphan{activeFootnoteScope.orphans.length === 1 ? "" : "s"}</button>
+          >{t("footnotes.cleanup", { count: activeFootnoteScope.orphans.length })}</button>
         {:else}
-          <p class="data-help">All footnote definitions are referenced in the text.</p>
-          <button class="data-button footnote-cleanup-button" type="button" disabled>Clean up orphans</button>
+          <p class="data-help">{t("footnotes.allReferenced")}</p>
+          <button class="data-button footnote-cleanup-button" type="button" disabled>{t("footnotes.cleanupIdle")}</button>
         {/if}
       </section>
       {/if}
@@ -11911,8 +12021,8 @@
   if (event.target === researchMarkdownDialog) researchMarkdownDialog.close();
 }}>
   <div class="settings-header">
-    <div><span class="settings-kicker">WIKI FILE</span><h2>{researchMarkdownTitle}</h2></div>
-    <button class="close-settings" aria-label="Close Markdown preview" onclick={() => researchMarkdownDialog.close()}><X size={15} aria-hidden="true" /></button>
+    <div><span class="settings-kicker">{t("research.wikiFile")}</span><h2>{researchMarkdownTitle}</h2></div>
+    <button class="close-settings" aria-label={t("research.close")} onclick={() => researchMarkdownDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <article class="research-markdown-content">{@html researchMarkdownHtml}</article>
 </dialog>
@@ -11923,12 +12033,12 @@
   if (event.target === settingsDialog) settingsDialog.close();
 }}>
   <div class="settings-header">
-    <div><span class="settings-kicker">PROSECRAFT</span><h2>Settings</h2></div>
-    <button class="close-settings" aria-label="Close settings" onclick={() => settingsDialog.close()}><X size={15} aria-hidden="true" /></button>
+    <div><span class="settings-kicker">PROSECRAFT</span><h2>{t("settings.title")}</h2></div>
+    <button class="close-settings" aria-label={t("settings.close")} onclick={() => settingsDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-layout">
-    <div class="settings-nav" role="tablist" aria-label="Settings categories" aria-orientation="vertical" tabindex="-1" onkeydown={handleSettingsCategoryKey}>
-      {#each settingsCategories as { id, label, icon: Icon } (id)}
+    <div class="settings-nav" role="tablist" aria-label={t("settings.categories")} aria-orientation="vertical" tabindex="-1" onkeydown={handleSettingsCategoryKey}>
+      {#each settingsCategories as { id, labelKey, icon: Icon } (id)}
         {#if id !== "install" || !desktopRuntime}
           <button
             type="button"
@@ -11942,23 +12052,44 @@
             onclick={() => selectSettingsCategory(id)}
           >
             <Icon size={15} aria-hidden="true" />
-            <span>{label}</span>
+            <span>{t(labelKey)}</span>
           </button>
         {/if}
       {/each}
     </div>
     <div class="settings-panes">
     <div class="settings-pane" id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general" hidden={activeSettingsCategory !== "general"}>
-      <h3 class="settings-pane-title">General</h3>
+      <h3 class="settings-pane-title">{t("settings.nav.general")}</h3>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Appearance</strong><span>Choose how ProseCraft looks</span></div>
-      <label class="preference-label" for="theme-preference">Theme</label>
-      <select id="theme-preference" class="preference-select" value={themePreference} onchange={(event) => setThemePreference((event.currentTarget as HTMLSelectElement).value as ThemePreference)}>
-        <option value="system">Follow system</option>
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
+      <div class="preference-heading"><strong>{t("settings.language.section")}</strong><span>{t("settings.language.sectionHelp")}</span></div>
+      <label class="preference-label" for="locale-preference">{t("settings.language.label")}</label>
+      <select
+        id="locale-preference"
+        class="preference-select"
+        value={localeState.locale}
+        onchange={(event) => {
+          setLocale((event.currentTarget as HTMLSelectElement).value);
+          void syncNativeMenuLabels();
+        }}
+      >
+        {#each AVAILABLE_LOCALES as code (code)}
+          <option value={code}>{localeName(code)}{isPreviewLocale(code) ? ` — ${t("settings.language.preview")}` : ""}</option>
+        {/each}
       </select>
-      <label class="preference-label color-scheme-label" for="color-scheme-preference">Color scheme</label>
+      <p class="preference-help">{t("settings.language.help")}</p>
+      {#if isPreviewLocale(localeState.locale)}
+        <p class="preference-help">{t("settings.language.previewHelp")}</p>
+      {/if}
+    </section>
+    <section class="preference-section">
+      <div class="preference-heading"><strong>{t("settings.appearance.section")}</strong><span>{t("settings.appearance.sectionHelp")}</span></div>
+      <label class="preference-label" for="theme-preference">{t("settings.appearance.theme")}</label>
+      <select id="theme-preference" class="preference-select" value={themePreference} onchange={(event) => setThemePreference((event.currentTarget as HTMLSelectElement).value as ThemePreference)}>
+        <option value="system">{t("settings.appearance.themeSystem")}</option>
+        <option value="light">{t("settings.appearance.themeLight")}</option>
+        <option value="dark">{t("settings.appearance.themeDark")}</option>
+      </select>
+      <label class="preference-label color-scheme-label" for="color-scheme-preference">{t("settings.appearance.colorScheme")}</label>
       <select
         id="color-scheme-preference"
         class="preference-select"
@@ -11975,10 +12106,10 @@
     </section>
     </div>
     <div class="settings-pane" id="settings-panel-writing" role="tabpanel" aria-labelledby="settings-tab-writing" hidden={activeSettingsCategory !== "writing"}>
-      <h3 class="settings-pane-title">Writing</h3>
+      <h3 class="settings-pane-title">{t("settings.nav.writing")}</h3>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Writing fonts</strong><span>Choose typefaces for the writing area and Markdown source</span></div>
-      <label class="preference-label" for="rich-text-font-preference">Writing font</label>
+      <div class="preference-heading"><strong>{t("settings.writing.fontsSection")}</strong><span>{t("settings.writing.fontsSectionHelp")}</span></div>
+      <label class="preference-label" for="rich-text-font-preference">{t("settings.writing.font")}</label>
       <EditorFontPicker
         id="rich-text-font-preference"
         builtinOptions={RICH_TEXT_FONT_OPTIONS}
@@ -11991,9 +12122,9 @@
         onselect={selectRichTextFont}
       />
       {#if installedFontMissing(richTextSystemFont)}
-        <p class="font-picker-warning">“{richTextSystemFont}” is not installed on this device; the ProseCraft fallback will be used.</p>
+        <p class="font-picker-warning">{t("settings.writing.fontMissing", { font: richTextSystemFont })}</p>
       {/if}
-      <label class="preference-label markdown-font-label" for="markdown-font-preference">Markdown source font</label>
+      <label class="preference-label markdown-font-label" for="markdown-font-preference">{t("settings.writing.markdownFont")}</label>
       <EditorFontPicker
         id="markdown-font-preference"
         builtinOptions={MARKDOWN_FONT_OPTIONS}
@@ -12007,180 +12138,180 @@
         onselect={selectMarkdownFont}
       />
       {#if installedFontMissing(markdownSystemFont)}
-        <p class="font-picker-warning">“{markdownSystemFont}” is not installed on this device; the ProseCraft fallback will be used.</p>
+        <p class="font-picker-warning">{t("settings.writing.fontMissing", { font: markdownSystemFont })}</p>
       {/if}
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Text size</strong><span>Adjust the editor scale</span></div>
+      <div class="preference-heading"><strong>{t("settings.writing.sizeSection")}</strong><span>{t("settings.writing.sizeSectionHelp")}</span></div>
       <div class="scale-control">
-        <label class="preference-label" for="scale-preference">Scale</label>
+        <label class="preference-label" for="scale-preference">{t("settings.writing.scale")}</label>
         <select id="scale-preference" class="preference-select" value={editorScale} onchange={(event) => setEditorScale(Number((event.currentTarget as HTMLSelectElement).value))}>
           {#each [80, 90, 100, 110, 120, 130, 140] as scale}
-            <option value={scale}>{scale}%</option>
+            <option value={scale}>{t("settings.writing.scaleValue", { scale })}</option>
           {/each}
         </select>
       </div>
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Writing experience</strong><span>Control how the editor follows your focus</span></div>
+      <div class="preference-heading"><strong>{t("settings.writing.experienceSection")}</strong><span>{t("settings.writing.experienceSectionHelp")}</span></div>
       <label class="preference-toggle">
         <input
           type="checkbox"
           checked={typewriterMode}
           onchange={(event) => setTypewriterMode((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Typewriter mode</span>
+        <span>{t("settings.writing.typewriter")}</span>
       </label>
-      <p class="preference-help">Keeps the caret near the vertical center of the page in both the rich-text and Markdown editors.</p>
+      <p class="preference-help">{t("settings.writing.typewriterHelp")}</p>
       <label class="preference-toggle">
         <input
           type="checkbox"
           checked={fadeOtherParagraphs}
           onchange={(event) => setFadeOtherParagraphs((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Fade other paragraphs</span>
+        <span>{t("settings.writing.fadeParagraphs")}</span>
       </label>
-      <p class="preference-help">Keeps the paragraph you’re editing at full contrast and fades the rest while an editor is focused.</p>
+      <p class="preference-help">{t("settings.writing.fadeParagraphsHelp")}</p>
       <label class="preference-toggle">
         <input
           type="checkbox"
           checked={zenMode}
           onchange={(event) => setZenMode((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Hide the interface while typing (Zen mode)</span>
+        <span>{t("settings.writing.zenMode")}</span>
       </label>
-      <p class="preference-help">Only hides the interface once you start typing in the editor. Move the mouse outside the editor or press Escape to bring it back.</p>
-      <div class="preference-heading"><strong>Focus mode</strong><span>Hides everything except your text right now. Press {modifierName}+Shift+Enter (or Escape) to bring it back.</span></div>
-      <button class="data-button" type="button" onclick={() => { settingsDialog.close(); toggleFocusMode(); }}>Enter focus mode</button>
+      <p class="preference-help">{t("settings.writing.zenModeHelp")}</p>
+      <div class="preference-heading"><strong>{t("settings.writing.focusSection")}</strong><span>{t("settings.writing.focusSectionHelp", { shortcut: `${modifierName}+Shift+Enter` })}</span></div>
+      <button class="data-button" type="button" onclick={() => { settingsDialog.close(); toggleFocusMode(); }}>{t("settings.writing.enterFocus")}</button>
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Markdown editor</strong><span>Enable an optional plain-text Markdown editor alongside rich text</span></div>
+      <div class="preference-heading"><strong>{t("settings.writing.markdownSection")}</strong><span>{t("settings.writing.markdownSectionHelp")}</span></div>
       <label class="preference-toggle">
         <input
           type="checkbox"
           checked={markdownEditorEnabled}
           onchange={(event) => setMarkdownEditorEnabled((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Enable Markdown editor</span>
+        <span>{t("settings.writing.enableMarkdown")}</span>
       </label>
-      <p class="preference-help">When enabled, use the Markdown editor button above a document to switch between Markdown source and rich text.</p>
+      <p class="preference-help">{t("settings.writing.enableMarkdownHelp")}</p>
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Timeline view</strong><span>An experimental chronological view of your story</span></div>
+      <div class="preference-heading"><strong>{t("settings.writing.timelineSection")}</strong><span>{t("settings.writing.timelineSectionHelp")}</span></div>
       <label class="preference-toggle">
         <input
           type="checkbox"
           checked={timelineEnabled}
           onchange={(event) => setTimelineEnabled((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Show Timeline view</span>
+        <span>{t("settings.writing.showTimeline")}</span>
       </label>
-      <p class="preference-help">The Timeline is still taking shape. Turn it on to try it; your timeline data is kept either way.</p>
+      <p class="preference-help">{t("settings.writing.showTimelineHelp")}</p>
     </section>
     </div>
     <div class="settings-pane" id="settings-panel-proofreading" role="tabpanel" aria-labelledby="settings-tab-proofreading" hidden={activeSettingsCategory !== "proofreading"}>
-      <h3 class="settings-pane-title">Proofreading</h3>
+      <h3 class="settings-pane-title">{t("settings.nav.proofreading")}</h3>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Proofreading</strong><span>Offline spelling and grammar checking</span></div>
+      <div class="preference-heading"><strong>{t("settings.proofreading.section")}</strong><span>{t("settings.proofreading.sectionHelp")}</span></div>
       <label class="preference-toggle">
         <input
           type="checkbox"
           checked={harperEnabled}
           onchange={(event) => setHarperEnabled((event.currentTarget as HTMLInputElement).checked)}
         />
-        <span>Check spelling and grammar</span>
+        <span>{t("settings.proofreading.enable")}</span>
       </label>
-      <p class="preference-help">Runs entirely on this device — your writing never leaves the app. The checker downloads once (about 8&nbsp;MB) and then works offline. Click an underlined passage to see suggestions.</p>
+      <p class="preference-help">{t("settings.proofreading.help")}</p>
       {#if harperEnabled}
-        <label class="preference-label" for="harper-dialect">English dialect</label>
+        <label class="preference-label" for="harper-dialect">{t("settings.proofreading.dialect")}</label>
         <select id="harper-dialect" class="preference-select" value={harperDialect} onchange={(event) => setHarperDialect((event.currentTarget as HTMLSelectElement).value)}>
           {#each HARPER_DIALECTS as option (option.value)}
             <option value={option.value}>{option.label}</option>
           {/each}
         </select>
         {#if harperChecking}
-          <p class="preference-help" role="status">Checking the current {inChapterMode ? "chapter" : "scene"}…</p>
+          <p class="preference-help" role="status">{t("settings.proofreading.checking", { scope: inChapterMode ? "chapter" : "scene" })}</p>
         {:else if harperError}
           <p class="preference-error" role="status">{harperError}</p>
         {:else if harperCheckedDocumentId === activeDocumentId && activeDocumentId}
           <p class="preference-help" role="status">
             {harperLints.length === 0
-              ? `No issues found in the current ${inChapterMode ? "chapter" : "scene"}.`
-              : `${harperLints.length} suggestion${harperLints.length === 1 ? "" : "s"} in the current ${inChapterMode ? "chapter" : "scene"}.`}
+              ? t("settings.proofreading.noIssues", { scope: inChapterMode ? "chapter" : "scene" })
+              : t("settings.proofreading.suggestions", { count: harperLints.length, scope: inChapterMode ? "chapter" : "scene" })}
           </p>
         {/if}
       {/if}
     </section>
     </div>
     <div class="settings-pane" id="settings-panel-data" role="tabpanel" aria-labelledby="settings-tab-data" hidden={activeSettingsCategory !== "data"}>
-      <h3 class="settings-pane-title">Data and sync</h3>
+      <h3 class="settings-pane-title">{t("settings.nav.data")}</h3>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Data</strong><span>Back up or move your projects between devices</span></div>
+      <div class="preference-heading"><strong>{t("settings.data.section")}</strong><span>{t("settings.data.sectionHelp")}</span></div>
       <div class="data-group">
-        <span class="data-group-label">Local storage</span>
-        <p class="data-help">Projects are stored in this app's local database. {storageUsageText()}</p>
+        <span class="data-group-label">{t("settings.data.localStorage")}</span>
+        <p class="data-help">{t("settings.data.localStorageHelp")} {storageUsageText()}</p>
         {#if storageError}
           <p class="data-help storage-warning">{storageError}</p>
         {/if}
       </div>
       <div class="data-group">
-        <span class="data-group-label">Plain backup (unencrypted)</span>
+        <span class="data-group-label">{t("settings.data.plainBackup")}</span>
         <div class="data-actions">
-          <button type="button" class="data-button" onclick={exportDataBundle}>Export backup</button>
-          <button type="button" class="data-button" onclick={triggerImportData}>Import backup</button>
+          <button type="button" class="data-button" onclick={exportDataBundle}>{t("settings.data.exportBackup")}</button>
+          <button type="button" class="data-button" onclick={triggerImportData}>{t("settings.data.importBackup")}</button>
         </div>
       </div>
       <div class="data-group">
-        <span class="data-group-label">Encrypted backup</span>
+        <span class="data-group-label">{t("settings.data.encryptedBackup")}</span>
         <div class="data-actions">
-          <button type="button" class="data-button" onclick={openEncryptedExport}>Export encrypted</button>
-          <button type="button" class="data-button" onclick={triggerEncryptedImport}>Import encrypted</button>
+          <button type="button" class="data-button" onclick={openEncryptedExport}>{t("settings.data.exportEncrypted")}</button>
+          <button type="button" class="data-button" onclick={triggerEncryptedImport}>{t("settings.data.importEncrypted")}</button>
         </div>
       </div>
       <div class="data-group">
-        <span class="data-group-label">Import a manuscript</span>
+        <span class="data-group-label">{t("settings.data.importManuscript")}</span>
         <div class="data-actions">
           <button
             type="button"
             class="data-button"
             onclick={triggerEpubImport}
             disabled={epubImportBusy}
-          >{epubImportBusy ? "Importing…" : "Import EPUB…"}</button>
+          >{epubImportBusy ? t("settings.data.importing") : t("settings.data.importEpub")}</button>
           <button
             type="button"
             class="data-button"
             onclick={triggerScrivenerZipImport}
             disabled={scrivenerImportBusy}
-          >Import Scrivener zip…</button>
+          >{t("settings.data.importScrivenerZip")}</button>
           <button
             type="button"
             class="data-button"
             onclick={triggerScrivenerFolderImport}
             disabled={scrivenerImportBusy}
-          >Import Scrivener folder…</button>
+          >{t("settings.data.importScrivenerFolder")}</button>
           <button
             type="button"
             class="data-button"
             onclick={triggerMarkdownFolderImport}
             disabled={markdownImportBusy}
-          >Import Markdown folder…</button>
+          >{t("settings.data.importMarkdownFolder")}</button>
           <button
             type="button"
             class="data-button"
             onclick={triggerFountainImport}
-          >Import Fountain screenplay…</button>
+          >{t("settings.data.importFountain")}</button>
         </div>
-        <p class="data-help">Creates a new project from an EPUB file. Chapter structure and supported illustrations are preserved, and the cover becomes the project cover when it can be embedded.</p>
-        <p class="data-help">Creates a new project from a Scrivener project (.scriv), as a zip or as a folder. Manuscript chapters and scenes become chapters and scenes, the research folder becomes wiki pages. Labels, status, keywords, notes and snapshots are not imported.</p>
-        <p class="data-help">Creates a new project from a folder of Markdown files (for example an Obsidian vault). You choose which folders are the manuscript and which become wiki pages.</p>
-        <p class="data-help">Adds a Fountain or plain-text screenplay to the open project as a screenplay scene.</p>
+        <p class="data-help">{t("settings.data.epubHelp")}</p>
+        <p class="data-help">{t("settings.data.scrivenerHelp")}</p>
+        <p class="data-help">{t("settings.data.markdownHelp")}</p>
+        <p class="data-help">{t("settings.data.fountainHelp")}</p>
       </div>
       <div class="data-group">
-        <span class="data-group-label">Device sync</span>
+        <span class="data-group-label">{t("settings.data.deviceSync")}</span>
         <p class="data-help">
           {syncProviderType === "folder"
-            ? "Keep this device in sync through a folder your devices already share, such as a Nextcloud folder."
-            : "Keep this device in sync through Google Drive. Projects are encrypted with your passphrase before they are stored in your app data folder."}
+            ? t("settings.data.syncFolderHelp")
+            : t("settings.data.syncDriveHelp")}
         </p>
         {#if desktopRuntime}
           <div class="sync-provider-selector">
@@ -12193,7 +12324,7 @@
                 onchange={() => handleSyncProviderChange("folder")}
                 disabled={syncBusy}
               />
-              <span>Local folder</span>
+              <span>{t("settings.data.syncLocalFolder")}</span>
             </label>
             <label>
               <input
@@ -12204,11 +12335,11 @@
                 onchange={() => handleSyncProviderChange("googledrive")}
                 disabled={syncBusy}
               />
-              <span>Google Drive</span>
+              <span>{t("settings.data.syncGoogleDrive")}</span>
             </label>
           </div>
         {/if}
-        <div class="sync-mode-options" role="radiogroup" aria-label="Sync method">
+        <div class="sync-mode-options" role="radiogroup" aria-label={t("settings.data.syncMethod")}>
           <label class="sync-mode-option" class:selected={syncMode === "encrypted-file"}>
             <input
               type="radio"
@@ -12219,8 +12350,8 @@
               disabled={syncBusy}
             />
             <span class="sync-mode-copy">
-              <strong>Single encrypted file</strong>
-              <span>All projects in one passphrase-protected file. Best for cloud folders and Google Drive.</span>
+              <strong>{t("settings.data.syncSingleFile")}</strong>
+              <span>{t("settings.data.syncSingleFileHelp")}</span>
             </span>
           </label>
           <label class="sync-mode-option" class:selected={syncMode === "open-folder"}>
@@ -12233,8 +12364,8 @@
               disabled={syncBusy}
             />
             <span class="sync-mode-copy">
-              <strong>Open folder</strong>
-              <span>Plain Markdown and JSON, one folder per project. Not encrypted.</span>
+              <strong>{t("settings.data.syncOpenFolder")}</strong>
+              <span>{t("settings.data.syncOpenFolderHelp")}</span>
             </span>
           </label>
           {#if syncMode === "encrypted-folder"}
@@ -12248,31 +12379,31 @@
                 disabled={syncBusy}
               />
               <span class="sync-mode-copy">
-                <strong>Encrypted folder (existing layout)</strong>
-                <span>One encrypted file per project record. Keeps existing sync folders working.</span>
+                <strong>{t("settings.data.syncEncryptedFolder")}</strong>
+                <span>{t("settings.data.syncEncryptedFolderHelp")}</span>
               </span>
             </label>
           {/if}
         </div>
         {#if syncMode === "open-folder"}
-          <p class="data-warning">This sync location is not encrypted. Anyone with access to it can read and edit your writing. Delete scenes in ProseCraft rather than removing their files.</p>
+          <p class="data-warning">{t("settings.data.syncOpenWarning")}</p>
         {:else if syncMode === "encrypted-file"}
-          <p class="data-help">Writes one <code>prosecraft-sync.prosecraft</code> file. Projects are encrypted with your passphrase before they are written.</p>
+          <p class="data-help"><Trans key="settings.data.syncSingleFileNote" params={{ file: "prosecraft-sync.prosecraft" }} /></p>
         {:else}
-          <p class="data-help">Writes <code>vault.json</code> and one encrypted file per project record.</p>
+          <p class="data-help"><Trans key="settings.data.syncVaultNote" params={{ file: "vault.json" }} /></p>
         {/if}
         {#if syncProviderType === "folder"}
           <div class="sync-folder-row">
-            <span class="sync-folder-path" title={syncFolder}>{syncFolder || "No folder chosen"}</span>
-            <button type="button" class="data-button" onclick={chooseSyncFolder} disabled={syncBusy}>Choose folder…</button>
+            <span class="sync-folder-path" title={syncFolder}>{syncFolder || t("settings.data.noFolderChosen")}</span>
+            <button type="button" class="data-button" onclick={chooseSyncFolder} disabled={syncBusy}>{t("settings.data.chooseFolder")}</button>
           </div>
           {#if syncFolder}
             {#if syncMode !== "open-folder"}
               <input
                 class="preference-select passphrase-input"
                 type="password"
-                aria-label="Sync passphrase"
-                placeholder="Sync passphrase"
+                aria-label={t("settings.data.syncPassphrase")}
+                placeholder={t("settings.data.syncPassphrase")}
                 autocomplete="current-password"
                 bind:value={syncPassphrase}
                 disabled={syncBusy}
@@ -12285,9 +12416,9 @@
                 onclick={runSync}
                 disabled={syncBusy || (syncMode !== "open-folder" && syncPassphrase.length < 8)}
               >
-                {syncBusy ? "Syncing…" : "Sync now"}
+                {syncBusy ? t("settings.data.syncing") : t("settings.data.syncNow")}
               </button>
-              <button type="button" class="data-button" onclick={forgetSyncSettings} disabled={syncBusy}>Forget folder</button>
+              <button type="button" class="data-button" onclick={forgetSyncSettings} disabled={syncBusy}>{t("settings.data.forgetFolder")}</button>
             </div>
           {/if}
         {:else}
@@ -12295,43 +12426,43 @@
             {#if googleDriveConfigured}
               <p class="google-drive-status">
                 {googleDriveAuthenticated
-                  ? `Connected as ${googleDriveEmail || "your Google account"}`
-                  : "Google Drive is connected. The access token will be refreshed when you sync."}
+                  ? t("settings.data.connectedAs", { email: googleDriveEmail || t("settings.data.yourGoogleAccount") })
+                  : t("settings.data.driveConnected")}
               </p>
             {:else if googleDriveCodeVerifier}
-              <p class="data-help">Complete the approval in the browser — you will return here automatically. If a code is shown instead (older desktop builds), copy the entire address bar, or just the <code>code=</code> value, and paste it below.</p>
+              <p class="data-help"><Trans key="settings.data.driveApproval" params={{ code: "code=" }} /></p>
               {#if googleDriveAuthUrl}
                 <div class="data-actions">
-                  <a class="data-button data-link" href={googleDriveAuthUrl} target="_blank" rel="noreferrer">Open authorization page</a>
+                  <a class="data-button data-link" href={googleDriveAuthUrl} target="_blank" rel="noreferrer">{t("settings.data.openAuthorizationPage")}</a>
                 </div>
               {/if}
-              <p class="data-help">If the code expired, choose Cancel and start again.</p>
+              <p class="data-help">{t("settings.data.driveCodeExpired")}</p>
               <input
                 class="preference-select"
                 type="text"
-                aria-label="Authorization code"
-                placeholder="Paste authorization code or redirect URL"
+                aria-label={t("settings.data.authCode")}
+                placeholder={t("settings.data.authCodePlaceholder")}
                 bind:value={googleDriveAuthCode}
                 disabled={syncBusy}
               />
               <div class="data-actions">
                 <button type="button" class="data-button" onclick={exchangeAuthCode} disabled={syncBusy || !googleDriveAuthCode}>
-                  Complete connection
+                  {t("settings.data.completeConnection")}
                 </button>
                 <button type="button" class="data-button" onclick={cancelGoogleDriveAuth} disabled={syncBusy}>
-                  Cancel
+                  {t("common.cancel")}
                 </button>
               </div>
             {:else if googleDriveAuthorizing}
-              <p class="data-help">Finish approving access in your browser. This window will update automatically.</p>
+              <p class="data-help">{t("settings.data.driveFinish")}</p>
               <div class="data-actions">
                 <button type="button" class="data-button" onclick={cancelGoogleDriveAuth}>
-                  Cancel
+                  {t("common.cancel")}
                 </button>
               </div>
             {:else}
               <div class="data-actions">
-                <button type="button" class="data-button" onclick={connectGoogleDrive} disabled={syncBusy}>Connect to Google Drive</button>
+                <button type="button" class="data-button" onclick={connectGoogleDrive} disabled={syncBusy}>{t("settings.data.connectDrive")}</button>
               </div>
             {/if}
           </div>
@@ -12340,8 +12471,8 @@
               <input
                 class="preference-select passphrase-input"
                 type="password"
-                aria-label="Sync passphrase"
-                placeholder="Sync passphrase"
+                aria-label={t("settings.data.syncPassphrase")}
+                placeholder={t("settings.data.syncPassphrase")}
                 autocomplete="current-password"
                 bind:value={syncPassphrase}
                 disabled={syncBusy}
@@ -12354,28 +12485,28 @@
                 onclick={runSync}
                 disabled={syncBusy || (syncMode !== "open-folder" && syncPassphrase.length < 8)}
               >
-                {syncBusy ? "Syncing…" : "Sync now"}
+                {syncBusy ? t("settings.data.syncing") : t("settings.data.syncNow")}
               </button>
-              <button type="button" class="data-button" onclick={disconnectGoogleDrive} disabled={syncBusy}>Disconnect Google Drive</button>
+              <button type="button" class="data-button" onclick={disconnectGoogleDrive} disabled={syncBusy}>{t("settings.data.disconnectDrive")}</button>
             </div>
           {/if}
         {/if}
         {#if syncStatus}<p class="data-status" role="status">{syncStatus}</p>{/if}
       </div>
       <div class="data-group">
-        <span class="data-group-label">Wiki files</span>
+        <span class="data-group-label">{t("settings.data.wikiFiles")}</span>
         {#if desktopRuntime}
-          <p class="data-help">Imported wiki files live in a project folder on this device. They are stored as plain files, not encrypted, and are not included in project backups or device sync. Their metadata travels with the project. Files can be up to 200 MB each.</p>
+          <p class="data-help">{t("settings.data.wikiDesktopHelp")}</p>
           <div class="sync-folder-row">
-            <span class="sync-folder-path" title={researchRoot}>{researchRoot || "No folder chosen"}</span>
-            <button type="button" class="data-button" onclick={chooseResearchRoot}>Choose folder…</button>
+            <span class="sync-folder-path" title={researchRoot}>{researchRoot || t("settings.data.noFolderChosen")}</span>
+            <button type="button" class="data-button" onclick={chooseResearchRoot}>{t("settings.data.chooseFolder")}</button>
           </div>
           <div class="data-actions">
-            <button type="button" class="data-button" onclick={revealResearchProjectFolder}>Reveal project folder</button>
+            <button type="button" class="data-button" onclick={revealResearchProjectFolder}>{t("settings.data.revealProjectFolder")}</button>
           </div>
           {#if researchSettingsStatus}<p class="data-status" role="status">{researchSettingsStatus}</p>{/if}
         {:else}
-          <p class="data-help">Imported wiki files are stored as plain files in this browser’s local database. They are not encrypted or included in project backups or device sync. Files can be up to 200 MB each.</p>
+          <p class="data-help">{t("settings.data.wikiWebHelp")}</p>
         {/if}
       </div>
       <input
@@ -12440,25 +12571,25 @@
       {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
     </section>
     {#if !preferencesSaved}
-      <p class="preference-error" role="status">Could not save preferences. They may reset when you close the app.</p>
+      <p class="preference-error" role="status">{t("settings.data.savePreferencesError")}</p>
     {/if}
     </div>
     {#if !desktopRuntime}
     <div class="settings-pane" id="settings-panel-install" role="tabpanel" aria-labelledby="settings-tab-install" hidden={activeSettingsCategory !== "install"}>
-      <h3 class="settings-pane-title">Updates and install</h3>
+      <h3 class="settings-pane-title">{t("settings.nav.install")}</h3>
       <section class="preference-section">
-        <div class="preference-heading"><strong>Install app</strong><span>Keep ProseCraft on this device</span></div>
+        <div class="preference-heading"><strong>{t("settings.install.section")}</strong><span>{t("settings.install.sectionHelp")}</span></div>
         {#if installedStandalone}
-          <p class="preference-help">ProseCraft is installed and running as an app on this device. The app shell opens offline; your projects stay in this device’s local database.</p>
+          <p class="preference-help">{t("settings.install.installed")}</p>
         {:else if canInstallApp}
           <div class="data-actions">
-            <button type="button" class="data-button" onclick={installApp}>Install ProseCraft</button>
+            <button type="button" class="data-button" onclick={installApp}>{t("settings.install.installApp")}</button>
           </div>
-          <p class="preference-help">Install adds ProseCraft to your Home Screen or applications menu and keeps the writing app available offline.</p>
+          <p class="preference-help">{t("settings.install.installHelp")}</p>
         {:else if isIosDevice}
-          <p class="preference-help">On iPhone or iPad, open ProseCraft in Safari, tap the Share button, then choose <strong>Add to Home Screen</strong>. It will open full-screen and keep working offline.</p>
+          <p class="preference-help"><Trans key="settings.install.iosHelp" /></p>
         {:else}
-          <p class="preference-help">Use your browser’s install option to add ProseCraft to your device. In Chrome or Edge, choose <strong>Install app</strong> from the menu; in Firefox, choose <strong>Add to Home Screen</strong>. The app shell then opens offline.</p>
+          <p class="preference-help"><Trans key="settings.install.browserHelp" /></p>
         {/if}
         {#if updateReady}
           <div class="data-actions">
@@ -12466,36 +12597,36 @@
               {updateApplying ? "Updating…" : "Reload to update"}
             </button>
           </div>
-          <p class="preference-help">An update is ready. Reloading keeps your writing saved and switches to the newest version.</p>
+          <p class="preference-help">{t("settings.install.updateReady")}</p>
         {/if}
       </section>
     </div>
     {/if}
     <div class="settings-pane" id="settings-panel-about" role="tabpanel" aria-labelledby="settings-tab-about" hidden={activeSettingsCategory !== "about"}>
-      <h3 class="settings-pane-title">About</h3>
+      <h3 class="settings-pane-title">{t("settings.nav.about")}</h3>
     <div class="about-row">
-      <button type="button" class="about-row-button" onclick={openAbout}>About {APP_NAME} · version {APP_VERSION}</button>
-      <button type="button" class="about-row-button about-shortcuts-button" onclick={showShortcutsFromSettings}>Keyboard shortcuts</button>
+      <button type="button" class="about-row-button" onclick={openAbout}>{t("settings.aboutRow", { app: APP_NAME, version: APP_VERSION })}</button>
+      <button type="button" class="about-row-button about-shortcuts-button" onclick={showShortcutsFromSettings}>{t("sidebar.shortcuts")}</button>
     </div>
     </div>
     </div>
   </div>
-  <div class="settings-footer"><span>Preferences are saved on this device.</span><button class="done-button" onclick={() => settingsDialog.close()}>Done</button></div>
+  <div class="settings-footer"><span>{t("settings.savedOnDevice")}</span><button class="done-button" onclick={() => settingsDialog.close()}>{t("common.done")}</button></div>
 </dialog>
 
 <dialog class="settings-dialog" bind:this={aboutDialog} onclick={(event) => {
   if (event.target === aboutDialog) aboutDialog.close();
 }}>
   <div class="settings-header">
-    <div><span class="settings-kicker">ABOUT</span><h2>{APP_NAME}</h2></div>
-    <button class="close-settings" aria-label="Close about" onclick={() => aboutDialog.close()}><X size={15} aria-hidden="true" /></button>
+    <div><span class="settings-kicker">{t("about.kicker")}</span><h2>{APP_NAME}</h2></div>
+    <button class="close-settings" aria-label={t("about.close")} onclick={() => aboutDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body">
     <section class="preference-section">
       <div class="preference-heading">
-        <strong>Version {APP_VERSION}</strong>
-        <span>Licensed under the {APP_LICENSE} license</span>
-        <span>Created by {APP_AUTHOR}</span>
+        <strong>{t("about.version", { version: APP_VERSION })}</strong>
+        <span>{t("about.license", { license: APP_LICENSE })}</span>
+        <span>{t("about.author", { author: APP_AUTHOR })}</span>
       </div>
       <p class="about-link-row">
         <a class="about-link" href={APP_REPOSITORY_URL} target="_blank" rel="noreferrer" onclick={(event) => {
@@ -12506,8 +12637,8 @@
     </section>
     <section class="preference-section">
       <div class="preference-heading">
-        <strong>Open source licences / Attribution</strong>
-        <span>Bundled citation style rules are derived from the Citation Style Language project styles (CC BY-SA 3.0).</span>
+        <strong>{t("about.licences.title")}</strong>
+        <span>{t("about.licences.body")}</span>
       </div>
       <p class="about-link-row">
         <a class="about-link" href="https://github.com/citation-style-language/styles" target="_blank" rel="noreferrer" onclick={(event) => {
@@ -12517,21 +12648,21 @@
       </p>
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Diagnostics</strong><span>The report below contains no titles or text from your writing. It only describes the app and your setup.</span></div>
+      <div class="preference-heading"><strong>{t("about.diagnostics.title")}</strong><span>{t("about.diagnostics.body")}</span></div>
       <textarea
         class="about-diagnostics"
-        aria-label="Diagnostics report"
+        aria-label={t("about.diagnostics.label")}
         readonly
         bind:this={aboutDiagnosticsTextarea}
         bind:value={aboutDiagnostics}
       ></textarea>
       <div class="data-actions">
-        <button type="button" class="data-button" onclick={copyDiagnostics}>Copy diagnostics</button>
+        <button type="button" class="data-button" onclick={copyDiagnostics}>{t("about.diagnostics.copy")}</button>
       </div>
       <p class="preference-help" role="status">{aboutCopyStatus}</p>
     </section>
   </div>
-  <div class="settings-footer"><span>{APP_NAME} {APP_VERSION}</span><button class="done-button" onclick={() => aboutDialog.close()}>Done</button></div>
+  <div class="settings-footer"><span>{APP_NAME} {APP_VERSION}</span><button class="done-button" onclick={() => aboutDialog.close()}>{t("common.done")}</button></div>
 </dialog>
 
 <dialog class="settings-dialog passphrase-dialog" bind:this={passphraseDialog} onclick={(event) => {
@@ -12541,23 +12672,21 @@
     <div class="settings-header">
       <div>
         <span class="settings-kicker">PROSECRAFT</span>
-        <h2>{passphraseMode === "export" ? "Encrypt backup" : "Unlock backup"}</h2>
+        <h2>{passphraseMode === "export" ? t("passphrase.encryptTitle") : t("passphrase.unlockTitle")}</h2>
       </div>
-      <button class="close-settings" aria-label="Close passphrase dialog" type="button" disabled={passphraseBusy} onclick={() => passphraseDialog.close()}><X size={15} aria-hidden="true" /></button>
+      <button class="close-settings" aria-label={t("passphrase.close")} type="button" disabled={passphraseBusy} onclick={() => passphraseDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
         <div class="preference-heading">
-          <strong>Passphrase</strong>
-          <span>{passphraseMode === "export"
-            ? "You will need this passphrase to open the backup on another device. It cannot be recovered."
-            : "Enter the passphrase used when this backup was created."}</span>
+          <strong>{t("passphrase.heading")}</strong>
+          <span>{passphraseMode === "export" ? t("passphrase.exportHint") : t("passphrase.unlockHint")}</span>
         </div>
         <input
           class="preference-select passphrase-input"
           type="password"
-          aria-label="Passphrase"
-          placeholder="Passphrase"
+          aria-label={t("passphrase.label")}
+          placeholder={t("passphrase.label")}
           autocomplete={passphraseMode === "export" ? "new-password" : "current-password"}
           bind:value={passphraseDraft}
           disabled={passphraseBusy}
@@ -12566,8 +12695,8 @@
           <input
             class="preference-select passphrase-input"
             type="password"
-            aria-label="Confirm passphrase"
-            placeholder="Confirm passphrase"
+            aria-label={t("passphrase.confirm")}
+            placeholder={t("passphrase.confirm")}
             autocomplete="new-password"
             bind:value={passphraseConfirm}
             disabled={passphraseBusy}
@@ -12575,21 +12704,21 @@
           <input
             class="preference-select passphrase-input"
             type="text"
-            aria-label="Passphrase hint"
-            placeholder="Hint (optional, stored unencrypted)"
+            aria-label={t("passphrase.hint")}
+            placeholder={t("passphrase.hintPlaceholder")}
             bind:value={passphraseHint}
             disabled={passphraseBusy}
           />
         {:else if pendingEncryptedHint}
-          <p class="passphrase-hint-note">Hint: {pendingEncryptedHint}</p>
+          <p class="passphrase-hint-note">{t("passphrase.hintNote", { hint: pendingEncryptedHint })}</p>
         {/if}
         {#if passphraseError}<p class="preference-error" role="alert">{passphraseError}</p>{/if}
       </section>
     </div>
     <div class="settings-footer">
-      <span>{passphraseMode === "export" ? "Argon2id · XChaCha20-Poly1305" : "Encrypted with XChaCha20-Poly1305"}</span>
+      <span>{passphraseMode === "export" ? "Argon2id · XChaCha20-Poly1305" : t("passphrase.encryptionUnlock")}</span>
       <button class="done-button" type="submit" disabled={passphraseBusy}>
-        {passphraseBusy ? "Working…" : passphraseMode === "export" ? "Encrypt & export" : "Unlock"}
+        {passphraseBusy ? t("passphrase.working") : passphraseMode === "export" ? t("passphrase.encryptExport") : t("passphrase.unlock")}
       </button>
     </div>
   </form>
@@ -12600,13 +12729,13 @@
 }}>
   <form onsubmit={createProjectFromStarter}>
     <div class="settings-header">
-      <div><span class="settings-kicker">PROSECRAFT</span><h2>Start from</h2></div>
-      <button class="close-settings" aria-label="Close starter selection" type="button" onclick={() => starterDialog.close()}><X size={15} aria-hidden="true" /></button>
+      <div><span class="settings-kicker">PROSECRAFT</span><h2>{t("starter.title")}</h2></div>
+      <button class="close-settings" aria-label={t("starter.close")} type="button" onclick={() => starterDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body starter-body" class:starter-body-screenplay={projectKind === "screenplay"}>
-      <section class="starter-kind" aria-label="What are you writing?">
-        <div class="preference-heading"><strong>What are you writing?</strong><span>Choose the format for new scenes in this project.</span></div>
-        <div class="starter-kind-cards" role="radiogroup" aria-label="What are you writing?">
+      <section class="starter-kind" aria-label={t("starter.writingTitle")}>
+        <div class="preference-heading"><strong>{t("starter.writingTitle")}</strong><span>{t("starter.writingHint")}</span></div>
+        <div class="starter-kind-cards" role="radiogroup" aria-label={t("starter.writingTitle")}>
           <label class="starter-kind-card" class:selected={projectKind === "novel"}>
             <input
               type="radio"
@@ -12616,8 +12745,8 @@
               onchange={() => selectProjectKind("novel")}
             />
             <span class="starter-copy">
-              <strong>Novel or story</strong>
-              <span>Chapters and prose scenes, with genre templates.</span>
+              <strong>{t("starter.novelTitle")}</strong>
+              <span>{t("starter.novelHint")}</span>
             </span>
           </label>
           <label class="starter-kind-card" class:selected={projectKind === "screenplay"}>
@@ -12629,16 +12758,16 @@
               onchange={() => selectProjectKind("screenplay")}
             />
             <span class="starter-copy">
-              <strong>Screenplay</strong>
-              <span>Acts, industry script formatting, and Fountain/PDF export.</span>
+              <strong>{t("starter.screenplayTitle")}</strong>
+              <span>{t("starter.screenplayHint")}</span>
             </span>
           </label>
         </div>
       </section>
       {#if projectKind !== "screenplay"}
-      <section class="starter-presets" aria-label="Wiki template">
-        <div class="preference-heading"><strong>Wiki template</strong><span>Adds starter folders and template pages to the new project.</span></div>
-        <div class="starter-options" role="radiogroup" aria-label="Starter">
+      <section class="starter-presets" aria-label={t("starter.wikiTemplate")}>
+        <div class="preference-heading"><strong>{t("starter.wikiTemplate")}</strong><span>{t("starter.wikiTemplateHint")}</span></div>
+        <div class="starter-options" role="radiogroup" aria-label={t("starter.optionsAria")}>
           {#each STARTERS as starter (starter.id)}
             <label class="starter-option" class:selected={starterDraft === starter.id}>
               <input
@@ -12656,8 +12785,8 @@
           {/each}
         </div>
         {#if starterCustomStarters.length > 0}
-          <div class="preference-heading starter-subheading"><strong>My templates</strong><span>Saved in this browser.</span></div>
-          <div class="starter-options" role="radiogroup" aria-label="My templates">
+          <div class="preference-heading starter-subheading"><strong>{t("starter.myTemplates")}</strong><span>{t("starter.myTemplatesHint")}</span></div>
+          <div class="starter-options" role="radiogroup" aria-label={t("starter.myTemplates")}>
             {#each starterCustomStarters as template (template.id)}
               <div class="starter-template">
                 <label class="starter-option" class:selected={starterDraft === `custom:${template.id}`}>
@@ -12676,7 +12805,7 @@
                 <button
                   type="button"
                   class="starter-icon"
-                  aria-label={`Delete ${template.name}`}
+                  aria-label={t("starter.deleteTemplateAria", { name: template.name })}
                   onclick={() => deleteStarterTemplate(template.id)}
                 ><Trash2 size={13} aria-hidden="true" /></button>
               </div>
@@ -12685,20 +12814,20 @@
         {/if}
       </section>
       {/if}
-      <section class="starter-customise" aria-label="Customise">
+      <section class="starter-customise" aria-label={t("starter.customise")}>
         <div class="preference-heading">
-          <strong>Customise</strong>
+          <strong>{t("starter.customise")}</strong>
           <span>{starterSummary(filterBlueprint(starterWorking, starterSelected))}</span>
         </div>
         <div class="starter-modules">
           <div class="starter-modules-head">
-            <strong>Modules</strong>
-            <span class="starter-modules-count">{starterIncludedModules.length} of {STARTER_MODULES.length} included</span>
+            <strong>{t("starter.modules")}</strong>
+            <span class="starter-modules-count">{t("starter.modulesCount", { included: starterIncludedModules.length, total: STARTER_MODULES.length })}</span>
             {#if starterIncludedModules.length > 0}
-              <button type="button" class="starter-clear" onclick={clearStarterModules}>Clear</button>
+              <button type="button" class="starter-clear" onclick={clearStarterModules}>{t("starter.clear")}</button>
             {/if}
           </div>
-          <p class="starter-modules-hint">Choose the world-building modules to include in the new project.</p>
+          <p class="starter-modules-hint">{t("starter.modulesHint")}</p>
           <div class="starter-module-grid">
             {#each STARTER_MODULES as module (module.id)}
               {@const folder = starterWorking.folders.find((entry) => entry.key === moduleFolderKey(module.id))}
@@ -12722,10 +12851,10 @@
         {#if starterExtraFolders.length > 0}
           <div class="starter-modules">
             <div class="starter-modules-head">
-              <strong>Template content</strong>
+              <strong>{t("starter.templateContent")}</strong>
               <span class="starter-modules-count">{starterIncludedExtras.length} of {starterExtraFolders.length} included</span>
             </div>
-            <p class="starter-modules-hint">Folders from the selected template that aren't modules.</p>
+            <p class="starter-modules-hint">{t("starter.templateContentHint")}</p>
             <div class="starter-module-grid">
               {#each starterExtraFolders as folder (folder.key)}
                 {@const included = isStarterFolderIncluded(folder)}
@@ -12740,7 +12869,7 @@
                     <strong>{folder.name}</strong>
                     {#if included}<Check size={12} aria-hidden="true" />{/if}
                   </span>
-                  <span class="starter-module-copy">{folder.pages.length === 0 ? "Empty folder" : folder.pages.map((page) => page.title).join(" · ")}</span>
+                  <span class="starter-module-copy">{folder.pages.length === 0 ? t("starter.emptyFolder") : folder.pages.map((page) => page.title).join(" · ")}</span>
                 </button>
               {/each}
             </div>
@@ -12750,20 +12879,20 @@
           <input
             type="text"
             bind:value={starterTemplateName}
-            placeholder="Template name"
-            aria-label="Template name"
+            placeholder={t("starter.templateName")}
+            aria-label={t("starter.templateName")}
             onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveStarterTemplate(); } }}
           />
-          <button type="button" class="starter-add-button" onclick={saveStarterTemplate} disabled={!starterTemplateName.trim()}>Save as my template</button>
+          <button type="button" class="starter-add-button" onclick={saveStarterTemplate} disabled={!starterTemplateName.trim()}>{t("starter.saveTemplate")}</button>
         </div>
         {#if starterNotice}<p class="starter-notice" role="status">{starterNotice}</p>{/if}
       </section>
     </div>
     <div class="settings-footer">
-      <span>You can add pages later.</span>
+      <span>{t("starter.canAddLater")}</span>
       <div class="starter-dialog-actions">
-        <button type="button" class="starter-cancel" onclick={() => starterDialog.close()}>Cancel</button>
-        <button class="done-button" type="submit">Create</button>
+        <button type="button" class="starter-cancel" onclick={() => starterDialog.close()}>{t("starter.cancel")}</button>
+        <button class="done-button" type="submit">{t("starter.create")}</button>
       </div>
     </div>
   </form>
@@ -12774,32 +12903,32 @@
 }}>
   <form onsubmit={saveProjectSettings}>
     <div class="settings-header">
-      <div><span class="settings-kicker">PROSECRAFT</span><h2>Project Settings</h2></div>
-      <button class="close-settings" aria-label="Close project settings" type="button" onclick={() => projectSettingsDialog.close()}><X size={15} aria-hidden="true" /></button>
+      <div><span class="settings-kicker">PROSECRAFT</span><h2>{t("projectSettings.title")}</h2></div>
+      <button class="close-settings" aria-label={t("projectSettings.close")} type="button" onclick={() => projectSettingsDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
-        <div class="preference-heading"><strong>Project details</strong><span>Set the title and author shown in your workspace</span></div>
-        <label class="preference-label" for="project-name">Project name</label>
+        <div class="preference-heading"><strong>{t("projectSettings.detailsTitle")}</strong><span>{t("projectSettings.detailsHint")}</span></div>
+        <label class="preference-label" for="project-name">{t("projectSettings.name")}</label>
         <input id="project-name" class="preference-select" type="text" bind:value={projectNameDraft} maxlength="100" required />
-        <label class="preference-label project-author-label" for="author-name">Author name</label>
+        <label class="preference-label project-author-label" for="author-name">{t("projectSettings.author")}</label>
         <input id="author-name" class="preference-select" type="text" bind:value={authorNameDraft} maxlength="100" />
-        <label class="preference-label project-author-label" for="project-kind">Project type</label>
+        <label class="preference-label project-author-label" for="project-kind">{t("projectSettings.type")}</label>
         <select id="project-kind" class="preference-select" bind:value={projectKindDraft}>
-          <option value="novel">Novel</option>
-          <option value="screenplay">Screenplay</option>
+          <option value="novel">{t("projectSettings.novel")}</option>
+          <option value="screenplay">{t("projectSettings.screenplay")}</option>
         </select>
-        <p class="project-kind-note">Existing scenes keep their format; new scenes use the new type.</p>
+        <p class="project-kind-note">{t("projectSettings.typeHint")}</p>
       </section>
       <section class="preference-section">
-        <div class="preference-heading"><strong>Labels</strong><span>Rename, recolour or remove the labels used on scenes and chapters</span></div>
-        <button class="data-button" type="button" onclick={(event) => openLabelsDialog(event.currentTarget)}>Manage labels…</button>
+        <div class="preference-heading"><strong>{t("projectSettings.labelsTitle")}</strong><span>{t("projectSettings.labelsHint")}</span></div>
+        <button class="data-button" type="button" onclick={(event) => openLabelsDialog(event.currentTarget)}>{t("ctx.manageLabels")}</button>
       </section>
       {#if !projectSettingsSaved}
-        <p class="preference-error" role="status">Could not save project settings. Please check available storage and try again.</p>
+        <p class="preference-error" role="status">{t("projectSettings.saveError")}</p>
       {/if}
     </div>
-    <div class="settings-footer"><span>Project details are saved on this device.</span><button class="done-button" type="submit">Save</button></div>
+    <div class="settings-footer"><span>{t("projectSettings.savedHint")}</span><button class="done-button" type="submit">{t("projectSettings.save")}</button></div>
   </form>
 </dialog>
 
@@ -12808,12 +12937,12 @@
 }}>
   <form onsubmit={saveLabels}>
     <div class="settings-header">
-      <div><span class="settings-kicker">PROSECRAFT</span><h2>Labels</h2></div>
-      <button class="close-settings" aria-label="Close labels" type="button" onclick={() => labelsDialog.close()}><X size={15} aria-hidden="true" /></button>
+      <div><span class="settings-kicker">PROSECRAFT</span><h2>{t("labels.title")}</h2></div>
+      <button class="close-settings" aria-label={t("labels.close")} type="button" onclick={() => labelsDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
-        <div class="preference-heading"><strong>Scene and chapter labels</strong><span>Rename a label, pick its colour or remove it. Changes apply to this project when you save.</span></div>
+        <div class="preference-heading"><strong>{t("labels.heading")}</strong><span>{t("labels.hint")}</span></div>
         {#each labelDrafts as label, index (label.id)}
           <div class="label-editor">
             <span class="label-editor-dot" style={`--label-color: ${labelColorCss(label.color)}`} aria-hidden="true"></span>
@@ -12821,12 +12950,12 @@
               id={`label-name-${label.id}`}
               class="preference-select label-editor-name"
               type="text"
-              aria-label={`Name for label ${index + 1}`}
+              aria-label={t("labels.nameAria", { number: index + 1 })}
               bind:value={label.name}
               maxlength="40"
               required
             />
-            <div class="label-swatches" role="radiogroup" aria-label={`Colour for ${label.name || "label"}`}>
+            <div class="label-swatches" role="radiogroup" aria-label={t("labels.colourAria", { name: label.name || t("labels.labelFallback") })}>
               {#each LABEL_COLORS as entry (entry.key)}
                 <label class="label-swatch" style={`--label-color: ${entry.css}`} title={entry.key}>
                   <input
@@ -12841,16 +12970,16 @@
                 </label>
               {/each}
             </div>
-            <button class="data-button danger-button label-delete" type="button" aria-label={`Delete label ${label.name || "unnamed"}`} onclick={() => deleteLabelDraft(label.id)}>Delete</button>
+            <button class="data-button danger-button label-delete" type="button" aria-label={t("labels.deleteAria", { name: label.name || t("labels.unnamed") })} onclick={() => deleteLabelDraft(label.id)}>{t("labels.delete")}</button>
           </div>
         {/each}
         <div class="labels-actions">
-          <button class="data-button" type="button" disabled={labelDrafts.length >= 24} onclick={addLabelDraft}>Add label</button>
-          <button class="data-button" type="button" onclick={resetLabelDrafts}>Reset to defaults</button>
+          <button class="data-button" type="button" disabled={labelDrafts.length >= 24} onclick={addLabelDraft}>{t("labels.add")}</button>
+          <button class="data-button" type="button" onclick={resetLabelDrafts}>{t("labels.reset")}</button>
         </div>
       </section>
     </div>
-    <div class="settings-footer"><span>Labels are saved with this project.</span><button class="done-button" type="submit">Save</button></div>
+    <div class="settings-footer"><span>{t("labels.savedHint")}</span><button class="done-button" type="submit">{t("labels.save")}</button></div>
   </form>
 </dialog>
 
@@ -12858,36 +12987,36 @@
   if (event.target === commentsDialog) commentsDialog.close();
 }}>
   <div class="settings-header">
-    <div><span class="settings-kicker">SCENE</span><h2>Comments</h2></div>
-    <button class="close-settings" aria-label="Close comments" type="button" onclick={() => commentsDialog.close()}>×</button>
+    <div><span class="settings-kicker">{t("comments.sceneKicker")}</span><h2>{t("progress.tab.comments")}</h2></div>
+    <button class="close-settings" aria-label={t("comments.close")} type="button" onclick={() => commentsDialog.close()}>×</button>
   </div>
   <div class="settings-body">
     <section class="preference-section">
-      <div class="preference-heading"><strong>New comment</strong><span>Notes for yourself, a co-author, a proofreader or an agent. They are not part of the text or of any export.</span></div>
+      <div class="preference-heading"><strong>{t("comments.new")}</strong><span>{t("comments.newHintDialog")}</span></div>
       {#if pendingAnchor}
         <form class="comment-form" onsubmit={addComment}>
           <blockquote class="comment-quote">{pendingAnchor.quote.length > 160 ? `${pendingAnchor.quote.slice(0, 160)}…` : pendingAnchor.quote}</blockquote>
-          <textarea class="preference-select" rows="3" placeholder="Your comment" maxlength="4000" bind:value={commentDraft} aria-label="Comment text" required></textarea>
+          <textarea class="preference-select" rows="3" placeholder={t("comments.placeholder")} maxlength="4000" bind:value={commentDraft} aria-label={t("comments.placeholder")} required></textarea>
           <div class="comment-form-row">
-            <input class="preference-select" type="text" placeholder="Name" maxlength="60" bind:value={commentAuthor} aria-label="Author name" />
-            <button class="data-button" type="submit">Add comment</button>
+            <input class="preference-select" type="text" placeholder={t("comments.name")} maxlength="60" bind:value={commentAuthor} aria-label={t("comments.authorAria")} />
+            <button class="data-button" type="submit">{t("comments.add")}</button>
           </div>
         </form>
       {:else if markdownEditorMode}
-        <p class="data-help">Comments attach to the rich text editor. Switch back to it to add or jump to a comment.</p>
+        <p class="data-help">{t("comments.richOnly")}</p>
       {:else}
-        <p class="data-help">Select some text in the scene, then press the comment button again.</p>
+        <p class="data-help">{t("comments.selectTextDialog")}</p>
       {/if}
     </section>
     <section class="preference-section">
       <div class="preference-heading">
-        <strong>{showAllComments ? "All project comments" : "In this scene"}</strong>
+        <strong>{showAllComments ? t("comments.allProject") : t("comments.inScene")}</strong>
         {#if resolvedCommentCount > 0}
-          <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showResolvedComments} /> Show resolved ({resolvedCommentCount})</label>
+          <label class="comment-resolved-toggle"><input type="checkbox" bind:checked={showResolvedComments} /> {t("comments.showResolved", { count: resolvedCommentCount })}</label>
         {/if}
       </div>
       {#if activeComments.length === 0}
-        <p class="data-help">No comments yet.</p>
+        <p class="data-help">{t("comments.emptyDialog")}</p>
       {:else}
         <ul class="comment-list">
           {#each activeComments as comment (comment.id)}
@@ -12897,11 +13026,11 @@
               {/if}
               <blockquote class="comment-quote">{comment.quote.length > 120 ? `${comment.quote.slice(0, 120)}…` : comment.quote}</blockquote>
               <p class="comment-body">{comment.body}</p>
-              <div class="comment-meta">{comment.author} · {new Date(comment.createdAt).toLocaleDateString()}{commentPositions[comment.id] === null ? " · text not found any more" : ""}</div>
+              <div class="comment-meta">{comment.author} · {new Date(comment.createdAt).toLocaleDateString(localeState.locale)}{commentPositions[comment.id] === null ? ` · ${t("comments.missingText")}` : ""}</div>
               <div class="comment-actions">
-                <button class="data-button" type="button" disabled={markdownEditorMode || commentPositions[comment.id] === null} onclick={() => goToComment(comment)}>Go to</button>
-                <button class="data-button" type="button" onclick={() => resolveComment(comment.id, !comment.resolved)}>{comment.resolved ? "Reopen" : "Resolve"}</button>
-                <button class="data-button danger-button" type="button" aria-label="Delete comment" onclick={() => deleteComment(comment.id)}>Delete</button>
+                <button class="data-button" type="button" disabled={markdownEditorMode || commentPositions[comment.id] === null} onclick={() => goToComment(comment)}>{t("comments.goTo")}</button>
+                <button class="data-button" type="button" onclick={() => resolveComment(comment.id, !comment.resolved)}>{comment.resolved ? t("comments.reopen") : t("comments.resolve")}</button>
+                <button class="data-button danger-button" type="button" aria-label={t("comments.deleteAria")} onclick={() => deleteComment(comment.id)}>{t("comments.delete")}</button>
               </div>
             </li>
           {/each}
@@ -12915,33 +13044,33 @@
   if (event.target === snapshotsDialog) snapshotsDialog.close();
 }}>
   <div class="settings-header">
-    <div><span class="settings-kicker">{inChapterMode ? "CHAPTER" : "SCENE"}</span><h2>Snapshots</h2></div>
-    <button class="close-settings" aria-label="Close snapshots" type="button" onclick={() => snapshotsDialog.close()}><X size={15} aria-hidden="true" /></button>
+    <div><span class="settings-kicker">{inChapterMode ? t("snapshots.chapterKicker") : t("snapshots.sceneKicker")}</span><h2>{t("progress.tab.snapshots")}</h2></div>
+    <button class="close-settings" aria-label={t("snapshots.close")} type="button" onclick={() => snapshotsDialog.close()}><X size={15} aria-hidden="true" /></button>
   </div>
   <div class="settings-body">
     <section class="preference-section">
-      <div class="preference-heading"><strong>Save this version</strong><span>Keeps a copy of “{title || "Untitled"}” as it is now. Up to ten are kept per scene.</span></div>
+      <div class="preference-heading"><strong>{t("snapshots.save")}</strong><span>{t("snapshots.saveHint", { title: title || t("common.untitled") })}</span></div>
       <form class="snapshot-form" onsubmit={takeSnapshot}>
-        <input class="preference-select" type="text" placeholder="Optional note" maxlength="120" autocapitalize="sentences" bind:value={snapshotNote} aria-label="Snapshot note" />
-        <button class="data-button" type="submit">Take snapshot</button>
+        <input class="preference-select" type="text" placeholder={t("snapshots.notePlaceholder")} maxlength="120" autocapitalize="sentences" bind:value={snapshotNote} aria-label={t("snapshots.noteAria")} />
+        <button class="data-button" type="submit">{t("snapshots.take")}</button>
       </form>
     </section>
     <section class="preference-section">
-      <div class="preference-heading"><strong>Earlier versions</strong><span>Restoring first saves the current text, so you can go back.</span></div>
+      <div class="preference-heading"><strong>{t("snapshots.earlier")}</strong><span>{t("snapshots.restoreHint")}</span></div>
       {#if activeSnapshots.length === 0}
-        <p class="data-help">No snapshots of this {inChapterMode ? "chapter" : "scene"} yet.</p>
+        <p class="data-help">{inChapterMode ? t("snapshots.emptyChapter") : t("snapshots.emptyScene")}</p>
       {:else}
         <ul class="snapshot-list">
           {#each activeSnapshots as snapshot (snapshot.id)}
             <li class="snapshot-item">
               <div class="snapshot-meta">
                 <strong>{snapshotLabel(snapshot)}</strong>
-                <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{countWords(htmlToPlainText(snapshotHtml(snapshot)))} words{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
+                <span>{inChapterMode ? `${snapshotSceneTitle(snapshot)} · ` : ""}{t("outline.words", { count: countWords(htmlToPlainText(snapshotHtml(snapshot))) })}{snapshot.note ? ` · ${snapshot.note}` : ""}</span>
               </div>
               <div class="snapshot-actions">
-                <button class="data-button" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? "Hide" : "Preview"}</button>
-                <button class="data-button" type="button" onclick={() => restoreSnapshot(snapshot.id)}>Restore</button>
-                <button class="data-button danger-button" type="button" aria-label="Delete snapshot" onclick={() => deleteSnapshot(snapshot.id)}>Delete</button>
+                <button class="data-button" type="button" onclick={() => { snapshotPreviewId = snapshotPreviewId === snapshot.id ? null : snapshot.id; }}>{snapshotPreviewId === snapshot.id ? t("snapshots.hide") : t("snapshots.preview")}</button>
+                <button class="data-button" type="button" onclick={() => restoreSnapshot(snapshot.id)}>{t("snapshots.restore")}</button>
+                <button class="data-button danger-button" type="button" aria-label={t("snapshots.deleteAria")} onclick={() => deleteSnapshot(snapshot.id)}>{t("snapshots.delete")}</button>
               </div>
               {#if snapshotPreviewId === snapshot.id}
                 <div class="snapshot-preview">{@html cleanHtml(snapshotHtml(snapshot))}</div>
@@ -12959,24 +13088,24 @@
 }}>
   <form onsubmit={(event) => void importMarkdownFolder(event)}>
     <div class="settings-header">
-      <div><span class="settings-kicker">IMPORT</span><h2>Markdown folder</h2></div>
-      <button class="close-settings" aria-label="Close import" type="button" onclick={() => markdownImportDialog.close()}>×</button>
+      <div><span class="settings-kicker">{t("import.kicker")}</span><h2>{t("import.markdownTitle")}</h2></div>
+      <button class="close-settings" aria-label={t("import.closeMarkdown")} type="button" onclick={() => markdownImportDialog.close()}>×</button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
-        <div class="preference-heading"><strong>Project name</strong><span>{markdownImportFiles.length} Markdown file(s) found{markdownImportIgnored > 0 ? `, ${markdownImportIgnored} other file(s) ignored` : ""}.</span></div>
-        <input class="preference-select" type="text" maxlength="100" bind:value={markdownImportName} aria-label="Project name" required />
+        <div class="preference-heading"><strong>{t("import.projectName")}</strong><span>{t("import.filesFound", { count: markdownImportFiles.length })}{markdownImportIgnored > 0 ? `, ${t("import.filesIgnored", { count: markdownImportIgnored })}` : ""}.</span></div>
+        <input class="preference-select" type="text" maxlength="100" bind:value={markdownImportName} aria-label={t("import.projectName")} required />
       </section>
       <section class="preference-section">
-        <div class="preference-heading"><strong>What is in each folder?</strong><span>Manuscript folders become chapters and scenes, wiki folders become wiki pages. A folder with several subfolders (say, several drafts) can be set per subfolder. Hidden folders and folders starting with “_” are skipped.</span></div>
+        <div class="preference-heading"><strong>{t("import.folderRolesTitle")}</strong><span>{t("import.folderRolesHint")}</span></div>
         <ul class="markdown-folder-list">
           {#each markdownImportFolders as folder (folder.path)}
             <li style={`padding-left: ${folder.depth * 16}px`}>
               <span class="markdown-folder-name">{folder.name} <em>({folder.files})</em></span>
-              <select class="preference-select" aria-label="Use {folder.path} as" bind:value={markdownImportRoles[folder.path]}>
-                <option value="manuscript">Manuscript</option>
-                <option value="wiki">Wiki</option>
-                <option value="skip">Skip</option>
+              <select class="preference-select" aria-label={t("import.useAs", { path: folder.path })} bind:value={markdownImportRoles[folder.path]}>
+                <option value="manuscript">{t("import.manuscript")}</option>
+                <option value="wiki">{t("import.wiki")}</option>
+                <option value="skip">{t("import.skip")}</option>
               </select>
             </li>
           {/each}
@@ -12984,24 +13113,24 @@
         {#if markdownImportOnLocalStorage}
           <p class="data-help" class:data-warning={markdownImportStoredChars > STORAGE_WARN_CHARS}>
             {markdownImportStoredChars > STORAGE_WARN_CHARS
-              ? "This is probably too much for ProseCraft's storage, which holds roughly four million characters in total. Try skipping large folders, such as research cards or older drafts."
-              : `Selected: about ${(markdownImportStoredChars / 1_000_000).toFixed(1)} of roughly 4 million characters of storage.`}
+              ? t("import.tooLarge")
+              : t("import.selectedStorage", { megabytes: (markdownImportStoredChars / 1_000_000).toFixed(1) })}
           </p>
         {:else}
-          <p class="data-help">{markdownImportSelectedCount} Markdown file(s) selected.</p>
+          <p class="data-help">{t("import.selectedCountPlural", { count: markdownImportSelectedCount })}</p>
         {/if}
       </section>
       {#if Object.values(markdownImportRoles).includes("manuscript")}
         <section class="preference-section">
-          <div class="preference-heading"><strong>Chapters</strong><span>Files are ordered by their <code>position</code> header when they all have one, otherwise by name.</span></div>
-          <select class="preference-select" aria-label="How to make chapters" bind:value={markdownImportMode}>
-            <option value="folders">Every folder is a chapter, every file a scene</option>
-            <option value="files">Every file is a chapter</option>
+          <div class="preference-heading"><strong>{t("import.chapters")}</strong><span><Trans key="import.chaptersHint" /></span></div>
+          <select class="preference-select" aria-label={t("import.howChapters")} bind:value={markdownImportMode}>
+            <option value="folders">{t("import.modeFolders")}</option>
+            <option value="files">{t("import.modeFiles")}</option>
           </select>
         </section>
       {/if}
     </div>
-    <div class="settings-footer"><span>Nothing in your folder is changed.</span><button class="done-button" type="submit" disabled={markdownImportBusy}>Import</button></div>
+    <div class="settings-footer"><span>{t("import.unchanged")}</span><button class="done-button" type="submit" disabled={markdownImportBusy}>{t("import.import")}</button></div>
   </form>
 </dialog>
 
@@ -13010,13 +13139,13 @@
 }}>
   <form onsubmit={saveResearchLink}>
     <div class="settings-header">
-      <div><span class="settings-kicker">WIKI</span><h2>Add web link</h2></div>
-      <button class="close-settings" aria-label="Close link dialog" type="button" onclick={() => researchLinkDialog.close()}><X size={15} aria-hidden="true" /></button>
+      <div><span class="settings-kicker">{t("tree.wiki")}</span><h2>{t("link.title")}</h2></div>
+      <button class="close-settings" aria-label={t("link.close")} type="button" onclick={() => researchLinkDialog.close()}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body">
       <section class="preference-section">
-        <div class="preference-heading"><strong>Link details</strong><span>Save a website or online resource in the Wiki</span></div>
-        <label class="preference-label" for="research-link-url">Web address</label>
+        <div class="preference-heading"><strong>{t("link.details")}</strong><span>{t("link.detailsHint")}</span></div>
+        <label class="preference-label" for="research-link-url">{t("link.url")}</label>
         <input
           id="research-link-url"
           class="preference-select"
@@ -13029,28 +13158,28 @@
           bind:value={researchLinkUrl}
           required
         />
-        <label class="preference-label research-link-label" for="research-link-title">Title</label>
+        <label class="preference-label research-link-label" for="research-link-title">{t("link.titleLabel")}</label>
         <input
           id="research-link-title"
           class="preference-select"
           type="text"
-          placeholder="Optional — defaults to the site name"
+          placeholder={t("link.titlePlaceholder")}
           maxlength="200"
           bind:value={researchLinkTitle}
         />
-        <label class="preference-label research-link-label" for="research-link-description">Description</label>
+        <label class="preference-label research-link-label" for="research-link-description">{t("link.description")}</label>
         <textarea
           id="research-link-description"
           class="preference-select research-link-description"
           rows="3"
-          placeholder="Optional note about this resource"
+          placeholder={t("link.descriptionPlaceholder")}
           maxlength="2000"
           bind:value={researchLinkDescription}
         ></textarea>
         {#if researchLinkError}<p class="preference-error" role="alert">{researchLinkError}</p>{/if}
       </section>
     </div>
-    <div class="settings-footer"><span>Only http and https links are supported.</span><button class="done-button" type="submit">Add link</button></div>
+    <div class="settings-footer"><span>{t("link.footer")}</span><button class="done-button" type="submit">{t("link.add")}</button></div>
   </form>
 </dialog>
 
@@ -13059,14 +13188,14 @@
 }}>
   <form onsubmit={(event) => void submitScrivenerImport(event)}>
     <div class="settings-header">
-      <div><span class="settings-kicker">SCRIVENER</span><h2>Import project</h2></div>
-      <button class="close-settings" aria-label="Close Scrivener import" type="button" onclick={() => scrivenerImportDialog.close()}>×</button>
+      <div><span class="settings-kicker">SCRIVENER</span><h2>{t("scrivener.title")}</h2></div>
+      <button class="close-settings" aria-label={t("scrivener.close")} type="button" onclick={() => scrivenerImportDialog.close()}>×</button>
     </div>
     <div class="settings-body">
       {#if scrivenerPreview}
         <section class="preference-section">
-          <div class="preference-heading"><strong>Project details</strong><span>Review what the import will create</span></div>
-          <label class="preference-label" for="scrivener-project-name">Project name</label>
+          <div class="preference-heading"><strong>{t("scrivener.details")}</strong><span>{t("scrivener.detailsHint")}</span></div>
+          <label class="preference-label" for="scrivener-project-name">{t("scrivener.projectName")}</label>
           <input
             id="scrivener-project-name"
             class="preference-select"
@@ -13076,26 +13205,26 @@
             required
           />
           <ul class="scrivener-import-summary">
-            <li>{scrivenerPreview.report.chapters} chapter(s)</li>
-            <li>{scrivenerPreview.report.scenes} scene(s)</li>
-            <li>{scrivenerPreview.report.wikiPages} wiki page(s)</li>
-            <li>{scrivenerPreview.report.wikiFolders} wiki folder(s)</li>
+            <li>{t("scrivener.chapters", { count: scrivenerPreview.report.chapters })}</li>
+            <li>{t("scrivener.scenes", { count: scrivenerPreview.report.scenes })}</li>
+            <li>{t("scrivener.wikiPages", { count: scrivenerPreview.report.wikiPages })}</li>
+            <li>{t("scrivener.wikiFolders", { count: scrivenerPreview.report.wikiFolders })}</li>
             {#if scrivenerPreview.report.skippedFiles > 0}
-              <li>{scrivenerPreview.report.skippedFiles} file(s) such as PDFs and images were skipped</li>
+              <li>{t("scrivener.skippedFiles", { count: scrivenerPreview.report.skippedFiles })}</li>
             {/if}
             {#if scrivenerPreview.report.itemsWithNotes > 0}
-              <li>{scrivenerPreview.report.itemsWithNotes} item(s) have notes that are not imported</li>
+              <li>{t("scrivener.itemsWithNotes", { count: scrivenerPreview.report.itemsWithNotes })}</li>
             {/if}
             {#if scrivenerPreview.report.flattenedFolders > 0}
-              <li>{scrivenerPreview.report.flattenedFolders} folder(s) were flattened</li>
+              <li>{t("scrivener.flattenedFolders", { count: scrivenerPreview.report.flattenedFolders })}</li>
             {/if}
             {#if scrivenerPreview.report.missingFiles > 0}
-              <li>{scrivenerPreview.report.missingFiles} file(s) could not be read</li>
+              <li>{t("scrivener.missingFiles", { count: scrivenerPreview.report.missingFiles })}</li>
             {/if}
           </ul>
           {#if scrivenerImportOnLocalStorage}
             {#if scrivenerPreview.storedChars > 3_000_000}
-              <p class="data-warning">This is probably too much for ProseCraft's storage, which holds roughly four million characters in total. Try importing a smaller project.</p>
+              <p class="data-warning">{t("scrivener.tooLarge")}</p>
             {:else}
               <p class="data-help">Selected: about {(scrivenerPreview.storedChars / 1_000_000).toFixed(1)} of roughly 4 million characters of storage.</p>
             {/if}
@@ -13104,7 +13233,7 @@
         {#if dataStatus}<p class="data-status" role="status">{dataStatus}</p>{/if}
       {/if}
     </div>
-    <div class="settings-footer"><span>Only the manuscript and research are imported.</span><button class="done-button" type="submit" disabled={scrivenerImportBusy}>{scrivenerImportBusy ? "Importing…" : "Import"}</button></div>
+    <div class="settings-footer"><span>{t("scrivener.footer")}</span><button class="done-button" type="submit" disabled={scrivenerImportBusy}>{scrivenerImportBusy ? t("settings.data.importing") : t("import.import")}</button></div>
   </form>
 </dialog>
 
@@ -13136,16 +13265,16 @@
   <form onsubmit={(event) => { event.preventDefault(); saveRichDialog(); }}>
     <div class="settings-header">
       <div>
-        <span class="settings-kicker">{richDialogNoun.toUpperCase()}</span>
-        <h2>{richEditTarget ? "Edit" : "Insert"} {richDialogNoun}</h2>
+        <span class="settings-kicker">{richNounLabel().toLocaleUpperCase(localeState.locale)}</span>
+        <h2>{t("rich.heading", { action: richEditTarget ? t("rich.edit") : t("rich.insert"), noun: richNounLabel() })}</h2>
       </div>
-      <button class="close-settings" aria-label="Close {richDialogNoun} editor" type="button" onclick={closeRichDialog}><X size={15} aria-hidden="true" /></button>
+      <button class="close-settings" aria-label={t("rich.close", { noun: richNounLabel() })} type="button" onclick={closeRichDialog}><X size={15} aria-hidden="true" /></button>
     </div>
     <div class="settings-body rich-dialog-body">
       {#if richDialogKind === "math"}
-        <div class="rich-kind-toggle" role="group" aria-label="Equation layout">
-          <button type="button" class:active={richDisplay === "inline"} onclick={() => (richDisplay = "inline")}>Inline</button>
-          <button type="button" class:active={richDisplay === "block"} onclick={() => (richDisplay = "block")}>Block</button>
+        <div class="rich-kind-toggle" role="group" aria-label={t("rich.equationLayout")}>
+          <button type="button" class:active={richDisplay === "inline"} onclick={() => (richDisplay = "inline")}>{t("rich.inline")}</button>
+          <button type="button" class:active={richDisplay === "block"} onclick={() => (richDisplay = "block")}>{t("rich.block")}</button>
         </div>
         <label class="preference-label" for="rich-math-source">LaTeX</label>
         <textarea
@@ -13159,7 +13288,7 @@
           placeholder="E = mc^2"
           bind:value={richSource}
         ></textarea>
-        <p class="rich-help">Inline equations sit in a sentence; block equations centre on their own line.</p>
+        <p class="rich-help">{t("rich.mathHelp")}</p>
       {:else if richDialogKind === "diagram"}
         <label class="preference-label" for="rich-diagram-source">Mermaid</label>
         <textarea
@@ -13173,9 +13302,9 @@
           placeholder={"graph TD\n  A[Start] --> B[Finish]"}
           bind:value={richSource}
         ></textarea>
-        <p class="rich-help">Use any Mermaid diagram type, such as flowchart, sequence, class, state, or gantt.</p>
+        <p class="rich-help">{t("rich.diagramHelp")}</p>
       {:else}
-        <label class="preference-label" for="rich-calc-source">Calculation</label>
+        <label class="preference-label" for="rich-calc-source">{t("rich.noun.calc")}</label>
         <textarea
           id="rich-calc-source"
           class="preference-select rich-source"
@@ -13187,28 +13316,28 @@
           placeholder={"m := 5 kg\na := 9.81 m/s^2\nF := m a =\nF = kN"}
           bind:value={richSource}
         ></textarea>
-        <p class="rich-help">MathCAD-style worksheet, evaluated top to bottom. <code>x := 5 m</code> defines, a trailing <code>=</code> shows the value, and <code>= kN</code> picks the unit. Define functions with <code>f(x) := x^2</code>; lines starting with <code>#</code> are text.</p>
+        <p class="rich-help"><Trans key="rich.calcHelp" /></p>
       {/if}
       <div class="rich-preview-frame" aria-live="polite">
         {#if richPreviewBusy}
-          <span class="rich-preview-status">Rendering…</span>
+          <span class="rich-preview-status">{t("rich.rendering")}</span>
         {:else if richPreviewError}
           <p class="preference-error rich-preview-error">{richPreviewError}</p>
         {:else if richPreviewSvg}
           <div class="rich-preview">{@html richPreviewSvg}</div>
         {:else}
-          <span class="rich-preview-status">Preview appears here.</span>
+          <span class="rich-preview-status">{t("rich.previewEmpty")}</span>
         {/if}
       </div>
       {#if richDialogError}<p class="preference-error" role="alert">{richDialogError}</p>{/if}
     </div>
     <div class="settings-footer">
-      <span>Saved as editable source.</span>
+      <span>{t("rich.savedSource")}</span>
       <div class="rich-dialog-actions">
         {#if richEditTarget}
-          <button type="button" class="rich-remove" onclick={removeRichTarget}>Remove</button>
+          <button type="button" class="rich-remove" onclick={removeRichTarget}>{t("rich.remove")}</button>
         {/if}
-        <button type="button" class="rich-cancel" onclick={closeRichDialog}>Cancel</button>
+        <button type="button" class="rich-cancel" onclick={closeRichDialog}>{t("rich.cancel")}</button>
         <button type="submit" class="done-button">{richEditTarget ? "Update" : "Insert"}</button>
       </div>
     </div>
@@ -13219,7 +13348,7 @@
   class="data-file-input"
   type="file"
   multiple
-  aria-label="Add wiki files"
+  aria-label={t("research.addFiles")}
   bind:this={researchFileInput}
   onchange={handleBrowserResearchFiles}
 />
@@ -14247,7 +14376,6 @@
   .rich-kind-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .rich-source { height: auto; min-height: 96px; padding: 8px 9px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; }
   .rich-help { margin: 7px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
-  .rich-help code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1em; }
   .rich-preview-frame { display: grid; min-height: 96px; margin-top: 14px; padding: 12px; place-items: center; overflow: auto; border: 1px dashed var(--border-control); border-radius: 7px; background: var(--control-bg); }
   .rich-preview { display: flex; width: 100%; align-items: center; justify-content: center; color: var(--text-heading); }
   .rich-preview :global(svg) { max-width: 100%; height: auto; max-height: 240px; }

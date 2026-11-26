@@ -1,6 +1,7 @@
 import { parseBibtex } from "./bibtex";
 import { type CslItem, normalizeCslItemsDetailed } from "./csl";
 import { parseRis } from "./ris";
+import { t } from "$lib/i18n/state.svelte";
 
 export type CitationImportFormat = "csl-json" | "bibtex" | "ris";
 
@@ -57,7 +58,7 @@ export function importCitations(text: string, filename = ""): CitationImportResu
     return {
       format: extFormat,
       items: [],
-      warnings: ["Citation input is empty."]
+      warnings: [t("module.citation.empty")]
     };
   }
 
@@ -66,7 +67,7 @@ export function importCitations(text: string, filename = ""): CitationImportResu
     return {
       format: null,
       items: [],
-      warnings: ["Could not detect citation format (expected CSL-JSON, BibTeX, or RIS)."]
+      warnings: [t("module.citation.detectFailed")]
     };
   }
 
@@ -75,11 +76,11 @@ export function importCitations(text: string, filename = ""): CitationImportResu
     try {
       parsed = JSON.parse(cleaned);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "invalid syntax";
+      const detail = error instanceof Error ? error.message : t("module.citation.invalidSyntax");
       return {
         format,
         items: [],
-        warnings: [`Invalid CSL-JSON input: ${detail}`]
+        warnings: [t("module.citation.invalidJson", { detail })]
       };
     }
 
@@ -94,7 +95,7 @@ export function importCitations(text: string, filename = ""): CitationImportResu
       return {
         format,
         items: [],
-        warnings: ["Expected a CSL-JSON array of citation items."]
+        warnings: [t("module.citation.expectedArray")]
       };
     }
 

@@ -15,11 +15,14 @@
     matchesLibraryQuery,
     mergeImportedCitations,
     parseAuthorList,
+    sourceTypeKey,
     sourceTypeLabel,
     type ManualSourceDraft,
     type ManualSourceKind
   } from "./citations/library";
   import { classifyZoteroError, ZoteroLocal, type ZoteroErrorState } from "./citations/zotero";
+  import { t } from "$lib/i18n/state.svelte";
+  import Trans from "$lib/i18n/Trans.svelte";
 
   type Props = {
     items: CslItem[];
@@ -74,6 +77,11 @@
   let draft = $state<ManualSourceDraft>(emptyDraft());
 
   let filteredItems = $derived(items.filter((item) => matchesLibraryQuery(item, searchQuery)));
+
+  function typeLabel(type: string): string {
+    const key = sourceTypeKey(type);
+    return key ? t(key) : sourceTypeLabel(type);
+  }
 
   let citationCountById = $derived.by(() => {
     const counts = new Map<string, number>();
@@ -160,7 +168,7 @@
     const merged = mergeImportedCitations(items, [item]);
     if (merged.addedCount > 0) {
       onChange(merged.items);
-      zoteroNotice = `Added “${item.title || item.id}” to this project.`;
+      zoteroNotice = t("citation.zotero.added", { title: item.title || item.id });
     }
   }
 
@@ -261,7 +269,7 @@
 
     const normalized = normalizeCslItemsDetailed([candidate]);
     if (normalized.items.length === 0) {
-      formError = normalized.warnings[0] ?? "Please enter at least a title, author, or URL.";
+      formError = normalized.warnings[0] ?? t("citation.library.validation");
       return;
     }
 
@@ -287,7 +295,7 @@
       onChange(merged.items);
     }
     importStatus = {
-      message: `Imported ${merged.addedCount} source${merged.addedCount === 1 ? "" : "s"} from ${file.name}.`,
+      message: t("citation.library.imported", { count: merged.addedCount, file: file.name }),
       warnings: [...imported.warnings, ...merged.warnings]
     };
   }
@@ -318,13 +326,13 @@
 >
   <div class="settings-header">
     <div>
-      <span class="settings-kicker">PROJECT</span>
-      <h2 id="citation-library-title">Sources</h2>
+      <span class="settings-kicker">{t("search.kicker")}</span>
+      <h2 id="citation-library-title">{t("citation.library.title")}</h2>
     </div>
     <button
       class="close-settings"
       type="button"
-      aria-label="Close sources"
+      aria-label={t("citation.library.close")}
       onclick={onClose}
     ><X size={15} aria-hidden="true" /></button>
   </div>
@@ -336,8 +344,8 @@
         <input
           type="search"
           class="preference-select library-search"
-          placeholder="Search sources by title, author, year, type…"
-          aria-label="Search sources"
+          placeholder={t("citation.library.searchPlaceholder")}
+          aria-label={t("citation.library.searchAria")}
           bind:value={searchQuery}
         />
       </div>
@@ -346,20 +354,20 @@
           type="button"
           class="data-button"
           onclick={() => fileInput?.click()}
-        ><Upload size={13} aria-hidden="true" /> Import file…</button>
+        ><Upload size={13} aria-hidden="true" /> {t("citation.library.import")}</button>
         <input
           bind:this={fileInput}
           class="sr-only-input"
           type="file"
           accept=".bib,.bibtex,.ris,.json,.csljson"
-          aria-label="Import citation file"
+          aria-label={t("citation.library.importAria")}
           onchange={handleFileImport}
         />
         <button
           type="button"
           class="data-button primary-action"
           onclick={startAdd}
-        ><Plus size={13} aria-hidden="true" /> Add manually</button>
+        ><Plus size={13} aria-hidden="true" /> {t("citation.library.addManual")}</button>
       </div>
     </div>
 
@@ -370,7 +378,7 @@
           <button
             type="button"
             class="banner-dismiss"
-            aria-label="Dismiss import message"
+            aria-label={t("citation.library.dismissImport")}
             onclick={() => (importStatus = null)}
           ><X size={13} aria-hidden="true" /></button>
         </div>
@@ -387,28 +395,28 @@
     {#if formMode !== "closed"}
       <form class="source-form" onsubmit={saveManualSource}>
         <div class="source-form-head">
-          <strong>{formMode === "edit" ? "Edit source" : "Add source manually"}</strong>
-          <button type="button" class="banner-dismiss" aria-label="Cancel source form" onclick={cancelForm}>
+          <strong>{formMode === "edit" ? t("citation.library.editTitle") : t("citation.library.addTitle")}</strong>
+          <button type="button" class="banner-dismiss" aria-label={t("citation.library.cancelForm")} onclick={cancelForm}>
             <X size={13} aria-hidden="true" />
           </button>
         </div>
 
         <div class="source-form-grid">
           <label class="source-field">
-            <span>Type</span>
+            <span>{t("citation.library.type")}</span>
             <select
               class="preference-select"
               bind:value={draft.kind}
               onchange={() => (draft.customType = undefined)}
             >
-              <option value="book">Book</option>
-              <option value="article">Article</option>
-              <option value="chapter">Chapter</option>
-              <option value="website">Website</option>
+              <option value="book">{t("citation.type.book")}</option>
+              <option value="article">{t("citation.type.article")}</option>
+              <option value="chapter">{t("citation.type.chapter")}</option>
+              <option value="website">{t("citation.type.website")}</option>
             </select>
           </label>
           <label class="source-field">
-            <span>Year</span>
+            <span>{t("citation.library.year")}</span>
             <input
               type="text"
               class="preference-select"
@@ -417,16 +425,16 @@
             />
           </label>
           <label class="source-field source-field-wide">
-            <span>Title</span>
+            <span>{t("citation.library.workTitle")}</span>
             <input
               type="text"
               class="preference-select"
-              placeholder="Title of the work"
+              placeholder={t("citation.library.workTitlePlaceholder")}
               bind:value={draft.title}
             />
           </label>
           <label class="source-field source-field-wide">
-            <span>Authors <small>(Last, First; separated by semicolons)</small></span>
+            <span>{t("citation.library.authors")} <small>{t("citation.library.nameFormat")}</small></span>
             <input
               type="text"
               class="preference-select"
@@ -437,86 +445,86 @@
 
           {#if draft.kind === "book"}
             <label class="source-field">
-              <span>Publisher</span>
+              <span>{t("citation.library.publisher")}</span>
               <input type="text" class="preference-select" bind:value={draft.publisher} />
             </label>
             <label class="source-field">
-              <span>Place</span>
+              <span>{t("citation.library.place")}</span>
               <input type="text" class="preference-select" bind:value={draft.publisherPlace} />
             </label>
             <label class="source-field">
-              <span>Edition</span>
+              <span>{t("citation.library.edition")}</span>
               <input type="text" class="preference-select" placeholder="2" bind:value={draft.edition} />
             </label>
             <label class="source-field">
-              <span>ISBN</span>
+              <span>{t("citation.library.isbn")}</span>
               <input type="text" class="preference-select" bind:value={draft.isbn} />
             </label>
             <label class="source-field">
-              <span>DOI</span>
+              <span>{t("citation.library.doi")}</span>
               <input type="text" class="preference-select" bind:value={draft.doi} />
             </label>
             <label class="source-field">
-              <span>URL</span>
+              <span>{t("citation.library.url")}</span>
               <input type="url" class="preference-select" placeholder="https://…" bind:value={draft.url} />
             </label>
           {:else if draft.kind === "article"}
             <label class="source-field source-field-wide">
-              <span>Journal</span>
+              <span>{t("citation.library.journal")}</span>
               <input type="text" class="preference-select" bind:value={draft.containerTitle} />
             </label>
             <label class="source-field">
-              <span>Volume</span>
+              <span>{t("citation.library.volume")}</span>
               <input type="text" class="preference-select" bind:value={draft.volume} />
             </label>
             <label class="source-field">
-              <span>Issue</span>
+              <span>{t("citation.library.issue")}</span>
               <input type="text" class="preference-select" bind:value={draft.issue} />
             </label>
             <label class="source-field">
-              <span>Pages</span>
+              <span>{t("citation.library.pages")}</span>
               <input type="text" class="preference-select" placeholder="45-67" bind:value={draft.page} />
             </label>
             <label class="source-field">
-              <span>DOI</span>
+              <span>{t("citation.library.doi")}</span>
               <input type="text" class="preference-select" bind:value={draft.doi} />
             </label>
             <label class="source-field source-field-wide">
-              <span>URL</span>
+              <span>{t("citation.library.url")}</span>
               <input type="url" class="preference-select" placeholder="https://…" bind:value={draft.url} />
             </label>
           {:else if draft.kind === "chapter"}
             <label class="source-field source-field-wide">
-              <span>Book title</span>
+              <span>{t("citation.library.bookTitle")}</span>
               <input type="text" class="preference-select" bind:value={draft.containerTitle} />
             </label>
             <label class="source-field source-field-wide">
-              <span>Editors <small>(Last, First; separated by semicolons)</small></span>
+              <span>{t("citation.library.editors")} <small>{t("citation.library.nameFormat")}</small></span>
               <input type="text" class="preference-select" bind:value={draft.editors} />
             </label>
             <label class="source-field">
-              <span>Publisher</span>
+              <span>{t("citation.library.publisher")}</span>
               <input type="text" class="preference-select" bind:value={draft.publisher} />
             </label>
             <label class="source-field">
-              <span>Place</span>
+              <span>{t("citation.library.place")}</span>
               <input type="text" class="preference-select" bind:value={draft.publisherPlace} />
             </label>
             <label class="source-field">
-              <span>Pages</span>
+              <span>{t("citation.library.pages")}</span>
               <input type="text" class="preference-select" placeholder="45-67" bind:value={draft.page} />
             </label>
             <label class="source-field">
-              <span>ISBN / DOI</span>
+              <span>{t("citation.library.isbnDoi")}</span>
               <input type="text" class="preference-select" bind:value={draft.isbn} />
             </label>
           {:else}
             <label class="source-field source-field-wide">
-              <span>Website</span>
+              <span>{t("citation.library.website")}</span>
               <input type="text" class="preference-select" bind:value={draft.containerTitle} />
             </label>
             <label class="source-field source-field-wide">
-              <span>URL</span>
+              <span>{t("citation.library.url")}</span>
               <input type="url" class="preference-select" placeholder="https://…" bind:value={draft.url} />
             </label>
           {/if}
@@ -527,9 +535,9 @@
         {/if}
 
         <div class="source-form-actions">
-          <button type="button" class="data-button" onclick={cancelForm}>Cancel</button>
+          <button type="button" class="data-button" onclick={cancelForm}>{t("common.cancel")}</button>
           <button type="submit" class="done-button">
-            {formMode === "edit" ? "Save changes" : "Add source"}
+            {formMode === "edit" ? t("citation.library.saveChanges") : t("citation.library.addSource")}
           </button>
         </div>
       </form>
@@ -537,10 +545,10 @@
 
     {#if items.length === 0}
       <p class="empty-state">
-        No sources in this project yet. Import a <code>.bib</code>, <code>.ris</code>, or CSL <code>.json</code> file, or add a source manually.
+        <Trans key="citation.library.empty" />
       </p>
     {:else if filteredItems.length === 0}
-      <p class="empty-state">No sources match “{searchQuery}”.</p>
+      <p class="empty-state">{t("citation.noMatches", { query: searchQuery })}</p>
     {:else}
       <ul class="source-list">
         {#each filteredItems as item (item.id)}
@@ -548,32 +556,32 @@
           <li class="source-row">
             <div class="source-main">
               <div class="source-title-row">
-                <strong class="source-title">{item.title || "(Untitled)"}</strong>
-                <span class="source-type-badge">{sourceTypeLabel(item.type)}</span>
+                <strong class="source-title">{item.title || t("citation.untitledItem")}</strong>
+                <span class="source-type-badge">{typeLabel(item.type)}</span>
               </div>
               <div class="source-meta">
-                <span>{formatItemContributors(item) || "Unknown author"}</span>
+                <span>{formatItemContributors(item) || t("citation.unknownAuthor")}</span>
                 <span>·</span>
-                <span>{itemYearText(item) || "n.d."}</span>
+                <span>{itemYearText(item) || t("citation.noDate")}</span>
                 <span>·</span>
                 <code>@{item.citeKey ?? item.id}</code>
                 {#if citedCount > 0}
                   <span>·</span>
-                  <span class="source-cited">Cited in {citedCount} document{citedCount === 1 ? "" : "s"}</span>
+                  <span class="source-cited">{t("citation.library.citedIn", { count: citedCount })}</span>
                 {/if}
               </div>
 
               {#if pendingDelete?.id === item.id}
                 <div class="delete-warning" role="alert">
                   <span>
-                    Cited in {pendingDelete.documentCount} document{pendingDelete.documentCount === 1 ? "" : "s"}. Deleting this source will leave unresolved citations in your text.
+                    {t("citation.library.deleteWarning", { count: pendingDelete.documentCount })}
                   </span>
                   <div class="delete-warning-actions">
                     <button type="button" class="data-button danger-button" onclick={() => confirmDelete(item.id)}>
-                      Delete anyway
+                      {t("citation.library.deleteAnyway")}
                     </button>
                     <button type="button" class="data-button" onclick={() => (pendingDelete = null)}>
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                   </div>
                 </div>
@@ -584,15 +592,15 @@
               <button
                 type="button"
                 class="icon-action"
-                aria-label={`Edit ${item.title || item.id}`}
-                title="Edit source"
+                aria-label={t("citation.library.editAria", { title: item.title || item.id })}
+                title={t("citation.library.editTitleAttr")}
                 onclick={() => startEdit(item)}
               ><Pencil size={13} aria-hidden="true" /></button>
               <button
                 type="button"
                 class="icon-action icon-action-danger"
-                aria-label={`Delete ${item.title || item.id}`}
-                title="Delete source"
+                aria-label={t("citation.library.deleteAria", { title: item.title || item.id })}
+                title={t("citation.library.deleteTitleAttr")}
                 onclick={() => requestDelete(item)}
               ><Trash2 size={13} aria-hidden="true" /></button>
             </div>
@@ -607,11 +615,11 @@
           <div class="zotero-title-group">
             <h3 id="zotero-section-title">Zotero</h3>
             {#if zoteroChecking}
-              <span class="zotero-status">Checking…</span>
+              <span class="zotero-status">{t("citation.zotero.checking")}</span>
             {:else if zoteroAvailable === true}
-              <span class="zotero-status zotero-status-ok">Connected</span>
+              <span class="zotero-status zotero-status-ok">{t("citation.zotero.connected")}</span>
             {:else if zoteroAvailable === false}
-              <span class="zotero-status zotero-status-off">Not reachable</span>
+              <span class="zotero-status zotero-status-off">{t("citation.zotero.unreachable")}</span>
             {/if}
           </div>
           <button
@@ -619,12 +627,12 @@
             class="data-button"
             disabled={zoteroChecking}
             onclick={() => void checkZoteroConnection()}
-          >Check again</button>
+          >{t("citation.zotero.checkAgain")}</button>
         </div>
 
         {#if zoteroAvailable === false}
           <p class="zotero-hint">
-            Zotero is not reachable on this computer. Start Zotero, and make sure “Allow other applications on this computer to communicate with Zotero” is enabled in Zotero Settings → Advanced → Files and Folders.
+            {t("citation.zotero.hint")}
           </p>
         {/if}
 
@@ -634,8 +642,8 @@
             <input
               type="search"
               class="preference-select library-search"
-              placeholder="Search Zotero library…"
-              aria-label="Search Zotero"
+              placeholder={t("citation.zotero.searchPlaceholder")}
+              aria-label={t("citation.zotero.searchAria")}
               bind:value={zoteroQuery}
             />
           </div>
@@ -643,14 +651,14 @@
             type="submit"
             class="data-button"
             disabled={zoteroSearching}
-          >{zoteroSearching ? "Searching…" : "Search"}</button>
+          >{zoteroSearching ? t("citation.zotero.searching") : t("citation.zotero.search")}</button>
           {#if zoteroBbtSupported}
             <button
               type="button"
               class="data-button"
               disabled={zoteroSearching}
               onclick={() => void pickFromZotero()}
-            >Pick in Zotero…</button>
+            >{t("citation.zotero.pick")}</button>
           {/if}
         </form>
 
@@ -669,41 +677,41 @@
               <li class="source-row">
                 <div class="source-main">
                   <div class="source-title-row">
-                    <strong class="source-title">{zItem.title || "(Untitled)"}</strong>
-                    <span class="source-type-badge">{sourceTypeLabel(zItem.type)}</span>
+                    <strong class="source-title">{zItem.title || t("citation.untitledItem")}</strong>
+                    <span class="source-type-badge">{typeLabel(zItem.type)}</span>
                   </div>
                   <div class="source-meta">
-                    <span>{formatItemContributors(zItem) || "Unknown author"}</span>
+                    <span>{formatItemContributors(zItem) || t("citation.unknownAuthor")}</span>
                     <span>·</span>
-                    <span>{itemYearText(zItem) || "n.d."}</span>
+                    <span>{itemYearText(zItem) || t("citation.noDate")}</span>
                     <span>·</span>
                     <code>@{zItem.citeKey ?? zItem.id}</code>
                   </div>
                 </div>
                 <div class="source-actions">
                   {#if alreadyAdded}
-                    <span class="zotero-added-badge">In project</span>
+                    <span class="zotero-added-badge">{t("citation.zotero.inProject")}</span>
                   {:else}
                     <button
                       type="button"
                       class="data-button primary-action"
                       onclick={() => addZoteroItem(zItem)}
-                    >Add to this project</button>
+                    >{t("citation.zotero.add")}</button>
                   {/if}
                 </div>
               </li>
             {/each}
           </ul>
         {:else if zoteroHasSearched && !zoteroSearching && !zoteroError}
-          <p class="zotero-empty">No Zotero items matched “{zoteroQuery}”.</p>
+          <p class="zotero-empty">{t("citation.zotero.noMatches", { query: zoteroQuery })}</p>
         {/if}
       </section>
     {/if}
   </div>
 
   <div class="settings-footer">
-    <span>{items.length} source{items.length === 1 ? "" : "s"} in project</span>
-    <button class="done-button" type="button" onclick={onClose}>Done</button>
+    <span>{t("citation.library.footer", { count: items.length })}</span>
+    <button class="done-button" type="button" onclick={onClose}>{t("common.done")}</button>
   </div>
 </dialog>
 

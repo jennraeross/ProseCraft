@@ -4,6 +4,7 @@
   import { autoResize } from "./auto-resize";
   import { chapterLabel } from "./publish/chapters";
   import type { ChapterData } from "./publish/types";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     chapters: ChapterData[];
@@ -41,27 +42,27 @@
   }
 </script>
 
-<section class="outline-view" aria-label="Chapter outline">
+<section class="outline-view" aria-label={t("outline.aria")}>
   <header class="outline-header">
     <div>
-      <span class="outline-eyebrow">PLAN YOUR BOOK</span>
-      <h1>Outline</h1>
-      <p>Sketch each chapter before you write it. Summaries also appear on chapter cards in Storyboard.</p>
+      <span class="outline-eyebrow">{t("outline.eyebrow")}</span>
+      <h1>{t("workspace.outline")}</h1>
+      <p>{t("outline.intro")}</p>
     </div>
     <div class="outline-header-actions">
       <span class="outline-count">
-        {chapters.length} {chapters.length === 1 ? "chapter" : "chapters"} · {totalWords.toLocaleString()} words
+        {t("outline.count", { chapters: chapters.length, words: totalWords })}
       </span>
-      <button class="outline-add" type="button" onclick={addChapter}><Plus size={14} aria-hidden="true" /> Add chapter</button>
+      <button class="outline-add" type="button" onclick={addChapter}><Plus size={14} aria-hidden="true" /> {t("tree.addChapter")}</button>
     </div>
   </header>
 
   {#if chapters.length === 0}
     <div class="outline-empty">
       <BookOpen size={34} strokeWidth={1.4} color="var(--eyebrow)" aria-hidden="true" />
-      <h2>No chapters yet</h2>
-      <p>Add your first chapter to start planning the shape of your story.</p>
-      <button class="outline-add" type="button" onclick={addChapter}><Plus size={14} aria-hidden="true" /> Add chapter</button>
+      <h2>{t("outline.emptyTitle")}</h2>
+      <p>{t("outline.emptyBody")}</p>
+      <button class="outline-add" type="button" onclick={addChapter}><Plus size={14} aria-hidden="true" /> {t("tree.addChapter")}</button>
     </div>
   {:else}
     <div class="outline-list">
@@ -79,16 +80,16 @@
                   <span
                     class="outline-label-dot"
                     role="img"
-                    aria-label={`Label: ${chapterLabels[chapter.id].name}`}
+                    aria-label={t("tree.labelTitle", { label: chapterLabels[chapter.id].name })}
                     style={`--label-color: ${chapterLabels[chapter.id].color}`}
                   ></span>
                 {/if}
                 {chapterLabel(chapter, chapters)}
               </h2>
               <span class="outline-meta">
-                {chapterSceneCounts[chapter.id] ?? 0} {(chapterSceneCounts[chapter.id] ?? 0) === 1 ? "scene" : "scenes"}
+                {t("common.sceneCount", { count: chapterSceneCounts[chapter.id] ?? 0 })}
                 <span class="outline-meta-divider">·</span>
-                {(chapterWordCounts[chapter.id] ?? 0).toLocaleString()} words
+                {t("outline.words", { count: chapterWordCounts[chapter.id] ?? 0 })}
               </span>
             </header>
             {#if sceneLabelSummary[chapter.id]}
@@ -105,8 +106,8 @@
               bind:this={summaryInputs[chapter.id]}
               class="outline-summary"
               data-undo-key={`chapter-summary:${chapter.id}`}
-              aria-label="Summary for {chapterLabel(chapter, chapters)}"
-              placeholder="What happens in this chapter?"
+              aria-label={t("outline.summaryAria", { chapter: chapterLabel(chapter, chapters) })}
+              placeholder={t("outline.summaryPlaceholder")}
               maxlength="4000"
               value={chapter.summary ?? ""}
               use:autoResize={chapter.summary ?? ""}
@@ -118,7 +119,7 @@
 
       <button class="outline-add-card" type="button" onclick={addChapter}>
         <span class="outline-add-symbol"><Plus size={16} aria-hidden="true" /></span>
-        <span><strong>Add chapter</strong><small>Create another card in your outline.</small></span>
+        <span><strong>{t("tree.addChapter")}</strong><small>{t("outline.addCardBody")}</small></span>
       </button>
     </div>
   {/if}

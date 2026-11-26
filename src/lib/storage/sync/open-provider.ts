@@ -1,5 +1,6 @@
 import type { StoredProject } from "../types";
 import { BUNDLE_FILE, OPEN_MARKER_FILE, PROJECTS_DIR, VAULT_FILE } from "./files";
+import { t } from "$lib/i18n/state.svelte";
 import { projectDirName } from "./layout";
 import { syncViaProvider } from "./orchestrate";
 import {
@@ -35,18 +36,18 @@ export class OpenFolderSyncProvider implements SyncProvider {
     }
 
     if (await this.fs.exists(VAULT_FILE)) {
-      throw new Error("This folder is set up for encrypted-folder sync, not open-folder sync.");
+      throw new Error(t("module.sync.folderForOpen"));
     }
     if (await this.fs.exists(BUNDLE_FILE)) {
-      throw new Error("This folder is set up for single-file sync, not open-folder sync.");
+      throw new Error(t("module.sync.fileForOpen"));
     }
     for (const entry of await this.fs.listDir(PROJECTS_DIR)) {
       if (!entry.isDirectory) continue;
       if (await this.fs.exists(`${PROJECTS_DIR}/${entry.name}/project.enc`)) {
-        throw new Error("This folder contains encrypted project files but no vault file.");
+        throw new Error(t("module.sync.encryptedNoVault"));
       }
       if (await this.fs.exists(`${PROJECTS_DIR}/${entry.name}/project.json`)) {
-        throw new Error("This folder contains open-folder projects but no layout marker.");
+        throw new Error(t("module.sync.openNoMarker"));
       }
     }
 

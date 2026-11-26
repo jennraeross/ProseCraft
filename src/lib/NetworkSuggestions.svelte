@@ -2,6 +2,8 @@
   import { Lightbulb, X } from "@lucide/svelte";
   import type { PagePair } from "./relations";
   import { RELATION_TYPES, type RelationType } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
   import {
     defaultSuggestionChoice,
     type SuggestionChoice,
@@ -18,14 +20,14 @@
 
   let { suggestions, titles, onAccept, onDismiss, onClose }: Props = $props();
 
-  const TYPE_LABELS: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const TYPE_LABELS: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   let openKey = $state<string | null>(null);
@@ -51,38 +53,38 @@
   }
 
   function pairTitle(pair: PagePair): string {
-    return `${titles.get(pair.a) ?? "Unknown page"} and ${titles.get(pair.b) ?? "Unknown page"}`;
+    return t("suggestions.pair", { a: pageTitle(pair.a), b: pageTitle(pair.b) });
   }
 
   function pageTitle(id: string): string {
-    return titles.get(id) ?? "Unknown page";
+    return titles.get(id) ?? t("network.unknownPage");
   }
 
   function reason(pair: PagePair): string {
-    return `Appear together in ${pair.count} ${pair.count === 1 ? "scene" : "scenes"}`;
+    return t("suggestions.reason", { count: pair.count });
   }
 </script>
 
-<aside class="suggestions-panel" aria-label="Relation suggestions">
+<aside class="suggestions-panel" aria-label={t("suggestions.aria")}>
   <header class="suggestions-head">
     <span class="suggestions-icon"><Lightbulb size={12} aria-hidden="true" /></span>
-    <h2>Suggestions</h2>
+    <h2>{t("suggestions.title")}</h2>
     <span class="suggestions-badge">{suggestions.length}</span>
-    <button class="suggestions-close" type="button" aria-label="Close suggestions" onclick={onClose}>
+    <button class="suggestions-close" type="button" aria-label={t("suggestions.close")} onclick={onClose}>
       <X size={12} aria-hidden="true" />
     </button>
   </header>
 
-  <p class="suggestions-intro">Pages that keep appearing together without a declared relation.</p>
+  <p class="suggestions-intro">{t("suggestions.intro")}</p>
 
   {#if suggestions.length === 0}
-    <p class="suggestions-empty">No suggestions right now.</p>
+    <p class="suggestions-empty">{t("suggestions.empty")}</p>
   {:else}
     <ul class="suggestions-list">
       {#each suggestions as pair (pair.key)}
         <li class="suggestion">
           <p class="suggestion-title">{pairTitle(pair)}</p>
-          <p class="suggestion-reason">{reason(pair)} · no relation yet</p>
+          <p class="suggestion-reason">{reason(pair)}</p>
           <div class="suggestion-actions">
             <button
               class="suggestion-accept"
@@ -90,23 +92,23 @@
               aria-expanded={openKey === pair.key}
               onclick={() => toggleForm(pair)}
             >
-              Accept
+              {t("suggestions.accept")}
             </button>
             <button class="suggestion-dismiss" type="button" onclick={() => onDismiss(pair.key)}>
-              Dismiss
+              {t("suggestions.dismiss")}
             </button>
           </div>
 
           {#if openKey === pair.key}
             <form
               class="suggestion-form"
-              aria-label={`Create a relation for ${pairTitle(pair)}`}
+              aria-label={t("suggestions.createAria", { pair: pairTitle(pair) })}
               onsubmit={(event) => {
                 event.preventDefault();
                 create(pair);
               }}
             >
-              <div class="suggestion-chips" role="group" aria-label="Relation type">
+              <div class="suggestion-chips" role="group" aria-label={t("suggestions.relationType")}>
                 {#each RELATION_TYPES as relationType (relationType)}
                   <button
                     class="suggestion-chip"
@@ -115,17 +117,17 @@
                     aria-pressed={type === relationType}
                     onclick={() => (type = relationType)}
                   >
-                    {TYPE_LABELS[relationType]}
+                    {t(TYPE_LABELS[relationType])}
                   </button>
                 {/each}
               </div>
 
               <label class="suggestion-field">
-                <span>Label</span>
-                <input bind:value={label} placeholder="Optional, e.g. Estranged brother" />
+                <span>{t("suggestions.label")}</span>
+                <input bind:value={label} placeholder={t("suggestions.labelPlaceholder")} />
               </label>
 
-              <div class="suggestion-directions" role="group" aria-label="Direction">
+              <div class="suggestion-directions" role="group" aria-label={t("suggestions.direction")}>
                 <button
                   class="suggestion-direction"
                   class:active={direction === "a-to-b"}
@@ -133,7 +135,7 @@
                   aria-pressed={direction === "a-to-b"}
                   onclick={() => (direction = "a-to-b")}
                 >
-                  {pageTitle(pair.a)} to {pageTitle(pair.b)}
+                  {t("suggestions.directionTo", { from: pageTitle(pair.a), to: pageTitle(pair.b) })}
                 </button>
                 <button
                   class="suggestion-direction"
@@ -142,14 +144,14 @@
                   aria-pressed={direction === "b-to-a"}
                   onclick={() => (direction = "b-to-a")}
                 >
-                  {pageTitle(pair.b)} to {pageTitle(pair.a)}
+                  {t("suggestions.directionTo", { from: pageTitle(pair.b), to: pageTitle(pair.a) })}
                 </button>
               </div>
 
               <div class="suggestion-actions">
-                <button class="suggestion-accept" type="submit">Create relation</button>
+                <button class="suggestion-accept" type="submit">{t("suggestions.create")}</button>
                 <button class="suggestion-dismiss" type="button" onclick={() => (openKey = null)}>
-                  Cancel
+                  {t("common.cancel")}
                 </button>
               </div>
             </form>

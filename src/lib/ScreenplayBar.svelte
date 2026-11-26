@@ -3,6 +3,8 @@
     EDITOR_ELEMENT_TYPES,
     type EditorElementType
   } from "./screenplay/editor-keys";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   let {
     type,
@@ -16,13 +18,13 @@
     onchange: (type: EditorElementType) => void;
   } = $props();
 
-  const ELEMENT_LABELS: Record<EditorElementType, string> = {
-    "scene-heading": "Scene heading",
-    action: "Action",
-    character: "Character",
-    dialogue: "Dialogue",
-    parenthetical: "Parenthetical",
-    transition: "Transition"
+  const ELEMENT_LABELS: Record<EditorElementType, MessageKey> = {
+    "scene-heading": "screenplay.sceneHeading",
+    action: "screenplay.action",
+    character: "screenplay.character",
+    dialogue: "screenplay.dialogue",
+    parenthetical: "screenplay.parenthetical",
+    transition: "screenplay.transition"
   };
 
   function handleChange(event: Event) {
@@ -34,16 +36,16 @@
 <div class="screenplay-bar">
   <select
     class="screenplay-type"
-    aria-label="Element type"
+    aria-label={t("screenplay.elementType")}
     value={type}
     onchange={handleChange}
   >
     {#each EDITOR_ELEMENT_TYPES as option (option)}
-      <option value={option}>{ELEMENT_LABELS[option]}</option>
+      <option value={option}>{t(ELEMENT_LABELS[option])}</option>
     {/each}
   </select>
   <span class="screenplay-meta">
-    {pages} {pages === 1 ? "page" : "pages"} · ~{runtimeMinutes} min
+    {t("screenplay.meta", { count: pages, minutes: runtimeMinutes })}
   </span>
 </div>
 

@@ -3,6 +3,8 @@
   import type { RelationGraphNode } from "./relation-graph-model";
   import type { AppearanceMode } from "./relations";
   import type { PageKind, RelationType } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   type CardRelation = {
     id: string;
@@ -36,12 +38,12 @@
     other: "var(--text-muted)"
   };
 
-  const kindNames: Record<PageKind, string> = {
-    character: "Character",
-    place: "Place",
-    organisation: "Organisation",
-    item: "Item",
-    other: "Other"
+  const kindNames: Record<PageKind, MessageKey> = {
+    character: "pageKind.character",
+    place: "pageKind.place",
+    organisation: "pageKind.organisation",
+    item: "pageKind.item",
+    other: "pageKind.other"
   };
 
   const relationColors: Record<RelationType, string> = {
@@ -54,30 +56,34 @@
     other: "var(--text-muted)"
   };
 
-  const relationNames: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const relationNames: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   const sceneLabel = $derived(
-    sceneMode === "confirmed" ? "In this scene" : sceneMode === "auto" ? "In this scene · auto" : "Not in this scene"
+    sceneMode === "confirmed"
+      ? t("graph.inScene")
+      : sceneMode === "auto"
+        ? t("graph.inSceneAuto")
+        : t("graph.notInScene")
   );
 
-  const appearanceLabel = $derived(`${appearanceCount} ${appearanceCount === 1 ? "scene" : "scenes"}`);
+  const appearanceLabel = $derived(t("common.sceneCount", { count: appearanceCount }));
 </script>
 
-<aside class="graph-node-card" data-testid="graph-node-card" aria-label={`${node.label} summary`}>
+<aside class="graph-node-card" data-testid="graph-node-card" aria-label={t("graph.nodeSummary", { name: node.label })}>
   <div class="card-head">
     <span class="card-avatar" style:color={kindColors[node.kind]} aria-hidden="true">{node.initials}</span>
     <span class="card-ident">
       <span class="card-name">{node.label}</span>
       <span class="card-meta">
-        <span class="card-kind" style:color={kindColors[node.kind]}>{kindNames[node.kind]}</span>
+        <span class="card-kind" style:color={kindColors[node.kind]}>{t(kindNames[node.kind])}</span>
         <span class="card-sep" aria-hidden="true">·</span>
         <span>{appearanceLabel}</span>
         {#if hasScene}
@@ -86,16 +92,16 @@
         {/if}
       </span>
     </span>
-    <button type="button" class="card-close" aria-label="Close" title="Close" onclick={onClose}>
+    <button type="button" class="card-close" aria-label={t("common.close")} title={t("common.close")} onclick={onClose}>
       <X size={12} />
     </button>
   </div>
 
   {#if relations.length > 0}
-    <ul class="card-relations" aria-label="Relations">
+    <ul class="card-relations" aria-label={t("graph.relations")}>
       {#each relations as relation (relation.id)}
         <li class="card-chip" style:--relation-color={relationColors[relation.type]}>
-          <span class="chip-type">{relation.direction === "out" ? "→" : "←"} {relation.label || relationNames[relation.type]}</span>
+          <span class="chip-type">{relation.direction === "out" ? "→" : "←"} {relation.label || t(relationNames[relation.type])}</span>
           <span class="chip-name" title={relation.otherTitle}>{relation.otherTitle}</span>
         </li>
       {/each}
@@ -105,11 +111,11 @@
   <div class="card-actions">
     <button type="button" class="card-action" onclick={onOpenPage}>
       <FileText size={11} />
-      Open page
+      {t("graph.openPage")}
     </button>
     <button type="button" class="card-action" onclick={onOpenBeside}>
       <Columns2 size={11} />
-      Open beside
+      {t("ctx.openBeside")}
     </button>
   </div>
 </aside>

@@ -83,6 +83,8 @@ export function getGoogleWebClientSecret(): string {
   return import.meta.env.VITE_GOOGLE_WEB_CLIENT_SECRET ?? "";
 }
 
+import { t } from "$lib/i18n/state.svelte";
+
 /** Loopback addresses belong to the desktop flow; anything else is a web redirect. */
 function isWebRedirectUri(uri: string): boolean {
   return !uri.startsWith("http://127.0.0.1");
@@ -115,7 +117,7 @@ function missingSecretError(varName: string): AuthResult {
   return {
     success: false,
     error:
-      `Google Drive sync is not configured. Set ${varName} (see .env.example).`
+      t("module.oauth.notConfigured", { varName })
   };
 }
 
@@ -124,7 +126,7 @@ function missingClientSecret(): AuthResult | null {
   return {
     success: false,
     error:
-      "Google Drive sync is not configured. Set VITE_GOOGLE_CLIENT_SECRET (desktop) or VITE_GOOGLE_WEB_CLIENT_SECRET (PWA) — see .env.example."
+      t("module.oauth.notConfiguredBoth")
   };
 }
 
@@ -461,7 +463,7 @@ export async function authenticateGoogleDrive(
         success: false,
         pending: true,
         authorizationUrl: authUrl.toString(),
-        error: "Opening Google authorization…"
+        error: t("module.oauth.opening")
       };
     }
 
@@ -476,12 +478,12 @@ export async function authenticateGoogleDrive(
         pending: true,
         authorizationUrl: authUrl.toString(),
         error: opened
-          ? "Authorization page opened. After approving access, copy the `code` parameter from the browser address bar and paste it below."
-          : "Your browser blocked the authorization window. Open the Google authorization page below, approve access, then paste the code."
+          ? t("module.oauth.pageOpened")
+          : t("module.oauth.popupBlocked")
       };
     }
 
-    onProgress?.("Waiting for you to approve access in your browser…");
+    onProgress?.(t("module.oauth.waiting"));
     const callback = await waitForLoopback();
 
     if (callback.cancelled) {
@@ -492,18 +494,18 @@ export async function authenticateGoogleDrive(
       clearPendingFlow();
       return {
         success: false,
-        error: `Google Drive authorization failed: ${callback.error}`
+        error: t("module.oauth.failed", { error: callback.error })
       };
     }
     if (!callback.code) {
       clearPendingFlow();
-      return { success: false, error: "Google did not return an authorization code." };
+      return { success: false, error: t("module.oauth.noCode") };
     }
     if (callback.state && callback.state !== state) {
       clearPendingFlow();
       return {
         success: false,
-        error: "The authorization response did not match this request. Start the connection again."
+        error: t("module.oauth.mismatch")
       };
     }
 
@@ -521,7 +523,7 @@ export async function authenticateGoogleDrive(
     pendingAuthWindow = null;
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Authentication failed."
+      error: error instanceof Error ? error.message : t("module.oauth.authFailed")
     };
   }
 }
@@ -591,7 +593,7 @@ export async function completeWebRedirectIfPresent(): Promise<AuthResult | null>
     stripOAuthParams();
     return {
       success: false,
-      error: `Google Drive authorization failed: ${params.get("error") ?? "access denied"}`
+      error: t("module.oauth.failed", { error: params.get("error") ?? t("module.oauth.accessDenied") })
     };
   }
   const code = params.get("code");
@@ -611,7 +613,7 @@ export async function completeWebRedirectIfPresent(): Promise<AuthResult | null>
     stripOAuthParams();
     return {
       success: false,
-      error: "The authorization response did not match this request. Start the connection again."
+      error: t("module.oauth.mismatch")
     };
   }
   const result = await exchangeCodeForToken(code, pending.verifier, pending.redirectUri || getWebRedirectUri());
@@ -659,7 +661,7 @@ export async function exchangeCodeForToken(
   try {
     const { code, state } = parseAuthorizationInput(input);
     if (!code) {
-      return { success: false, error: "No authorization code was provided." };
+      return { success: false, error: t("module.oauth.missingCode") };
     }
 
     const pending = readPendingFlow();
@@ -667,13 +669,13 @@ export async function exchangeCodeForToken(
     if (!verifier) {
       return {
         success: false,
-        error: "The authorization request expired. Start the connection again."
+        error: t("module.oauth.expired")
       };
     }
     if (state && pending.state && state !== pending.state) {
       return {
         success: false,
-        error: "The authorization response did not match this request. Start the connection again."
+        error: t("module.oauth.mismatch")
       };
     }
 
@@ -698,7 +700,7 @@ export async function exchangeCodeForToken(
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Token exchange failed: ${error}`);
+      throw new Error(t("module.oauth.tokenExchangeFailed", { error }));
     }
 
     const data = await response.json();
@@ -720,7 +722,7 @@ export async function exchangeCodeForToken(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Failed to exchange code for token."
+      error: error instanceof Error ? error.message : t("module.oauth.exchangeFailed")
     };
   }
 }
@@ -782,7 +784,7 @@ export async function refreshAccessToken(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Failed to refresh token."
+      error: error instanceof Error ? error.message : t("module.oauth.refreshFailed")
     };
   }
 }

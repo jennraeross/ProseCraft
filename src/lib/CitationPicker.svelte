@@ -8,9 +8,11 @@
     formatItemContributors,
     itemYearText,
     matchesLibraryQuery,
+    sourceTypeKey,
     sourceTypeLabel
   } from "./citations/library";
   import type { CitationLocale, CitationStyleId } from "./citations/styles";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     items: CslItem[];
@@ -74,6 +76,11 @@
   let filteredLibrary = $derived(items.filter((item) => matchesLibraryQuery(item, searchQuery)));
 
   let activeCite = $derived(selected[activeIndex] ?? null);
+
+  function typeLabel(type: string): string {
+    const key = sourceTypeKey(type);
+    return key ? t(key) : sourceTypeLabel(type);
+  }
 
   function cleanCiteEntry(entry: CiteRefItem): CiteRefItem {
     const locator = entry.locator?.trim() ?? "";
@@ -200,21 +207,21 @@
   data-testid="citation-picker"
   role="dialog"
   tabindex="-1"
-  aria-label={isEditing ? "Edit citation" : "Insert citation"}
+  aria-label={isEditing ? t("citation.edit") : t("citation.insert")}
   style={`left: ${left}px; top: ${top}px`}
   onpointerdown={(event) => event.stopPropagation()}
   onkeydown={handleKeydown}
 >
   <div class="picker-head">
-    <span class="picker-title">{isEditing ? "Edit citation" : "Insert citation"}</span>
+    <span class="picker-title">{isEditing ? t("citation.edit") : t("citation.insert")}</span>
     {#if onOpenLibrary}
-      <button type="button" class="picker-sources-link" onclick={onOpenLibrary}>Sources…</button>
+      <button type="button" class="picker-sources-link" onclick={onOpenLibrary}>{t("toolbar.sources")}</button>
     {/if}
     <button
       type="button"
       class="picker-close"
-      aria-label="Close citation picker"
-      title="Close"
+      aria-label={t("citation.closePicker")}
+      title={t("common.close")}
       onclick={onClose}
     ><X size={14} aria-hidden="true" /></button>
   </div>
@@ -225,22 +232,22 @@
       bind:this={searchInput}
       type="search"
       class="picker-search"
-      placeholder="Search sources…"
-      aria-label="Search citation sources"
+      placeholder={t("citation.searchSources")}
+      aria-label={t("citation.searchAria")}
       bind:value={searchQuery}
     />
   </div>
 
-  <div class="picker-library-list" role="listbox" aria-label="Available sources">
+  <div class="picker-library-list" role="listbox" aria-label={t("citation.available")}>
     {#if items.length === 0}
       <div class="picker-empty">
-        <p>No sources in this project yet.</p>
+        <p>{t("citation.noSources")}</p>
         {#if onOpenLibrary}
-          <button type="button" class="picker-btn" onclick={onOpenLibrary}>Open Sources…</button>
+          <button type="button" class="picker-btn" onclick={onOpenLibrary}>{t("citation.openSources")}</button>
         {/if}
       </div>
     {:else if filteredLibrary.length === 0}
-      <p class="picker-empty-text">No sources match “{searchQuery}”.</p>
+      <p class="picker-empty-text">{t("citation.noMatches", { query: searchQuery })}</p>
     {:else}
       {#each filteredLibrary as item (item.id)}
         {@const chosen = isSourceSelected(item)}
@@ -251,11 +258,11 @@
           onclick={() => addSource(item)}
         >
           <span class="picker-source-info">
-            <strong>{item.title || "(Untitled)"}</strong>
+            <strong>{item.title || t("citation.untitledItem")}</strong>
             <small>
-              {formatItemContributors(item) || "Unknown author"}
-              · {itemYearText(item) || "n.d."}
-              · {sourceTypeLabel(item.type)}
+              {formatItemContributors(item) || t("citation.unknownAuthor")}
+              · {itemYearText(item) || t("citation.noDate")}
+              · {typeLabel(item.type)}
             </small>
           </span>
           <span class="picker-source-icon" aria-hidden="true">
@@ -267,7 +274,7 @@
   </div>
 
   {#if selected.length > 0}
-    <div class="picker-selected-bar" aria-label="Selected sources">
+    <div class="picker-selected-bar" aria-label={t("citation.selected")}>
       {#each selected as entry, idx (entry.id + ":" + idx)}
         <div class="picker-chip" class:active={idx === activeIndex}>
           <button
@@ -278,7 +285,7 @@
           <button
             type="button"
             class="picker-chip-remove"
-            aria-label={`Remove ${labelForChip(entry)}`}
+            aria-label={t("citation.removeSource", { label: labelForChip(entry) })}
             onclick={() => removeSelectedAt(idx)}
           ><X size={11} aria-hidden="true" /></button>
         </div>
@@ -288,18 +295,18 @@
     {#if activeCite}
       <div class="picker-fields">
         <label class="picker-field">
-          <span>Locator type</span>
+          <span>{t("citation.locatorType")}</span>
           <select
             value={activeCite.label ?? "page"}
             onchange={(event) => updateActive({ label: (event.currentTarget as HTMLSelectElement).value as CiteLocatorLabel })}
           >
-            <option value="page">Page</option>
-            <option value="chapter">Chapter</option>
-            <option value="section">Section</option>
+            <option value="page">{t("citation.locator.page")}</option>
+            <option value="chapter">{t("citation.locator.chapter")}</option>
+            <option value="section">{t("citation.locator.section")}</option>
           </select>
         </label>
         <label class="picker-field">
-          <span>Locator</span>
+          <span>{t("citation.locator")}</span>
           <input
             type="text"
             placeholder="42 or 42-44"
@@ -308,19 +315,19 @@
           />
         </label>
         <label class="picker-field">
-          <span>Prefix</span>
+          <span>{t("citation.prefix")}</span>
           <input
             type="text"
-            placeholder="see "
+            placeholder={t("citation.prefixPlaceholder")}
             value={activeCite.prefix ?? ""}
             oninput={(event) => updateActive({ prefix: (event.currentTarget as HTMLInputElement).value })}
           />
         </label>
         <label class="picker-field">
-          <span>Suffix</span>
+          <span>{t("citation.suffix")}</span>
           <input
             type="text"
-            placeholder="and passim"
+            placeholder={t("citation.suffixPlaceholder")}
             value={activeCite.suffix ?? ""}
             oninput={(event) => updateActive({ suffix: (event.currentTarget as HTMLInputElement).value })}
           />
@@ -331,14 +338,14 @@
             checked={Boolean(activeCite.suppressAuthor)}
             onchange={(event) => updateActive({ suppressAuthor: (event.currentTarget as HTMLInputElement).checked })}
           />
-          <span>Suppress author</span>
+          <span>{t("citation.suppressAuthor")}</span>
         </label>
       </div>
     {/if}
 
     {#if preview}
-      <div class="picker-preview" aria-label="Citation preview">
-        <span class="picker-preview-label">Preview</span>
+      <div class="picker-preview" aria-label={t("citation.previewAria")}>
+        <span class="picker-preview-label">{t("citation.preview")}</span>
         <span class="picker-preview-value">
           {#if preview.html}
             {@html preview.html}
@@ -353,19 +360,19 @@
   <div class="picker-foot">
     {#if isEditing && onRemove}
       <button type="button" class="picker-remove" onclick={onRemove}>
-        <Trash2 size={13} aria-hidden="true" /> Remove
+        <Trash2 size={13} aria-hidden="true" /> {t("common.remove")}
       </button>
     {:else}
       <span></span>
     {/if}
     <div class="picker-foot-actions">
-      <button type="button" class="picker-btn" onclick={onClose}>Cancel</button>
+      <button type="button" class="picker-btn" onclick={onClose}>{t("common.cancel")}</button>
       <button
         type="button"
         class="picker-insert"
         disabled={selected.length === 0}
         onclick={commit}
-      >{isEditing ? "Update" : "Insert"}</button>
+      >{isEditing ? t("citation.update") : t("citation.commit")}</button>
     </div>
   </div>
 </div>

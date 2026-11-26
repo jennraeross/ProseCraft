@@ -1,6 +1,8 @@
 <script lang="ts">
   import { FileText, Plus, X } from "@lucide/svelte";
   import type { PageKind, RelationType } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   type SummaryRelation = {
     id: string;
@@ -34,12 +36,12 @@
     onClose
   }: Props = $props();
 
-  const KIND_LABELS: Record<PageKind, string> = {
-    character: "Character",
-    place: "Place",
-    organisation: "Organisation",
-    item: "Item",
-    other: "Page"
+  const KIND_LABELS: Record<PageKind, MessageKey> = {
+    character: "pageKind.character",
+    place: "pageKind.place",
+    organisation: "pageKind.organisation",
+    item: "pageKind.item",
+    other: "pageKind.other"
   };
 
   const KIND_COLORS: Record<PageKind, string> = {
@@ -50,14 +52,14 @@
     other: "var(--text-muted)"
   };
 
-  const TYPE_LABELS: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const TYPE_LABELS: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   const TYPE_COLORS: Record<RelationType, string> = {
@@ -70,32 +72,30 @@
     other: "var(--text-muted)"
   };
 
-  const appearanceLabel = $derived(
-    `${appearanceCount} ${appearanceCount === 1 ? "scene" : "scenes"}`
-  );
+  const appearanceLabel = $derived(t("common.sceneCount", { count: appearanceCount }));
 </script>
 
-<aside class="node-summary" data-testid="node-summary" aria-label={`${title} summary`}>
+<aside class="node-summary" data-testid="node-summary" aria-label={t("graph.nodeSummary", { name: title })}>
   <header class="node-summary-head">
     <div>
-      <p class="node-summary-eyebrow">Selected page</p>
+      <p class="node-summary-eyebrow">{t("nodeSummary.selected")}</p>
       <h2>{title}</h2>
       <p class="node-summary-meta">
         <span class="node-summary-kind" style={`--kind-color: ${KIND_COLORS[kind]}`}>
-          {KIND_LABELS[kind]}
+          {t(KIND_LABELS[kind])}
         </span>
         <span class="node-summary-divider">·</span>
         <span>{appearanceLabel}</span>
       </p>
     </div>
-    <button type="button" class="node-summary-close" aria-label="Close" onclick={onClose}>
+    <button type="button" class="node-summary-close" aria-label={t("common.close")} onclick={onClose}>
       <X size={13} aria-hidden="true" />
     </button>
   </header>
 
   {#if aliases.length > 0}
     <div class="node-summary-field">
-      <span class="node-summary-label">Also known as</span>
+      <span class="node-summary-label">{t("nodeSummary.aliases")}</span>
       <div class="node-summary-aliases">
         {#each aliases as alias (alias)}
           <span class="node-summary-alias">{alias}</span>
@@ -105,9 +105,9 @@
   {/if}
 
   <div class="node-summary-field">
-    <span class="node-summary-label">Relations · {relations.length}</span>
+    <span class="node-summary-label">{t("nodeSummary.relations", { count: relations.length })}</span>
     {#if relations.length === 0}
-      <p class="node-summary-empty">No relations yet.</p>
+      <p class="node-summary-empty">{t("nodeSummary.noRelations")}</p>
     {:else}
       <ul class="node-summary-relations">
         {#each relations as relation (relation.id)}
@@ -120,7 +120,7 @@
               <span class="node-summary-relation-name">{relation.otherTitle}</span>
               <span class="node-summary-relation-type" style={`color: ${TYPE_COLORS[relation.type]}`}>
                 {relation.direction === "out" ? "→" : "←"}
-                {relation.label || TYPE_LABELS[relation.type]}
+                {relation.label || t(TYPE_LABELS[relation.type])}
               </span>
             </span>
           </li>
@@ -131,13 +131,13 @@
 
   <div class="node-summary-actions">
     <button type="button" class="node-summary-primary" onclick={onOpenPage}>
-      <FileText size={12} aria-hidden="true" /> Open page
+      <FileText size={12} aria-hidden="true" /> {t("graph.openPage")}
     </button>
     <button type="button" class="node-summary-secondary" onclick={onOpenCard}>
-      Open character card
+      {t("ctx.openCharacterCard")}
     </button>
     <button type="button" class="node-summary-secondary" onclick={onAddRelation}>
-      <Plus size={12} aria-hidden="true" /> Add relation from here
+      <Plus size={12} aria-hidden="true" /> {t("nodeSummary.addRelation")}
     </button>
   </div>
 </aside>

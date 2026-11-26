@@ -1,4 +1,5 @@
 import type { SyncDirEntry, SyncFileSystem } from "./types";
+import { t } from "$lib/i18n/state.svelte";
 
 /**
  * Configuration for the Google Drive filesystem adapter.
@@ -53,7 +54,7 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
 
   constructor(options: GoogleDriveOptions) {
     if (!options.accessToken && !options.getAccessToken) {
-      throw new Error("A Google Drive access token is required.");
+      throw new Error(t("module.drive.tokenRequired"));
     }
     this.accessToken = options.accessToken;
     this.getAccessToken = options.getAccessToken;
@@ -62,7 +63,7 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
 
   private async resolveAccessToken(): Promise<string> {
     const token = this.getAccessToken ? await this.getAccessToken() : this.accessToken;
-    if (!token) throw new Error("Google Drive is not connected.");
+    if (!token) throw new Error(t("module.drive.notConnected"));
     return token;
   }
 
@@ -75,7 +76,7 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
   private async ensureOk(response: Response, operation: string): Promise<void> {
     if (response.ok) return;
     if (response.status === 401) {
-      throw new Error("Google Drive authorization expired. Please reconnect.");
+      throw new Error(t("module.drive.authExpired"));
     }
     let detail = "";
     try {
@@ -85,7 +86,7 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
       // The status alone is still useful.
     }
     throw new Error(
-      `Google Drive ${operation} failed (${response.status} ${response.statusText})${detail}`
+      t("module.drive.opFailed", { operation, status: response.status, statusText: response.statusText, detail })
     );
   }
 
@@ -228,7 +229,7 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
 
   async readText(path: string): Promise<string> {
     const files = await this.findFiles(path);
-    if (files.length === 0) throw new Error(`Missing file: ${path}`);
+    if (files.length === 0) throw new Error(t("module.drive.missingFile", { path }));
 
     const response = await this.authorizedFetch(
       `${DRIVE_API}/${encodeURIComponent(files[0].id)}?alt=media`
@@ -239,7 +240,7 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
 
   async writeText(path: string, content: string): Promise<void> {
     const clean = cleanPath(path);
-    if (!clean) throw new Error("Invalid sync path.");
+    if (!clean) throw new Error(t("module.drive.invalidPath"));
 
     const existing = await this.findFiles(clean);
     if (existing.length === 0) {
@@ -262,13 +263,13 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
   async createDir(path: string): Promise<void> {
     const clean = cleanPath(path);
     if (clean.split("/").some((segment) => segment === "." || segment === "..")) {
-      throw new Error("Invalid directory path.");
+      throw new Error(t("module.drive.invalidDir"));
     }
   }
 
   async remove(path: string): Promise<void> {
     const clean = cleanPath(path);
-    if (!clean) throw new Error("Invalid sync path.");
+    if (!clean) throw new Error(t("module.drive.invalidPath"));
 
     const exact = await this.findFiles(clean);
     const children = await this.findFilesUnder(clean);
@@ -290,12 +291,12 @@ export class GoogleDriveFileSystem implements SyncFileSystem {
   async rename(from: string, to: string): Promise<void> {
     const cleanFrom = cleanPath(from);
     const cleanTo = cleanPath(to);
-    if (!cleanFrom || !cleanTo) throw new Error("Invalid sync path.");
+    if (!cleanFrom || !cleanTo) throw new Error(t("module.drive.invalidPath"));
 
     const exact = await this.findFiles(cleanFrom);
     const children = await this.findFilesUnder(cleanFrom);
     if (exact.length === 0 && children.length === 0) {
-      throw new Error(`Missing file: ${from}`);
+      throw new Error(t("module.drive.missingFile", { path: from }));
     }
 
     for (const file of exact) await this.renameFile(file.id, cleanTo);

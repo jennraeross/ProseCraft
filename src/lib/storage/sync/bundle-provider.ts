@@ -6,6 +6,7 @@ import {
 } from "../encrypted-bundle";
 import type { StoredProject } from "../types";
 import { BUNDLE_FILE, OPEN_MARKER_FILE, PROJECTS_DIR, VAULT_FILE } from "./files";
+import { t } from "$lib/i18n/state.svelte";
 import { syncViaProvider } from "./orchestrate";
 import type {
   SyncConnection,
@@ -45,10 +46,10 @@ export class EncryptedFileSyncProvider implements SyncProvider {
     }
 
     if (await this.fs.exists(VAULT_FILE)) {
-      throw new Error("This folder is set up for encrypted-folder sync, not single-file sync.");
+      throw new Error(t("module.sync.folderForFile"));
     }
     if (await this.fs.exists(OPEN_MARKER_FILE)) {
-      throw new Error("This folder is set up for open-folder sync, not single-file sync.");
+      throw new Error(t("module.sync.openForFile"));
     }
     // Refuse to adopt a folder that already holds encrypted-folder projects but
     // no bundle/header: creating a second vault would orphan those projects.
@@ -56,7 +57,7 @@ export class EncryptedFileSyncProvider implements SyncProvider {
       if (entry.isDirectory
         && (await this.fs.exists(`${PROJECTS_DIR}/${entry.name}/project.enc`)
           || await this.fs.exists(`${PROJECTS_DIR}/${entry.name}/project.json`))) {
-        throw new Error("This folder contains project files but no sync vault file.");
+        throw new Error(t("module.sync.noVaultFile"));
       }
     }
 
@@ -68,14 +69,14 @@ export class EncryptedFileSyncProvider implements SyncProvider {
   }
 
   async pull(vaultKey?: Uint8Array): Promise<StoredProject[]> {
-    if (!vaultKey) throw new Error("The sync file is locked.");
+    if (!vaultKey) throw new Error(t("module.sync.fileLocked"));
     if (!(await this.fs.exists(BUNDLE_FILE))) return [];
     const parsed = parseEncryptedBundle(await this.fs.readText(BUNDLE_FILE));
     return decryptBundleProjects(parsed, vaultKey);
   }
 
   async push(projects: StoredProject[], vaultKey?: Uint8Array): Promise<void> {
-    if (!vaultKey || !this.header) throw new Error("The sync file is locked.");
+    if (!vaultKey || !this.header) throw new Error(t("module.sync.fileLocked"));
     const content = serializeEncryptedBundle(
       projects,
       this.header,

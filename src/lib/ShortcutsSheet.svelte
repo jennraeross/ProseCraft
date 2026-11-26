@@ -3,7 +3,8 @@
   import { cubicOut } from "svelte/easing";
   import { fade, scale } from "svelte/transition";
   import { X } from "@lucide/svelte";
-  import { SHORTCUT_GROUPS, formatKey } from "$lib/shortcuts";
+  import { formatKey, localizedShortcutGroups } from "$lib/shortcuts";
+  import { t } from "$lib/i18n/state.svelte";
 
   type SaveStatus = { ok: boolean; message: string };
 
@@ -30,6 +31,7 @@
   let reducedMotion = $state(false);
   let saving = $state(false);
   let status = $state<SaveStatus | null>(null);
+  const groups = $derived(localizedShortcutGroups(t));
 
   onMount(() => {
     const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -80,7 +82,7 @@
       status = await onSavePdf(showMac);
     } catch (error) {
       console.error("Could not save the shortcuts sheet.", error);
-      status = { ok: false, message: "Could not save the PDF." };
+      status = { ok: false, message: t("shortcuts.saveFailed") };
     } finally {
       saving = false;
     }
@@ -100,29 +102,29 @@
       bind:this={panel}
       role="dialog"
       aria-modal="true"
-      aria-label="Keyboard shortcuts"
+      aria-label={t("sidebar.shortcuts")}
       tabindex="-1"
       in:scale={{ start: reducedMotion ? 1 : 0.96, opacity: reducedMotion ? 1 : 0, duration: reducedMotion ? 0 : 220, easing: panelEase }}
       out:scale={{ start: reducedMotion ? 1 : 0.96, opacity: reducedMotion ? 1 : 0, duration: reducedMotion ? 0 : 160, easing: panelEase }}
     >
       <header class="shortcuts-header">
-        <div><span class="shortcuts-kicker">PROSECRAFT</span><h2>Keyboard shortcuts</h2></div>
+        <div><span class="shortcuts-kicker">PROSECRAFT</span><h2>{t("sidebar.shortcuts")}</h2></div>
         <div class="shortcuts-actions">
           {#if status}
             <span class="shortcuts-status" class:error={!status.ok} role="status">{status.message}</span>
           {/if}
-          <div class="shortcuts-platform" role="group" aria-label="Show shortcuts for">
+          <div class="shortcuts-platform" role="group" aria-label={t("shortcuts.showFor")}>
             <button type="button" class:active={showMac} aria-pressed={showMac} onclick={() => (showMac = true)}>macOS</button>
             <button type="button" class:active={!showMac} aria-pressed={!showMac} onclick={() => (showMac = false)}>Windows / Linux</button>
           </div>
-          <button type="button" class="shortcuts-action" onclick={printSheet}>Print</button>
-          <button type="button" class="shortcuts-action" onclick={saveAsPdf} disabled={saving}>{saving ? "Saving…" : "Save as PDF"}</button>
-          <button type="button" class="shortcuts-close" aria-label="Close keyboard shortcuts" onclick={onClose}><X size={15} aria-hidden="true" /></button>
+          <button type="button" class="shortcuts-action" onclick={printSheet}>{t("shortcuts.print")}</button>
+          <button type="button" class="shortcuts-action" onclick={saveAsPdf} disabled={saving}>{saving ? t("shortcuts.saving") : t("shortcuts.savePdf")}</button>
+          <button type="button" class="shortcuts-close" aria-label={t("shortcuts.close")} onclick={onClose}><X size={15} aria-hidden="true" /></button>
         </div>
       </header>
       <div class="shortcuts-body">
         <div class="shortcuts-columns">
-          {#each SHORTCUT_GROUPS as group (group.title)}
+          {#each groups as group (group.titleKey ?? group.title)}
             <section class="shortcuts-group">
               <h3>{group.title}</h3>
               {#each group.entries as entry (entry.action)}

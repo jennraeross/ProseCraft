@@ -1,6 +1,7 @@
 /**
  * CSL-JSON (1.0.2) library types and strict normalization/validation utilities.
  */
+import { t } from "$lib/i18n/state.svelte";
 
 export type CslName = {
   family?: string;
@@ -268,11 +269,11 @@ function normalizeSingleItem(
   value: unknown
 ): { item: Omit<CslItem, "id">; rawId?: string } | { error: string } {
   if (!isPlainObject(value)) {
-    return { error: "Citation entry is not an object." };
+    return { error: t("module.csl.notObject") };
   }
   const rawType = cleanSingleLine(value.type, MAX_CITATION_TYPE_LENGTH);
   if (!rawType || !CSL_TYPE_RE.test(rawType)) {
-    return { error: "Citation entry is missing a valid CSL type." };
+    return { error: t("module.csl.missingType") };
   }
   const type = rawType.toLowerCase();
 
@@ -310,7 +311,7 @@ function normalizeSingleItem(
     || abstractFree
   );
   if (!hasContent) {
-    return { error: "Citation entry has no bibliographic content." };
+    return { error: t("module.csl.noContent") };
   }
 
   const item: Omit<CslItem, "id"> = { type };
@@ -343,7 +344,7 @@ function normalizeSingleItem(
  */
 export function normalizeCslItemsDetailed(value: unknown): CslNormalizationResult {
   if (!Array.isArray(value)) {
-    return { items: [], warnings: ["Expected an array of citation items."] };
+    return { items: [], warnings: [t("module.csl.expectedArray")] };
   }
 
   const items: CslItem[] = [];
@@ -352,21 +353,19 @@ export function normalizeCslItemsDetailed(value: unknown): CslNormalizationResul
 
   for (let index = 0; index < value.length; index += 1) {
     if (items.length >= MAX_CITATION_ITEMS) {
-      warnings.push(
-        `Citation library capped at ${MAX_CITATION_ITEMS} items; remaining entries were skipped.`
-      );
+      warnings.push(t("module.csl.capped", { max: MAX_CITATION_ITEMS }));
       break;
     }
     const normalized = normalizeSingleItem(value[index]);
     if ("error" in normalized) {
-      warnings.push(`Entry ${index + 1}: ${normalized.error}`);
+      warnings.push(t("module.csl.entryError", { number: index + 1, message: normalized.error }));
       continue;
     }
     const sanitizedRawId = normalized.rawId ? sanitizeCitationId(normalized.rawId) : "";
     const baseId = sanitizedRawId || buildStableFallbackId(normalized.item);
     const { id, renamed } = allocateUniqueId(baseId, seenIds);
     if (renamed) {
-      warnings.push(`Duplicate citation id "${baseId}" renamed to "${id}".`);
+      warnings.push(t("module.csl.duplicateRenamed", { from: baseId, to: id }));
     }
     items.push({ id, ...normalized.item });
   }

@@ -12,6 +12,7 @@
   import type { CslItem } from "$lib/citations/csl";
   import type { CitationLocale, CitationStyleId } from "$lib/citations/styles";
   import { sanitizeInlineHtml } from "$lib/sanitize";
+  import { t } from "$lib/i18n/state.svelte";
 
   export type FootnoteCitationRequest = {
     rect: DOMRect;
@@ -179,7 +180,7 @@
     if (!noteEditor) return;
     const entered = linkUrl.trim();
     if (!entered) {
-      linkError = "Enter a link address.";
+      linkError = t("footnote.linkRequired");
       return;
     }
     const href = /^[a-z][a-z\d+.-]*:/i.test(entered) ? entered : `https://${entered}`;
@@ -187,11 +188,11 @@
     try {
       parsed = new URL(href);
     } catch {
-      linkError = "Please enter a valid link.";
+      linkError = t("footnote.linkInvalid");
       return;
     }
     if (!["http:", "https:", "mailto:"].includes(parsed.protocol)) {
-      linkError = "Please use a web link or email address.";
+      linkError = t("footnote.linkScheme");
       return;
     }
 
@@ -417,7 +418,7 @@
   class="footnote-popover"
   role="dialog"
   tabindex="-1"
-  aria-label={number !== null ? `Footnote ${number}` : "Footnote"}
+  aria-label={number !== null ? t("footnote.title", { number }) : t("footnote.titleNone")}
   style={`left: ${left}px; top: ${top}px`}
   onpointerdown={(event) => event.stopPropagation()}
   onkeydown={(event) => {
@@ -430,13 +431,13 @@
   }}
 >
   <div class="footnote-popover-head">
-    <span class="footnote-popover-title">Footnote {number ?? ""}</span>
-    <div class="footnote-popover-tools" role="toolbar" aria-label="Footnote formatting">
+    <span class="footnote-popover-title">{number !== null ? t("footnote.title", { number }) : t("footnote.titleNone")}</span>
+    <div class="footnote-popover-tools" role="toolbar" aria-label={t("footnote.formatting")}>
       <button
         type="button"
         class="footnote-tool"
-        aria-label="Bold"
-        title="Bold"
+        aria-label={t("shortcuts.action.bold")}
+        title={t("shortcuts.action.bold")}
         aria-pressed={isBold}
         onpointerdown={(event) => event.preventDefault()}
         onclick={() => applyFormat("bold")}
@@ -444,8 +445,8 @@
       <button
         type="button"
         class="footnote-tool italic"
-        aria-label="Italic"
-        title="Italic"
+        aria-label={t("shortcuts.action.italic")}
+        title={t("shortcuts.action.italic")}
         aria-pressed={isItalic}
         onpointerdown={(event) => event.preventDefault()}
         onclick={() => applyFormat("italic")}
@@ -453,8 +454,8 @@
       <button
         type="button"
         class="footnote-tool"
-        aria-label="Add link"
-        title="Add link"
+        aria-label={t("toolbar.addLink")}
+        title={t("toolbar.addLink")}
         aria-pressed={linkEditorOpen || insideLink}
         onpointerdown={(event) => event.preventDefault()}
         onclick={openLinkEditor}
@@ -463,8 +464,8 @@
         <button
           type="button"
           class="footnote-tool"
-          aria-label="Insert citation"
-          title="Insert citation"
+          aria-label={t("shortcuts.action.insertCitation")}
+          title={t("shortcuts.action.insertCitation")}
           onpointerdown={(event) => event.preventDefault()}
           onclick={openCitationInNote}
         ><Quote size={13} aria-hidden="true" /></button>
@@ -473,8 +474,8 @@
     <button
       type="button"
       class="footnote-close"
-      aria-label="Close footnote editor"
-      title="Close"
+      aria-label={t("footnote.close")}
+      title={t("common.close")}
       onclick={onClose}
     ><X size={14} aria-hidden="true" /></button>
   </div>
@@ -485,7 +486,7 @@
         bind:this={linkInput}
         type="url"
         placeholder="https://example.com"
-        aria-label="Link URL"
+        aria-label={t("footnote.linkUrl")}
         bind:value={linkUrl}
         onkeydown={(event) => {
           if (event.key === "Escape") {
@@ -495,11 +496,11 @@
           }
         }}
       />
-      <button type="submit" class="footnote-link-apply">Apply</button>
+      <button type="submit" class="footnote-link-apply">{t("footnote.apply")}</button>
       {#if insideLink}
-        <button type="button" class="footnote-link-cancel" onclick={removeLink}>Unlink</button>
+        <button type="button" class="footnote-link-cancel" onclick={removeLink}>{t("footnote.unlink")}</button>
       {/if}
-      <button type="button" class="footnote-link-cancel" onclick={() => closeLinkEditor(true)}>Cancel</button>
+      <button type="button" class="footnote-link-cancel" onclick={() => closeLinkEditor(true)}>{t("common.cancel")}</button>
     </form>
     {#if linkError}
       <p class="footnote-link-error" role="alert">{linkError}</p>
@@ -512,9 +513,9 @@
     contenteditable="true"
     role="textbox"
     tabindex="0"
-    aria-label="Footnote text"
+    aria-label={t("footnote.text")}
     aria-multiline="true"
-    data-placeholder="Write footnote…"
+    data-placeholder={t("footnote.placeholder")}
     oninput={() => { emitChange(); refreshNoteCitations(); refreshFormatState(); }}
     onclick={handleNoteClick}
     onkeyup={refreshFormatState}
@@ -527,10 +528,10 @@
     <button
       type="button"
       class="footnote-remove"
-      aria-label="Remove footnote"
+      aria-label={t("footnote.removeAria")}
       onclick={onRemove}
-    ><Trash2 size={13} aria-hidden="true" /> Remove</button>
-    <button type="button" class="footnote-done" onclick={onClose}>Done</button>
+    ><Trash2 size={13} aria-hidden="true" /> {t("footnote.remove")}</button>
+    <button type="button" class="footnote-done" onclick={onClose}>{t("common.done")}</button>
   </div>
 </div>
 

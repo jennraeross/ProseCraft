@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppearanceBar } from "./appearance-strip";
   import { chapterBars } from "./appearance-strip";
+  import { t, localeState } from "$lib/i18n/state.svelte";
   import type { ChapterData, DocumentData } from "./publish/types";
   import type { PageAppearances } from "./relations";
 
@@ -20,17 +21,26 @@
   const peak = $derived(Math.max(1, ...bars.map((bar) => bar.total)));
   const visited = $derived(bars.filter((bar) => bar.total > 0));
   const summary = $derived(
-    visited.length === 0 ? "No appearances yet" : `${visited.length} of ${bars.length} chapters`
+    visited.length === 0
+      ? t("appearance.summaryNone")
+      : t("appearance.summary", { count: visited.length, total: bars.length })
   );
 
   function barLabel(bar: AppearanceBar, index: number): string {
+    const list = new Intl.ListFormat(localeState.locale, { style: "long", type: "conjunction" });
     const marks: string[] = [];
-    if (bar.first) marks.push("first appearance");
-    if (bar.last) marks.push("last appearance");
-    const count = bar.total === 1 ? "1 scene" : `${bar.total} scenes`;
-    const scenes = bar.sceneTitles.length === 0 ? "no scenes" : bar.sceneTitles.join(", ");
-    const suffix = marks.length > 0 ? `, ${marks.join(", ")}` : "";
-    return `Chapter ${index + 1}: ${count}${suffix} (${scenes})`;
+    if (bar.first) marks.push(t("appearance.firstAppearance"));
+    if (bar.last) marks.push(t("appearance.lastAppearance"));
+    const scenes = t("appearance.scenes", { count: bar.total });
+    const titles =
+      bar.sceneTitles.length === 0 ? t("appearance.noScenes") : list.format(bar.sceneTitles);
+    const markSuffix = marks.length > 0 ? `, ${list.format(marks)}` : "";
+    return t("appearance.barLabel", {
+      chapter: index + 1,
+      scenes,
+      marks: markSuffix,
+      titles
+    });
   }
 
   function openScene(bar: AppearanceBar): void {
@@ -40,14 +50,14 @@
 
 <div class="appearance-strip">
   <div class="strip-head">
-    <span class="strip-label">Appearances</span>
+    <span class="strip-label">{t("appearance.title")}</span>
     <span class="strip-summary">{summary}</span>
   </div>
 
   {#if bars.length === 0}
-    <p class="strip-hint">Chapters show up here once the project has some.</p>
+    <p class="strip-hint">{t("appearance.empty")}</p>
   {:else}
-    <div class="strip-bars" role="group" aria-label="Scenes with this page per chapter">
+    <div class="strip-bars" role="group" aria-label={t("appearance.groupLabel")}>
       {#each bars as bar, index (bar.chapterId)}
         <button
           type="button"
@@ -77,9 +87,9 @@
     </div>
 
     <div class="strip-legend">
-      <span class="strip-key"><span class="strip-swatch confirmed"></span>Confirmed</span>
-      <span class="strip-key"><span class="strip-swatch auto"></span>Auto</span>
-      <span class="strip-key"><span class="strip-dot"></span>First and last</span>
+      <span class="strip-key"><span class="strip-swatch confirmed"></span>{t("appearance.confirmed")}</span>
+      <span class="strip-key"><span class="strip-swatch auto"></span>{t("appearance.auto")}</span>
+      <span class="strip-key"><span class="strip-dot"></span>{t("appearance.firstAndLast")}</span>
     </div>
   {/if}
 </div>

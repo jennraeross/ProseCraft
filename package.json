@@ -11,6 +11,9 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
+    "i18n:check": "node scripts/i18n-check.mjs",
+    "i18n:status": "node scripts/i18n-check.mjs --markdown",
+    "i18n:pseudo": "node scripts/i18n-pseudo.mjs",
     "release": "node scripts/release.js",
     "tauri": "tauri"
   },

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { t } from "$lib/i18n/state.svelte";
   import { Maximize2, Search, ZoomIn, ZoomOut } from "@lucide/svelte";
   import { fitView, type GraphPoint, type GraphView } from "./graph-layout";
   import {
@@ -613,8 +614,8 @@
       <input
         type="search"
         value={query}
-        placeholder="Find a page…"
-        aria-label="Search pages in the network"
+        placeholder={t("graph.find")}
+        aria-label={t("graph.searchAria")}
         oninput={(event) => onSearchInput(event.currentTarget.value)}
         onkeydown={onSearchKeydown}
       />
@@ -622,22 +623,22 @@
         <button
           type="button"
           class="graph-search-clear"
-          aria-label="Clear search"
+          aria-label={t("graph.clearSearch")}
           onclick={clearSearch}
         >
           ×
         </button>
       {/if}
     </div>
-    <span class="graph-meta">{nodes.length} pages · {edges.length} links</span>
-    <span class="graph-mode">{mode === "all" ? "All pages" : "This chapter"}</span>
+    <span class="graph-meta">{t("graph.meta", { pages: nodes.length, edges: edges.length })}</span>
+    <span class="graph-mode">{mode === "all" ? t("graph.allPages") : t("graph.thisChapter")}</span>
     <div class="graph-actions">
       <span class="graph-zoom" aria-hidden="true">{Math.round(view.scale * 100)}%</span>
       <button
         type="button"
         class="graph-button"
-        aria-label="Zoom out"
-        title="Zoom out"
+        aria-label={t("graph.zoomOut")}
+        title={t("graph.zoomOut")}
         disabled={view.scale <= MIN_SCALE}
         onclick={() => zoomBy(1 / 1.25)}
       >
@@ -646,8 +647,8 @@
       <button
         type="button"
         class="graph-button"
-        aria-label="Zoom in"
-        title="Zoom in"
+        aria-label={t("graph.zoomIn")}
+        title={t("graph.zoomIn")}
         disabled={view.scale >= MAX_SCALE}
         onclick={() => zoomBy(1.25)}
       >
@@ -656,8 +657,8 @@
       <button
         type="button"
         class="graph-button"
-        aria-label="Fit graph to view"
-        title="Fit graph to view"
+        aria-label={t("graph.fit")}
+        title={t("graph.fit")}
         onclick={fitGraph}
       >
         <Maximize2 size={15} aria-hidden="true" />
@@ -689,7 +690,7 @@
       class="graph-svg"
       use:wheelZoom
     >
-      <title>Relationship network</title>
+      <title>{t("network.aria")}</title>
       <defs>
         {#each Object.entries(relationColors) as [type, color] (type)}
           <marker
@@ -833,10 +834,10 @@
     {/if}
 
     {#if nodeViews.length === 0}
-      <p class="graph-empty">No pages match this view.</p>
+      <p class="graph-empty">{t("graph.noMatch")}</p>
     {/if}
 
-    <p class="graph-hint" aria-hidden="true">Drag to move · Scroll to zoom</p>
+    <p class="graph-hint" aria-hidden="true">{t("graph.hint")}</p>
   </div>
 </div>
 

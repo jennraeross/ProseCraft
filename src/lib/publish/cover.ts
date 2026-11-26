@@ -1,4 +1,5 @@
 import { isEmbeddedImageSrc, MAX_EMBEDDED_IMAGE_BYTES } from "../sanitize";
+import { t } from "$lib/i18n/state.svelte";
 import { resolveStyleTokens } from "./presets";
 import type {
   CompiledBook,
@@ -112,7 +113,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Could not decode that image."));
+    image.onerror = () => reject(new Error(t("module.cover.decodeFailed")));
     image.src = src;
   });
 }
@@ -178,7 +179,7 @@ function encodeCoverCanvas(canvas: HTMLCanvasElement): string {
   }
   const dataUrl = canvas.toDataURL("image/png");
   if (encodedImageFits(dataUrl)) return dataUrl;
-  throw new Error("That cover image is too large after compression. Try a smaller image.");
+  throw new Error(t("module.cover.tooLargeAfterCompression"));
 }
 
 /**
@@ -187,8 +188,8 @@ function encodeCoverCanvas(canvas: HTMLCanvasElement): string {
  * stored and keeps project bundles self-contained.
  */
 export async function imageFileToCoverDataUrl(file: File): Promise<string> {
-  if (!isSupportedCoverFile(file)) throw new Error("Use a PNG, JPG, or WebP image.");
-  if (file.size > MAX_COVER_FILE_BYTES) throw new Error("Cover images must be 15 MB or smaller.");
+  if (!isSupportedCoverFile(file)) throw new Error(t("module.cover.type"));
+  if (file.size > MAX_COVER_FILE_BYTES) throw new Error(t("module.cover.tooLarge"));
 
   const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
   const mimeType = file.type === "image/jpg"
@@ -202,13 +203,13 @@ export async function imageFileToCoverDataUrl(file: File): Promise<string> {
   try {
     const image = await loadImage(imageUrl);
     if (image.naturalWidth * image.naturalHeight > MAX_COVER_PIXELS) {
-      throw new Error("That image has too many pixels to use as a cover.");
+      throw new Error(t("module.cover.tooManyPixels"));
     }
     const canvas = document.createElement("canvas");
     canvas.width = COVER_WIDTH;
     canvas.height = COVER_HEIGHT;
     const context = canvas.getContext("2d");
-    if (!context) throw new Error("Could not prepare that cover image.");
+    if (!context) throw new Error(t("module.cover.prepareFailed"));
     drawCoverCrop(context, image);
     return encodeCoverCanvas(canvas);
   } finally {
@@ -292,7 +293,7 @@ async function renderGeneratedCover(
   canvas.width = COVER_WIDTH;
   canvas.height = COVER_HEIGHT;
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("Could not create the generated cover.");
+  if (!context) throw new Error(t("module.cover.generateFailed"));
 
   const palette = paletteFor(cover.palette);
   const fontFamily = cover.design === "modern" || cover.design === "bold"

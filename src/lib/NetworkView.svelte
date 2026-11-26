@@ -22,6 +22,8 @@
     type RelationType,
     type SheetTemplate
   } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     documents: readonly DocumentData[];
@@ -55,28 +57,28 @@
 
   type ViewMode = "cards" | "network" | "matrix";
 
-  const VIEWS: readonly { id: ViewMode; label: string }[] = [
-    { id: "cards", label: "Cards" },
-    { id: "network", label: "Network" },
-    { id: "matrix", label: "Matrix" }
+  const VIEWS: readonly { id: ViewMode; labelKey: MessageKey }[] = [
+    { id: "cards", labelKey: "network.view.cards" },
+    { id: "network", labelKey: "network.view.network" },
+    { id: "matrix", labelKey: "network.view.matrix" }
   ];
 
-  const KIND_LABELS: Record<PageKind, string> = {
-    character: "Characters",
-    place: "Places",
-    organisation: "Organisations",
-    item: "Items",
-    other: "Other"
+  const KIND_LABELS: Record<PageKind, MessageKey> = {
+    character: "network.kind.characters",
+    place: "network.kind.places",
+    organisation: "network.kind.organisations",
+    item: "network.kind.items",
+    other: "network.kind.other"
   };
 
-  const RELATION_LABELS: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const RELATION_LABELS: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   let view = $state<ViewMode>("network");
@@ -152,13 +154,15 @@
   );
   const chapterLabel = $derived(
     chapters.length === 0
-      ? "No chapters"
-      : `Ch ${activeChapterIndex + 1} of ${chapters.length}`
+      ? t("network.noChapters")
+      : t("network.chapterOf", { current: activeChapterIndex + 1, total: chapters.length })
   );
   const summary = $derived(
-    `${graph.nodes.length} ${graph.nodes.length === 1 ? "page" : "pages"} · ` +
-      `${graph.edges.length} ${graph.edges.length === 1 ? "edge" : "edges"} · ` +
-      `${allChapters ? "all chapters" : chapterLabel}`
+    t("network.summary", {
+      pages: graph.nodes.length,
+      edges: graph.edges.length,
+      scope: allChapters ? t("network.allChaptersLower") : chapterLabel
+    })
   );
 
   const selectedRelation = $derived.by(() => {
@@ -194,7 +198,7 @@
           id: item.relation.id,
           type: item.relation.type,
           label: item.relation.label ?? "",
-          otherTitle: pageTitles.get(item.relation.to) ?? "Untitled page",
+          otherTitle: pageTitles.get(item.relation.to) ?? t("network.untitledPage"),
           direction: "out"
         });
       } else if (item.relation.to === id) {
@@ -202,7 +206,7 @@
           id: item.relation.id,
           type: item.relation.type,
           label: item.relation.label ?? "",
-          otherTitle: pageTitles.get(item.source) ?? "Untitled page",
+          otherTitle: pageTitles.get(item.source) ?? t("network.untitledPage"),
           direction: "in"
         });
       }
@@ -310,17 +314,17 @@
   }
 </script>
 
-<section class="network-view" aria-label="Relationship network">
+<section class="network-view" aria-label={t("network.aria")}>
   <header class="network-header">
     <div>
-      <div class="network-eyebrow">WIKI · NETWORK</div>
-      <h1>Network</h1>
+      <div class="network-eyebrow">{t("network.eyebrow")}</div>
+      <h1>{t("workspace.network")}</h1>
       <p>{summary}</p>
     </div>
     <div class="network-header-actions">
       <div class="network-legend" aria-hidden="true">
-        <span class="network-legend-item"><i class="legend-line declared"></i>Declared</span>
-        <span class="network-legend-item"><i class="legend-line suggested"></i>Suggested</span>
+        <span class="network-legend-item"><i class="legend-line declared"></i>{t("network.declared")}</span>
+        <span class="network-legend-item"><i class="legend-line suggested"></i>{t("network.suggested")}</span>
       </div>
       <button
         class="network-action network-suggestions-toggle"
@@ -329,7 +333,7 @@
         aria-pressed={showSuggestions}
         onclick={toggleSuggestions}
       >
-        <Lightbulb size={12} aria-hidden="true" /> Suggestions
+        <Lightbulb size={12} aria-hidden="true" /> {t("suggestions.title")}
         <span class="network-suggestions-badge">{suggestions.length}</span>
       </button>
       <button
@@ -338,7 +342,7 @@
         disabled={wikiPages.length < 2}
         onclick={startAddingRelation}
       >
-        <Plus size={12} aria-hidden="true" /> Add relation
+        <Plus size={12} aria-hidden="true" /> {t("network.addRelation")}
       </button>
       <button
         class="network-add"
@@ -346,13 +350,13 @@
         disabled={!selectedId}
         onclick={() => selectedId && onOpenGraphBeside?.(selectedId)}
       >
-        Open graph beside
+        {t("network.openGraphBeside")}
       </button>
     </div>
   </header>
 
   <div class="network-toolbar">
-    <div class="network-switch" role="tablist" aria-label="Network view">
+    <div class="network-switch" role="tablist" aria-label={t("network.viewAria")}>
       {#each VIEWS as item (item.id)}
         <button
           class="network-switch-button"
@@ -361,25 +365,25 @@
           aria-selected={view === item.id}
           type="button"
           onclick={() => (view = item.id)}
-        >{item.label}</button>
+        >{t(item.labelKey)}</button>
       {/each}
     </div>
     <div class="network-filters">
       <label class="network-filter">
-        <span>Kind</span>
+        <span>{t("network.kind")}</span>
         <select bind:value={kindFilter}>
-          <option value="all">All</option>
+          <option value="all">{t("network.all")}</option>
           {#each PAGE_KINDS as kind (kind)}
-            <option value={kind}>{KIND_LABELS[kind]}</option>
+            <option value={kind}>{t(KIND_LABELS[kind])}</option>
           {/each}
         </select>
       </label>
       <label class="network-filter">
-        <span>Type</span>
+        <span>{t("network.type")}</span>
         <select bind:value={typeFilter}>
-          <option value="all">All</option>
+          <option value="all">{t("network.all")}</option>
           {#each RELATION_TYPES as type (type)}
-            <option value={type}>{RELATION_LABELS[type]}</option>
+            <option value={type}>{t(RELATION_LABELS[type])}</option>
           {/each}
         </select>
       </label>
@@ -388,7 +392,7 @@
         type="button"
         disabled={graph.nodes.length === 0}
         onclick={relayout}
-      ><RotateCcw size={12} aria-hidden="true" /> Re-layout</button>
+      ><RotateCcw size={12} aria-hidden="true" /> {t("network.relayout")}</button>
     </div>
   </div>
 
@@ -402,8 +406,8 @@
     />
   {:else if characters.length === 0}
     <div class="network-empty">
-      <strong>No character pages yet</strong>
-      <p>Create a page in the Characters folder to start mapping relationships.</p>
+      <strong>{t("network.emptyTitle")}</strong>
+      <p>{t("network.emptyBody")}</p>
     </div>
   {:else if view === "cards"}
     <NetworkCards
@@ -476,16 +480,16 @@
   {#if view === "matrix" || characters.length > 0}
     <div class="network-chapters">
       <div class="network-chapter-head">
-        <span class="network-eyebrow">Chapter</span>
+        <span class="network-eyebrow">{t("network.chapter")}</span>
         <button
           class="network-all"
           class:active={allChapters}
           type="button"
           aria-pressed={allChapters}
           onclick={() => (allChapters = !allChapters)}
-        >All chapters</button>
-        <span class="network-chapter-value">{allChapters ? "All" : chapterLabel}</span>
-        <span class="network-count">{declaredCount} declared</span>
+        >{t("network.allChapters")}</button>
+        <span class="network-chapter-value">{allChapters ? t("network.all") : chapterLabel}</span>
+        <span class="network-count">{t("network.declaredCount", { count: declaredCount })}</span>
       </div>
       <div class="chapter-slider">
         <input
@@ -495,7 +499,7 @@
           max={lastChapterIndex}
           step="1"
           value={activeChapterIndex}
-          aria-label="Chapter"
+          aria-label={t("network.chapterAria")}
           disabled={allChapters || chapters.length === 0}
           oninput={(event) => setChapter(Number(event.currentTarget.value))}
         />
@@ -505,7 +509,7 @@
               <span
                 class="chapter-mark"
                 style:left={`${(boundary / Math.max(1, lastChapterIndex)) * 100}%`}
-                title={`Relation change at chapter ${boundary + 1}`}
+                title={t("network.boundaryTitle", { chapter: boundary + 1 })}
               ></span>
             {/if}
           {/each}
@@ -514,8 +518,8 @@
       {#if view !== "matrix"}
         <p class="network-hint">
           {view === "cards"
-            ? "Click a card to open its character card."
-            : "Drag to rearrange · scroll to zoom · double-click a page to open it"}
+            ? t("network.cardsHint")
+            : t("network.graphHint")}
         </p>
       {/if}
     </div>

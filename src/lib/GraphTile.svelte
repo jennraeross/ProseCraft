@@ -8,6 +8,7 @@
   import { buildRelationGraph } from "./relation-graph-model";
   import { appearances, relationActiveAt, relationsOf, reverseView, type AppearanceMode } from "./relations";
   import type { RelationType } from "./story-meta";
+  import { t } from "$lib/i18n/state.svelte";
 
   let {
     documents,
@@ -41,13 +42,13 @@
   }));
   const highlightIds = $derived(tile.characters.map((entry) => entry.id));
   const title = $derived(pageId
-    ? `Graph: ${documents.find((doc) => doc.id === pageId)?.title ?? "page"}`
-    : "Graph: characters in this scene");
+    ? t("graph.titlePage", { title: documents.find((doc) => doc.id === pageId)?.title ?? t("tree.wikiPage") })
+    : t("graph.titleScene"));
   const emptyText = $derived(pageId
-    ? "This page has no relations yet."
+    ? t("graph.emptyPage")
     : tile.sceneId
-      ? "No characters detected in this scene yet."
-      : "Open a scene to see its character graph.");
+      ? t("graph.emptyScene")
+      : t("graph.emptyNoScene"));
 
   const structureKey = $derived(
     `${graph.nodes.map((node) => node.id).join("\u0000")}|${graph.edges.map((edge) => edge.id).join("\u0000")}`
@@ -156,11 +157,11 @@
     <p class="graph-tile-empty">{emptyText}</p>
   {/if}
   {#if tile.suggestions.length > 0}
-    <ul class="graph-suggestions" aria-label="Suggested characters">
+    <ul class="graph-suggestions" aria-label={t("graph.suggestions")}>
       {#each tile.suggestions as character (character.id)}
         <li>
-          <span class="graph-suggestion-text">Suggested: {character.label} appears here (add?)</span>
-          <button type="button" onclick={() => onConfirm(character.id)}>Confirm</button>
+          <span class="graph-suggestion-text">{t("graph.suggestion", { name: character.label })}</span>
+          <button type="button" onclick={() => onConfirm(character.id)}>{t("graph.confirm")}</button>
         </li>
       {/each}
     </ul>

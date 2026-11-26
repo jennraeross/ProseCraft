@@ -1,6 +1,7 @@
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { randomBytes } from "@noble/ciphers/utils.js";
 import { argon2idAsync } from "@noble/hashes/argon2.js";
+import { t } from "$lib/i18n/state.svelte";
 
 /**
  * Envelope format version. Bump when the cleartext header or KDF contract
@@ -174,7 +175,7 @@ export function isEntityEnvelope(value: unknown): value is EntityEnvelope {
  * to NFKC so the same text typed on different platforms derives the same key.
  */
 export async function deriveKek(passphrase: string, kdf: KdfParams): Promise<Uint8Array> {
-  if (!isKdfParams(kdf)) throw new Error("Unsupported key-derivation parameters.");
+  if (!isKdfParams(kdf)) throw new Error(t("module.crypto.unsupportedKdf"));
   return argon2idAsync(
     encoder.encode(passphrase.normalize("NFKC")),
     base64ToBytes(kdf.salt),
@@ -215,7 +216,7 @@ export type CreateVaultOptions = {
  * key. The returned header is safe to store/transmit in the clear.
  */
 export async function createVault(passphrase: string, options: CreateVaultOptions = {}): Promise<CreatedVault> {
-  if (!passphrase) throw new Error("A passphrase is required.");
+  if (!passphrase) throw new Error(t("module.crypto.passphraseRequired"));
   const vaultKey = randomBytes(KEY_LENGTH);
   const kdf: KdfParams = {
     algorithm: "argon2id",
@@ -234,12 +235,12 @@ export async function createVault(passphrase: string, options: CreateVaultOption
 
 /** Recovers the content key. Throws a user-facing error on a wrong passphrase. */
 export async function unlockVault(header: VaultHeader, passphrase: string): Promise<Uint8Array> {
-  if (!isVaultHeader(header)) throw new Error("This is not a valid ProseCraft vault.");
+  if (!isVaultHeader(header)) throw new Error(t("module.crypto.invalidVault"));
   const kek = await deriveKek(passphrase, header.kdf);
   try {
     return unwrapVaultKey(header.wrappedKey, kek);
   } catch {
-    throw new Error("Incorrect passphrase.");
+    throw new Error(t("module.crypto.incorrectPassphrase"));
   }
 }
 
@@ -269,17 +270,17 @@ export function encryptEntity(vaultKey: Uint8Array, meta: EntityMetaPlain, paylo
  * attacker-controlled metadata.
  */
 export function decryptEntity(vaultKey: Uint8Array, envelope: EntityEnvelope): unknown {
-  if (!isEntityEnvelope(envelope)) throw new Error("This record is not readable.");
+  if (!isEntityEnvelope(envelope)) throw new Error(t("module.crypto.unreadable"));
   let plaintext: Uint8Array;
   try {
     plaintext = xchacha20poly1305(vaultKey, base64ToBytes(envelope.nonce), entityAad(envelope))
       .decrypt(base64ToBytes(envelope.body));
   } catch {
-    throw new Error("This record could not be decrypted.");
+    throw new Error(t("module.crypto.decryptFailed"));
   }
   try {
     return JSON.parse(decoder.decode(plaintext));
   } catch {
-    throw new Error("This record could not be decoded.");
+    throw new Error(t("module.crypto.decodeFailed"));
   }
 }

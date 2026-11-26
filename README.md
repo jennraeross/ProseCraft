@@ -10,6 +10,18 @@ This application is built with AI, on a base of Tauri, Typescript, and Svelte.
 
 To build it yourself, clone the repo, enter it's directory and run `npm install && npm run tauri build`
 
+### Contributing
+
+Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup,
+the pull-request checklist and the translation guide.
+
+### Translating the interface
+
+Interface strings live in `src/lib/i18n/messages/`. Copy `en.json` to a new
+[BCP 47](https://www.rfc-editor.org/info/bcp47) file such as `fr.json`, translate the values,
+and run `npm run i18n:check`. Untranslated keys fall back to English, so a partial language is
+safe to merge. `npm run i18n:status` prints a progress table.
+
 ### Creating a release
 
 Commit and push the GitHub Actions release workflow before the first release. With a clean

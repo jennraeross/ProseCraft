@@ -1,6 +1,7 @@
 <script lang="ts">
   import { X } from "@lucide/svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
+  import { t } from "$lib/i18n/state.svelte";
   import type { ChapterData, DocumentData, ResearchFolder } from "./publish/types";
   import type { DocumentMeta, SheetTemplate } from "./story-meta";
 
@@ -42,14 +43,14 @@
 <aside
   class="character-card-panel"
   data-testid="character-card"
-  aria-label={`${document.title || "Untitled"} character card`}
+  aria-label={t("characterCard.aria", { title: document.title || t("common.untitled") })}
 >
   <header class="character-card-head">
-    <span class="character-card-eyebrow">Character card</span>
+    <span class="character-card-eyebrow">{t("characterCard.title")}</span>
     <button
       type="button"
       class="character-card-close"
-      aria-label="Close character card"
+      aria-label={t("characterCard.close")}
       onclick={onClose}
     >
       <X size={13} aria-hidden="true" />

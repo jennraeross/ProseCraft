@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+  import { t } from "$lib/i18n/state.svelte";
 
   let { load }: { load: () => Promise<ArrayBuffer> } = $props();
 
@@ -78,8 +79,8 @@
         console.error("Could not open a PDF.", error);
         status = "error";
         message = (error as { name?: string })?.name === "PasswordException"
-          ? "This PDF is password protected."
-          : "This PDF could not be opened.";
+          ? t("pdf.passwordProtected")
+          : t("pdf.openFailed");
       }
     })();
     return () => {
@@ -128,11 +129,11 @@
 
 <div class="pdf-view" bind:clientWidth={width}>
   {#if status === "loading"}
-    <p class="pdf-note">Opening PDF…</p>
+    <p class="pdf-note">{t("pdf.opening")}</p>
   {:else if status === "error"}
     <p class="pdf-note">{message}</p>
   {:else}
-    <p class="pdf-note pdf-position">Page {currentPage} of {pageCount}</p>
+    <p class="pdf-note pdf-position">{t("pdf.position", { current: currentPage, total: pageCount })}</p>
     <div class="pdf-pages" bind:this={pagesElement}>
       {#each pageEntries as pageNumber (pageNumber)}
         <div class="pdf-page" data-page={pageNumber} style={`min-height: ${Math.floor(width * aspect)}px`}>

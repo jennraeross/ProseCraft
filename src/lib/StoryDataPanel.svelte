@@ -6,6 +6,7 @@
   import { normalizeMeta, type DocumentMeta } from "./story-meta";
   import { parseStoryMeta, serializeStoryMeta } from "./story-yaml";
   import { createWikiMentionMatcher } from "./wiki-mentions";
+  import { t } from "$lib/i18n/state.svelte";
 
   let {
     meta,
@@ -86,9 +87,9 @@
     if (meta?.storyDate) parts.push(meta.storyDate);
     if (placeLabel) parts.push(placeLabel);
     if (confirmedIds.length > 0) {
-      parts.push(`${confirmedIds.length} character${confirmedIds.length === 1 ? "" : "s"}`);
+      parts.push(t("storyData.characterCount", { count: confirmedIds.length }));
     }
-    return parts.length > 0 ? parts.join(" · ") : "Add story date, place and characters";
+    return parts.length > 0 ? parts.join(" · ") : t("storyData.addSummary");
   });
 
   function titleOf(id: string): string {
@@ -169,31 +170,31 @@
     onclick={toggleOpen}
   >
     <span class="chevron lead" class:open><ChevronDown size={14} /></span>
-    <span class="story-data-title">Story data</span>
+    <span class="story-data-title">{t("storyData.title")}</span>
     <span class="story-data-summary">{summary}</span>
   </button>
 
   {#if open}
     <div class="story-data-body">
       <div class="story-data-row">
-        <label class="story-data-label" for="story-data-date">Story date</label>
+        <label class="story-data-label" for="story-data-date">{t("storyData.date")}</label>
         <input
           id="story-data-date"
           class="story-data-input"
           value={meta?.storyDate ?? ""}
-          placeholder="e.g. Day 14, Year 412"
+          placeholder={t("storyData.datePlaceholder")}
           onchange={(event) => commit({ storyDate: event.currentTarget.value.trim() })}
         />
       </div>
 
       <div class="story-data-row">
-        <label class="story-data-label" for="story-data-place">Place</label>
+        <label class="story-data-label" for="story-data-place">{t("storyData.place")}</label>
         <input
           id="story-data-place"
           class="story-data-input"
           list="story-data-places"
           value={pageById.get(meta?.place ?? "")?.title ?? meta?.place ?? ""}
-          placeholder="Page or free text"
+          placeholder={t("storyData.placePlaceholder")}
           onchange={commitPlace}
         />
         <datalist id="story-data-places">
@@ -204,7 +205,7 @@
       </div>
 
       <div class="story-data-row story-data-row-top">
-        <span class="story-data-label">Characters</span>
+        <span class="story-data-label">{t("storyData.characters")}</span>
         <div class="chips">
           {#each confirmedIds as id (id)}
             <span class="chip chip-confirmed">
@@ -212,7 +213,7 @@
               <button
                 type="button"
                 class="chip-x"
-                aria-label={`Remove ${titleOf(id)}`}
+                aria-label={t("storyData.removeCharacter", { name: titleOf(id) })}
                 onclick={() => removeCharacter(id)}
               >
                 <X size={11} />
@@ -223,11 +224,11 @@
             <button
               type="button"
               class="chip chip-auto"
-              title="Mentioned in this scene — click to confirm"
+              title={t("storyData.mentionTitle")}
               onclick={() => addCharacter(id)}
             >
               {titleOf(id)}
-              <span class="chip-auto-label">auto</span>
+              <span class="chip-auto-label">{t("storyData.auto")}</span>
               <Plus size={11} />
             </button>
           {/each}
@@ -235,14 +236,14 @@
             <select
               class="chip-add"
               value=""
-              aria-label="Add character"
+              aria-label={t("storyData.addCharacter")}
               onchange={(event) => {
                 const id = event.currentTarget.value;
                 if (id) addCharacter(id);
                 event.currentTarget.value = "";
               }}
             >
-              <option value="">+ Add character</option>
+              <option value="">{t("storyData.addCharacterOption")}</option>
               {#each availableCharacters as page (page.id)}
                 <option value={page.id}>{page.title}</option>
               {/each}
@@ -252,7 +253,7 @@
       </div>
 
       <div class="story-data-row story-data-row-top">
-        <span class="story-data-label">Tags</span>
+        <span class="story-data-label">{t("storyData.tags")}</span>
         <div class="chips">
           {#each meta?.tags ?? [] as tag (tag)}
             <span class="chip chip-confirmed">
@@ -260,7 +261,7 @@
               <button
                 type="button"
                 class="chip-x"
-                aria-label={`Remove tag ${tag}`}
+                aria-label={t("storyData.removeTag", { tag })}
                 onclick={() => commit({ tags: (meta?.tags ?? []).filter((entry) => entry !== tag) })}
               >
                 <X size={11} />
@@ -270,8 +271,8 @@
           <input
             class="tag-input"
             bind:value={tagDraft}
-            placeholder="+ tag"
-            aria-label="Add tag"
+            placeholder={t("storyData.tagPlaceholder")}
+            aria-label={t("storyData.addTag")}
             onkeydown={onTagKeydown}
             onblur={addTag}
           />
@@ -281,13 +282,13 @@
       <div class="story-data-advanced">
         <button type="button" class="foldout" aria-expanded={yamlOpen} onclick={toggleYaml}>
           <span class="chevron" class:open={yamlOpen}><ChevronDown size={13} /></span>
-          Advanced: raw YAML
+          {t("storyData.advanced")}
         </button>
         {#if yamlOpen}
           <textarea
             class="yaml-input"
             spellcheck="false"
-            aria-label="Scene metadata as YAML"
+            aria-label={t("storyData.yamlAria")}
             value={yamlText}
             oninput={(event) => (yamlText = event.currentTarget.value)}
             onblur={applyYaml}
@@ -296,7 +297,7 @@
         {/if}
       </div>
 
-      <p class="story-data-note">Never exported</p>
+      <p class="story-data-note">{t("storyData.neverExported")}</p>
     </div>
   {/if}
 </section>

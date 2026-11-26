@@ -7,6 +7,18 @@
     STYLE_TRIMS,
     type CustomExportStyle
   } from "./presets";
+  import { t } from "$lib/i18n/state.svelte";
+  import type { MessageKey } from "$lib/i18n/catalog";
+
+  const TRIM_KEYS: Record<string, MessageKey> = {
+    letter: "trim.letter",
+    a4: "trim.a4",
+    a5: "trim.a5",
+    "trade-6x9": "trim.trade6x9",
+    "trade-5.5x8.5": "trim.trade5.5x8.5",
+    "trade-5.25x8": "trim.trade5.25x8",
+    "trade-5x8": "trim.trade5x8"
+  };
 
   type Props = {
     initial: CustomExportStyle;
@@ -40,9 +52,9 @@
 
   let nameError = $derived.by(() => {
     const label = draft.label.trim();
-    if (!label) return "Give this style a name.";
+    if (!label) return t("styleEditor.nameRequired");
     if (existingLabels.some((existing) => existing.trim().toLowerCase() === label.toLowerCase())) {
-      return "Another style already uses that name.";
+      return t("styleEditor.nameTaken");
     }
     return "";
   });
@@ -87,26 +99,26 @@
   <form onsubmit={submit}>
     <div class="style-editor-header">
       <div>
-        <span class="style-editor-kicker">EXPORT STYLE</span>
-        <h2 id="style-editor-title">{isNew ? "New style" : "Edit style"}</h2>
+        <span class="style-editor-kicker">{t("styleEditor.kicker")}</span>
+        <h2 id="style-editor-title">{isNew ? t("styleEditor.newTitle") : t("styleEditor.editTitle")}</h2>
       </div>
-      <button type="button" class="style-editor-close" aria-label="Close style editor" onclick={onCancel}><X size={16} aria-hidden="true" /></button>
+      <button type="button" class="style-editor-close" aria-label={t("styleEditor.close")} onclick={onCancel}><X size={16} aria-hidden="true" /></button>
     </div>
 
     <div class="style-editor-body">
       <section class="style-editor-section">
         <div class="style-editor-heading">
-          <strong>Name</strong>
-          <span>Shown in the style picker for this project.</span>
+          <strong>{t("styleEditor.nameTitle")}</strong>
+          <span>{t("styleEditor.nameHelp")}</span>
         </div>
         <label class="style-field">
-          <span>Style name</span>
+          <span>{t("styleEditor.nameLabel")}</span>
           <input
             type="text"
             bind:value={draft.label}
             maxlength={CUSTOM_STYLE_LABEL_LIMIT}
             required
-            placeholder="My paperback"
+            placeholder={t("styleEditor.namePlaceholder")}
           />
         </label>
         {#if nameError}
@@ -116,12 +128,12 @@
 
       <section class="style-editor-section">
         <div class="style-editor-heading">
-          <strong>Body typography</strong>
-          <span>How the manuscript text is set.</span>
+          <strong>{t("styleEditor.bodyTitle")}</strong>
+          <span>{t("styleEditor.bodyHelp")}</span>
         </div>
         <div class="style-field-grid">
           <label class="style-field">
-            <span>Font</span>
+            <span>{t("styleEditor.font")}</span>
             <select bind:value={draft.fontId}>
               {#each STYLE_FONTS as font (font.id)}
                 <option value={font.id}>{font.label}</option>
@@ -129,115 +141,115 @@
             </select>
           </label>
           <label class="style-field">
-            <span>Body size (pt)</span>
+            <span>{t("styleEditor.bodySize")}</span>
             <input type="number" bind:value={draft.bodySizePt} min="6" max="36" step="0.5" />
           </label>
           <label class="style-field">
-            <span>Line height</span>
+            <span>{t("styleEditor.lineHeight")}</span>
             <input type="number" bind:value={draft.lineHeight} min="1" max="3" step="0.05" />
           </label>
           <label class="style-field">
-            <span>First-line indent (em)</span>
+            <span>{t("styleEditor.indent")}</span>
             <input type="number" bind:value={draft.paragraphIndentEm} min="0" max="4" step="0.1" />
           </label>
           <label class="style-field">
-            <span>Paragraph spacing (em)</span>
+            <span>{t("styleEditor.paragraphSpacing")}</span>
             <input type="number" bind:value={draft.paragraphSpacingEm} min="0" max="3" step="0.05" />
           </label>
         </div>
         <label class="style-check">
           <input type="checkbox" bind:checked={draft.justify} />
-          <span>Justify body text</span>
+          <span>{t("styleEditor.justify")}</span>
         </label>
       </section>
 
       <section class="style-editor-section">
         <div class="style-editor-heading">
-          <strong>Chapter headings</strong>
-          <span>Size and placement of chapter titles.</span>
+          <strong>{t("styleEditor.headingTitle")}</strong>
+          <span>{t("styleEditor.headingHelp")}</span>
         </div>
         <div class="style-field-grid">
           <label class="style-field">
-            <span>Heading size (pt)</span>
+            <span>{t("styleEditor.headingSize")}</span>
             <input type="number" bind:value={draft.chapterHeadingSizePt} min="8" max="48" step="0.5" />
           </label>
           <label class="style-field">
-            <span>Alignment</span>
+            <span>{t("styleEditor.alignment")}</span>
             <select bind:value={draft.chapterHeadingAlign}>
-              <option value="left">Left</option>
-              <option value="center">Centered</option>
+              <option value="left">{t("styleEditor.alignLeft")}</option>
+              <option value="center">{t("styleEditor.alignCenter")}</option>
             </select>
           </label>
           <label class="style-field">
-            <span>Space before (em)</span>
+            <span>{t("styleEditor.spaceBefore")}</span>
             <input type="number" bind:value={draft.chapterHeadingSpaceBefore} min="0" max="6" step="0.1" />
           </label>
           <label class="style-field">
-            <span>Space after (em)</span>
+            <span>{t("styleEditor.spaceAfter")}</span>
             <input type="number" bind:value={draft.chapterHeadingSpaceAfter} min="0" max="6" step="0.1" />
           </label>
         </div>
         <label class="style-check">
           <input type="checkbox" bind:checked={draft.chapterHeadingUppercase} />
-          <span>Uppercase chapter headings</span>
+          <span>{t("styleEditor.uppercase")}</span>
         </label>
       </section>
 
       <section class="style-editor-section">
         <div class="style-editor-heading">
-          <strong>Page layout</strong>
-          <span>Trim size and margins for print and paginated previews.</span>
+          <strong>{t("styleEditor.layoutTitle")}</strong>
+          <span>{t("styleEditor.layoutHelp")}</span>
         </div>
         <label class="style-field">
-          <span>Trim size</span>
+          <span>{t("styleEditor.trim")}</span>
           <select bind:value={draft.trimId}>
             {#each STYLE_TRIMS as trim (trim.id)}
-              <option value={trim.id}>{trim.label}</option>
+              <option value={trim.id}>{TRIM_KEYS[trim.id] ? t(TRIM_KEYS[trim.id]) : trim.label}</option>
             {/each}
           </select>
         </label>
         <div class="style-field-grid">
           <label class="style-field">
-            <span>Top margin (in)</span>
+            <span>{t("styleEditor.marginTop")}</span>
             <input type="number" bind:value={draft.marginTopIn} min="0.25" max="1.5" step="0.01" />
           </label>
           <label class="style-field">
-            <span>Right margin (in)</span>
+            <span>{t("styleEditor.marginRight")}</span>
             <input type="number" bind:value={draft.marginRightIn} min="0.25" max="1.5" step="0.01" />
           </label>
           <label class="style-field">
-            <span>Bottom margin (in)</span>
+            <span>{t("styleEditor.marginBottom")}</span>
             <input type="number" bind:value={draft.marginBottomIn} min="0.25" max="1.5" step="0.01" />
           </label>
           <label class="style-field">
-            <span>Left margin (in)</span>
+            <span>{t("styleEditor.marginLeft")}</span>
             <input type="number" bind:value={draft.marginLeftIn} min="0.25" max="1.5" step="0.01" />
           </label>
         </div>
         <label class="style-check">
           <input type="checkbox" bind:checked={draft.runningHeader} />
-          <span>Running header on body pages</span>
+          <span>{t("styleEditor.runningHeader")}</span>
         </label>
         <label class="style-check">
           <input type="checkbox" bind:checked={draft.pageNumbers} />
-          <span>Page numbers</span>
+          <span>{t("styleEditor.pageNumbers")}</span>
         </label>
       </section>
 
       <section class="style-editor-section">
         <div class="style-editor-heading">
-          <strong>Details</strong>
-          <span>Scene breaks and decorative touches.</span>
+          <strong>{t("styleEditor.detailsTitle")}</strong>
+          <span>{t("styleEditor.detailsHelp")}</span>
         </div>
         <div class="style-field-grid">
           <label class="style-field">
-            <span>Scene break spacing (em)</span>
+            <span>{t("styleEditor.sceneBreak")}</span>
             <input type="number" bind:value={draft.sceneBreakSpacing} min="0" max="3" step="0.1" />
           </label>
         </div>
         <label class="style-check">
           <input type="checkbox" bind:checked={draft.dropCap} />
-          <span>Use a drop cap when Drop caps is enabled</span>
+          <span>{t("styleEditor.dropCap")}</span>
         </label>
       </section>
     </div>
@@ -245,20 +257,20 @@
     <div class="style-editor-footer">
       {#if !isNew}
         {#if confirmingDelete}
-          <div class="style-editor-confirm" role="group" aria-label="Confirm deleting this style">
-            <span>Delete this style?</span>
-            <button type="button" class="style-danger-button" onclick={onDelete}>Delete</button>
-            <button type="button" class="style-secondary-button" onclick={() => confirmingDelete = false}>Keep</button>
+          <div class="style-editor-confirm" role="group" aria-label={t("styleEditor.confirmDelete")}>
+            <span>{t("styleEditor.deleteQuestion")}</span>
+            <button type="button" class="style-danger-button" onclick={onDelete}>{t("styleEditor.delete")}</button>
+            <button type="button" class="style-secondary-button" onclick={() => confirmingDelete = false}>{t("styleEditor.keep")}</button>
           </div>
         {:else}
-          <button type="button" class="style-delete-button" onclick={() => confirmingDelete = true}>Delete style</button>
+          <button type="button" class="style-delete-button" onclick={() => confirmingDelete = true}>{t("styleEditor.deleteStyle")}</button>
         {/if}
       {/if}
       <div class="style-editor-actions">
-        <button type="button" class="style-secondary-button" onclick={reset}>Reset</button>
-        <button type="button" class="style-secondary-button" onclick={onCancel}>Cancel</button>
+        <button type="button" class="style-secondary-button" onclick={reset}>{t("styleEditor.reset")}</button>
+        <button type="button" class="style-secondary-button" onclick={onCancel}>{t("common.cancel")}</button>
         <button type="submit" class="style-primary-button" disabled={Boolean(nameError)}>
-          {isNew ? "Create style" : "Save changes"}
+          {isNew ? t("styleEditor.create") : t("styleEditor.save")}
         </button>
       </div>
     </div>

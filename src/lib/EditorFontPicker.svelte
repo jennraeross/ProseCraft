@@ -4,6 +4,7 @@
     EditorFontSelection,
     SystemFontFamily
   } from "$lib/editor-fonts";
+  import { t } from "$lib/i18n/state.svelte";
 
   let {
     id,
@@ -59,26 +60,26 @@
   {#if installedReady && monospaceOnly}
     <label class="font-picker-toggle">
       <input type="checkbox" bind:checked={showAll} />
-      Show all fonts
+      {t("fontPicker.showAll")}
     </label>
   {/if}
 
   <select {id} class="font-select" value={selectedValue} onchange={selectValue}>
-    <optgroup label="ProseCraft fonts">
+    <optgroup label={t("fontPicker.prosecraftFonts")}>
       {#each builtinOptions as option (option.id)}
         <option value={`builtin:${option.id}`}>{option.label}</option>
       {/each}
     </optgroup>
-    <optgroup label="Installed fonts">
+    <optgroup label={t("fontPicker.installedFonts")}>
       {#if selectedFamily && !(installedReady && currentFamilyVisible)}
-        <option value={`system:${selectedFamily}`}>{selectedFamily} (current)</option>
+        <option value={`system:${selectedFamily}`}>{t("fontPicker.current", { family: selectedFamily })}</option>
       {/if}
       {#if !supported}
-        <option disabled>Available in the desktop app</option>
+        <option disabled>{t("fontPicker.desktopOnlyOption")}</option>
       {:else if loading}
-        <option disabled>Loading installed fonts…</option>
+        <option disabled>{t("fontPicker.loadingOption")}</option>
       {:else if error}
-        <option disabled>Installed fonts unavailable</option>
+        <option disabled>{t("fontPicker.errorOption")}</option>
       {:else}
         {#each visibleFamilies as font (font.family)}
           <option value={`system:${font.family}`}>{font.family}</option>
@@ -88,16 +89,16 @@
   </select>
 
   {#if !supported}
-    <p class="font-picker-note">Installed font selection is available in the desktop app.</p>
+    <p class="font-picker-note">{t("fontPicker.desktopOnlyNote")}</p>
   {:else if loading}
-    <p class="font-picker-note">Loading installed fonts…</p>
+    <p class="font-picker-note">{t("fontPicker.loadingNote")}</p>
   {:else if error}
     <p class="font-picker-error">{error}</p>
   {:else if visibleFamilies.length === 0 && !selectedFamily}
     <p class="font-picker-note">
       {monospaceOnly && !showAll
-        ? "No monospaced fonts match. Show all fonts to see other families."
-        : "No installed fonts match."}
+        ? t("fontPicker.noMonospace")
+        : t("fontPicker.noMatch")}
     </p>
   {/if}
 </div>

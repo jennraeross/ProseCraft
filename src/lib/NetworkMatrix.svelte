@@ -3,6 +3,8 @@
   import type { SourcedRelation } from "./relations";
   import { relationActiveAt } from "./relations";
   import type { RelationType } from "./story-meta";
+  import type { MessageKey } from "$lib/i18n/catalog";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     pages: readonly DocumentData[];
@@ -15,14 +17,14 @@
 
   let { pages, sourcedRelations, chapters, chapterId, onOpenPage }: Props = $props();
 
-  const RELATION_LABELS: Record<RelationType, string> = {
-    family: "Family",
-    friend: "Friend",
-    rival: "Rival",
-    love: "Love",
-    mentor: "Mentor",
-    employer: "Employer",
-    other: "Other"
+  const RELATION_LABELS: Record<RelationType, MessageKey> = {
+    family: "relation.family",
+    friend: "relation.friend",
+    rival: "relation.rival",
+    love: "relation.love",
+    mentor: "relation.mentor",
+    employer: "relation.employer",
+    other: "relation.other"
   };
 
   const relationColors: Record<RelationType, string> = {
@@ -54,7 +56,7 @@
   const legend = $derived.by(() => {
     const types = new Set<RelationType>();
     for (const { relation } of sourcedRelations) types.add(relation.type);
-    return [...types].sort((left, right) => RELATION_LABELS[left].localeCompare(RELATION_LABELS[right]));
+    return [...types].sort((left, right) => t(RELATION_LABELS[left]).localeCompare(t(RELATION_LABELS[right])));
   });
 
   function cellDots(from: string, to: string): Dot[] {
@@ -72,14 +74,14 @@
 </script>
 
 {#if pages.length === 0}
-  <p class="matrix-empty">No pages to compare yet.</p>
+  <p class="matrix-empty">{t("network.matrixEmpty")}</p>
 {:else}
   <div class="matrix-scroll">
     <div
       class="matrix"
       style:grid-template-columns={`minmax(120px, 172px) repeat(${pages.length}, 24px)`}
     >
-      <span class="matrix-corner">Page</span>
+      <span class="matrix-corner">{t("network.page")}</span>
       {#each pages as page (page.id)}
         <span class="matrix-col" title={page.title}>{initials(page.title)}</span>
       {/each}
@@ -94,7 +96,7 @@
               <span
                 class="matrix-dot"
                 style:background={relationColors[dot.type]}
-                title={`${row.title} → ${column.title}: ${dot.label || RELATION_LABELS[dot.type]}`}
+                title={t("network.dotTitle", { source: row.title, target: column.title, label: dot.label || t(RELATION_LABELS[dot.type]) })}
               ></span>
             {/each}
           </span>
@@ -102,11 +104,11 @@
       {/each}
     </div>
   </div>
-  <p class="matrix-hint">Rows are the relation source, columns the target. Hover a dot for its label.</p>
+  <p class="matrix-hint">{t("network.matrixHint")}</p>
   {#if legend.length > 0}
     <ul class="matrix-legend">
       {#each legend as type (type)}
-        <li><span class="legend-dot" style:background={relationColors[type]}></span>{RELATION_LABELS[type]}</li>
+        <li><span class="legend-dot" style:background={relationColors[type]}></span>{t(RELATION_LABELS[type])}</li>
       {/each}
     </ul>
   {/if}

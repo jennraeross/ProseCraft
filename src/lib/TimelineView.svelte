@@ -8,6 +8,7 @@
     TIMELINE_WHEN_LIMIT
   } from "./timeline";
   import type { TimelineNode } from "./storage/types";
+  import { t } from "$lib/i18n/state.svelte";
 
   type Props = {
     nodes: TimelineNode[];
@@ -25,7 +26,7 @@
   let dropTarget = $state<{ id: string; after: boolean } | null>(null);
 
   function nodeLabel(node: TimelineNode, index: number): string {
-    return node.title.trim() || `timeline moment ${index + 1}`;
+    return node.title.trim() || t("timeline.nodeLabel", { number: index + 1 });
   }
 
   function dropPosition(id: string): "before" | "after" | null {
@@ -104,27 +105,27 @@
   }
 </script>
 
-<section class="timeline-view" aria-label="Story timeline">
+<section class="timeline-view" aria-label={t("timeline.aria")}>
   <header class="timeline-header">
     <div>
-      <span class="timeline-eyebrow">FOLLOW YOUR STORY</span>
-      <h1>Timeline</h1>
-      <p>Map the moments that move your story forward. Drag nodes to change their order.</p>
+      <span class="timeline-eyebrow">{t("timeline.eyebrow")}</span>
+      <h1>{t("workspace.timeline")}</h1>
+      <p>{t("timeline.intro")}</p>
     </div>
     <div class="timeline-header-actions">
       <span class="timeline-count">
-        {nodes.length} {nodes.length === 1 ? "moment" : "moments"}
+        {t("timeline.count", { count: nodes.length })}
       </span>
-      <button class="timeline-add" type="button" onclick={addNode}><Plus size={14} aria-hidden="true" /> Add moment</button>
+      <button class="timeline-add" type="button" onclick={addNode}><Plus size={14} aria-hidden="true" /> {t("timeline.add")}</button>
     </div>
   </header>
 
   {#if nodes.length === 0}
     <div class="timeline-empty">
       <CalendarClock size={34} strokeWidth={1.4} color="var(--eyebrow)" aria-hidden="true" />
-      <h2>No moments yet</h2>
-      <p>Add your first event to begin charting the sequence of your story.</p>
-      <button class="timeline-add" type="button" onclick={addNode}><Plus size={14} aria-hidden="true" /> Add moment</button>
+      <h2>{t("timeline.emptyTitle")}</h2>
+      <p>{t("timeline.emptyBody")}</p>
+      <button class="timeline-add" type="button" onclick={addNode}><Plus size={14} aria-hidden="true" /> {t("timeline.add")}</button>
     </div>
   {:else}
     <div class="timeline-list">
@@ -142,8 +143,8 @@
             <button
               class="timeline-drag"
               type="button"
-              aria-label="Drag {nodeLabel(node, index)} to reorder"
-              title="Drag to reorder"
+              aria-label={t("timeline.dragAria", { name: nodeLabel(node, index) })}
+              title={t("tree.dragToReorder")}
               onpointerdown={(event) => startDrag(event, node.id)}
               onpointermove={updateDrag}
               onpointerup={finishDrag}
@@ -154,8 +155,8 @@
               bind:this={titleInputs[node.id]}
               class="timeline-title"
               data-undo-key={`timeline-title:${node.id}`}
-              aria-label="Title for timeline moment {index + 1}"
-              placeholder="What happens here?"
+              aria-label={t("timeline.titleAria", { number: index + 1 })}
+              placeholder={t("timeline.titlePlaceholder")}
               autocapitalize="sentences"
               enterkeyhint="done"
               maxlength={TIMELINE_TITLE_LIMIT}
@@ -166,48 +167,48 @@
               <button
                 class="timeline-action"
                 type="button"
-                aria-label="Move {nodeLabel(node, index)} earlier"
-                title="Move earlier"
+                aria-label={t("timeline.moveEarlierAria", { name: nodeLabel(node, index) })}
+                title={t("timeline.moveEarlier")}
                 disabled={index === 0}
                 onclick={() => onMove(node.id, -1)}
               ><ArrowUp size={14} aria-hidden="true" /></button>
               <button
                 class="timeline-action"
                 type="button"
-                aria-label="Move {nodeLabel(node, index)} later"
-                title="Move later"
+                aria-label={t("timeline.moveLaterAria", { name: nodeLabel(node, index) })}
+                title={t("timeline.moveLater")}
                 disabled={index === nodes.length - 1}
                 onclick={() => onMove(node.id, 1)}
               ><ArrowDown size={14} aria-hidden="true" /></button>
               <button
                 class="timeline-remove"
                 type="button"
-                aria-label="Remove {nodeLabel(node, index)}"
-                title="Remove moment"
+                aria-label={t("timeline.removeAria", { name: nodeLabel(node, index) })}
+                title={t("timeline.removeTitle")}
                 onclick={() => onRemove(node.id)}
               ><X size={14} aria-hidden="true" /></button>
             </div>
           </div>
           <div class="timeline-when">
             <label class="timeline-field">
-              <span>Date</span>
+              <span>{t("timeline.date")}</span>
               <input
                 type="text"
-                aria-label="Date for {nodeLabel(node, index)}"
+                aria-label={t("timeline.dateAria", { name: nodeLabel(node, index) })}
                 data-undo-key={`timeline-date:${node.id}`}
-                placeholder="Day 12, Third Age, 14 May 1842…"
+                placeholder={t("timeline.datePlaceholder")}
                 maxlength={TIMELINE_WHEN_LIMIT}
                 value={node.date}
                 oninput={(event) => onUpdate(node.id, { date: (event.currentTarget as HTMLInputElement).value })}
               />
             </label>
             <label class="timeline-field timeline-time">
-              <span>Time</span>
+              <span>{t("timeline.time")}</span>
               <input
                 type="text"
-                aria-label="Time for {nodeLabel(node, index)}"
+                aria-label={t("timeline.timeAria", { name: nodeLabel(node, index) })}
                 data-undo-key={`timeline-time:${node.id}`}
-                placeholder="4:30 PM, dawn, midnight…"
+                placeholder={t("timeline.timePlaceholder")}
                 maxlength={TIMELINE_WHEN_LIMIT}
                 value={node.time}
                 oninput={(event) => onUpdate(node.id, { time: (event.currentTarget as HTMLInputElement).value })}
@@ -217,8 +218,8 @@
           <textarea
             class="timeline-description"
             data-undo-key={`timeline-description:${node.id}`}
-            aria-label="Description for {nodeLabel(node, index)}"
-            placeholder="Describe the moment, who is involved, and what changes…"
+            aria-label={t("timeline.descriptionAria", { name: nodeLabel(node, index) })}
+            placeholder={t("timeline.descriptionPlaceholder")}
             maxlength={TIMELINE_DESCRIPTION_LIMIT}
             value={node.description}
             use:autoResize={node.description}
@@ -229,7 +230,7 @@
     </div>
     <button class="timeline-add-card" type="button" onclick={addNode}>
       <span class="timeline-add-symbol"><Plus size={17} aria-hidden="true" /></span>
-      <span><strong>Add moment</strong><small>Place another event on your timeline.</small></span>
+      <span><strong>{t("timeline.add")}</strong><small>{t("timeline.addCardBody")}</small></span>
     </button>
   {/if}
 </section>

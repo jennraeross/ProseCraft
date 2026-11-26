@@ -6,6 +6,7 @@ import {
   type DocumentData
 } from "$lib/publish/types";
 import { MAX_EMBEDDED_IMAGE_BYTES, sanitizeHtml } from "$lib/sanitize";
+import { t } from "$lib/i18n/state.svelte";
 import type { ProjectData } from "$lib/storage/types";
 
 /**
@@ -148,7 +149,7 @@ function normalizeArchivePath(path: string): string {
   for (const part of parts) {
     if (!part || part === ".") continue;
     if (part === "..") {
-      if (result.length === 0) throw new Error("The EPUB contains an unsafe file path.");
+      if (result.length === 0) throw new Error(t("module.epub.unsafePath"));
       result.pop();
       continue;
     }
@@ -217,9 +218,9 @@ function readArchive(
       }
     });
   } catch {
-    throw new Error("That file is not a valid EPUB archive.");
+    throw new Error(t("module.epub.invalidArchive"));
   }
-  if (tooLarge) throw new Error("This EPUB is too large to import (200 MB extracted limit).");
+  if (tooLarge) throw new Error(t("module.epub.tooLargeExtracted"));
   const archive: Archive = new Map();
   for (const [name, bytes] of Object.entries(extracted)) {
     archive.set(normalizeArchivePath(name), bytes);
@@ -230,7 +231,7 @@ function readArchive(
 function parseXml(text: string, what: string): Document {
   const doc = new DOMParser().parseFromString(text, "application/xml");
   if (doc.querySelector("parsererror")) {
-    throw new Error(`The EPUB's ${what} is not valid XML.`);
+    throw new Error(t("module.epub.invalidXml", { what }));
   }
   return doc;
 }
@@ -731,11 +732,11 @@ export async function parseEpub(
   data: Uint8Array,
   options: ParseEpubOptions = {}
 ): Promise<EpubManuscript> {
-  if (data.byteLength === 0) throw new Error("That file is empty.");
+  if (data.byteLength === 0) throw new Error(t("module.epub.emptyFile"));
   if (data.byteLength > MAX_ARCHIVE_BYTES) {
-    throw new Error("That EPUB is too large to import (100 MB limit).");
+    throw new Error(t("module.epub.tooLarge"));
   }
-  options.onProgress?.("Reading EPUB…");
+  options.onProgress?.(t("module.epub.reading"));
 
   const budget = { remaining: MAX_EXTRACTED_BYTES };
   const containerFiles = readArchive(
@@ -744,9 +745,9 @@ export async function parseEpub(
     budget
   );
   const containerBytes = containerFiles.get(CONTAINER_FILE);
-  if (!containerBytes) throw new Error("The EPUB is missing its container file.");
+  if (!containerBytes) throw new Error(t("module.epub.missingContainer"));
   if (looksEncrypted(containerFiles)) {
-    throw new Error("This EPUB is DRM-protected and can't be imported.");
+    throw new Error(t("module.epub.drm"));
   }
 
   const containerDoc = parseXml(strFromU8(containerBytes), "container file");
@@ -765,7 +766,7 @@ export async function parseEpub(
 
   const packageFiles = readArchive(data, (path) => path === opfPath, budget);
   const opfBytes = packageFiles.get(opfPath);
-  if (!opfBytes) throw new Error("The EPUB is missing its package document.");
+  if (!opfBytes) throw new Error(t("module.epub.missingPackage"));
   const opfDoc = parseXml(strFromU8(opfBytes), "package document");
   const packageInfo = readPackage(opfDoc, opfPath);
 
@@ -778,9 +779,9 @@ export async function parseEpub(
     seen.add(item.path);
     spineItems.push(item);
   }
-  if (spineItems.length === 0) throw new Error("This EPUB doesn't contain any readable chapters.");
+  if (spineItems.length === 0) throw new Error(t("module.epub.noChapters"));
   if (spineItems.length > MAX_SPINE_ITEMS) {
-    throw new Error("This EPUB has too many documents to import.");
+    throw new Error(t("module.epub.tooManyDocuments"));
   }
 
   const wanted = new Set(spineItems.map((item) => item.path));
@@ -799,7 +800,7 @@ export async function parseEpub(
     packageInfo.coverPath
   );
 
-  options.onProgress?.("Reading chapters…");
+  options.onProgress?.(t("module.epub.readingChapters"));
   const documents: ContentDocument[] = [];
   for (const item of spineItems) {
     if (shouldSkipDocument(item, packageInfo)) continue;

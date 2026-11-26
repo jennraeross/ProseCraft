@@ -8,6 +8,7 @@
   import { sanitizeHtml } from "$lib/sanitize";
   import { parseSplitTarget, type SplitGroup } from "$lib/split";
   import TileEditor from "$lib/TileEditor.svelte";
+  import { t } from "$lib/i18n/state.svelte";
 
   const MAX_TEXT_BYTES = 2 * 1024 * 1024;
   const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -92,8 +93,8 @@
     : null);
   const inPaneChapter = $derived(paneChapter !== null && chapterDocs.length > 0);
   const paneTitle = $derived(inPaneChapter && paneChapter
-    ? paneChapter.title || "Untitled chapter"
-    : (document?.title || "Untitled"));
+    ? paneChapter.title || t("split.untitledChapter")
+    : (document?.title || t("common.untitled")));
   const paneHtml = $derived(inPaneChapter
     ? sanitizeHtml(buildChapterHtml(chapterDocs.map((doc) => doc.content), sceneSeparator, chapterDocs.map((doc) => doc.id)))
     : (document ? sanitizeHtml(document.content) : ""));
@@ -134,7 +135,7 @@
     if (!current) return;
     if (isPdf) {
       // PDFs are rendered by PdfView; only an oversized one needs a note here.
-      if (!showPdf) loaded = { note: "This PDF is too large to show here (over 50 MB)." };
+      if (!showPdf) loaded = { note: t("split.pdfTooLarge") };
       return;
     }
     let cancelled = false;
@@ -155,11 +156,11 @@
           imageUrl = URL.createObjectURL(new Blob([bytes], { type: current.mimeType }));
           loaded = { imageUrl };
         } else {
-          loaded = { note: "This file type cannot be shown inside ProseCraft yet." };
+          loaded = { note: t("split.unsupported") };
         }
       } catch (error) {
         console.error("Could not show a file in the split view.", error);
-        if (!cancelled) loaded = { note: error instanceof Error ? error.message : "Could not open that file." };
+        if (!cancelled) loaded = { note: error instanceof Error ? error.message : t("split.openFailed") };
       }
     })();
     return () => {
@@ -177,12 +178,12 @@
   }
 </script>
 
-<aside class="split-pane" aria-label="Reference pane">
+<aside class="split-pane" aria-label={t("split.aria")}>
   <div class="split-pane-header">
-    <select aria-label="Show in this pane" value={target} onchange={(event) => onTarget((event.currentTarget as HTMLSelectElement).value)}>
-      <option value="">Choose something to show…</option>
+    <select aria-label={t("split.showIn")} value={target} onchange={(event) => onTarget((event.currentTarget as HTMLSelectElement).value)}>
+      <option value="">{t("split.choose")}</option>
       {#if parsed?.kind === "graph" && parsed.mode === "page" && !groups.some((group) => group.options.some((option) => option.value === target))}
-        <option value={target}>Characters graph</option>
+        <option value={target}>{t("split.charactersGraph")}</option>
       {/if}
       {#each groups as group (group.label)}
         <optgroup label={group.label}>
@@ -192,11 +193,11 @@
         </optgroup>
       {/each}
     </select>
-    <button class="split-button" type="button" aria-label="Edit this in the main editor and show the current text here" title="Swap with the editor" disabled={!canSwap} onclick={onSwap}><ArrowLeftRight size={14} aria-hidden="true" /></button>
-    <button class="split-button" type="button" aria-label="Move this pane left" title="Move left" disabled={!canMoveLeft} onclick={() => onMove(-1)}><ArrowLeft size={14} aria-hidden="true" /></button>
-    <button class="split-button" type="button" aria-label="Move this pane right" title="Move right" disabled={!canMoveRight} onclick={() => onMove(1)}><ArrowRight size={14} aria-hidden="true" /></button>
-    <button class="split-button" type="button" aria-label="Add another pane" title={canAdd ? "Add another pane" : "Up to five reference panes"} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
-    <button class="split-button" type="button" aria-label="Close this pane" title="Close this pane" onclick={onClose}><X size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label={t("split.swapAria")} title={t("split.swapTitle")} disabled={!canSwap} onclick={onSwap}><ArrowLeftRight size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label={t("split.moveLeftAria")} title={t("split.moveLeft")} disabled={!canMoveLeft} onclick={() => onMove(-1)}><ArrowLeft size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label={t("split.moveRightAria")} title={t("split.moveRight")} disabled={!canMoveRight} onclick={() => onMove(1)}><ArrowRight size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label={t("split.addAria")} title={canAdd ? t("split.add") : t("split.addLimit")} disabled={!canAdd} onclick={onAdd}><Plus size={14} aria-hidden="true" /></button>
+    <button class="split-button" type="button" aria-label={t("split.close")} title={t("split.close")} onclick={onClose}><X size={14} aria-hidden="true" /></button>
   </div>
   <div class="split-pane-body" class:graph-body={parsed?.kind === "graph"} bind:this={readScroller}>
     {#if parsed?.kind === "graph"}
@@ -213,7 +214,7 @@
     {:else if document}
       {#if isActiveDocument}
         <h2 class="split-title">{paneTitle}</h2>
-        <p class="split-note split-hint">Open in the editor</p>
+        <p class="split-note split-hint">{t("split.openInEditor")}</p>
         <div class="split-content" role="presentation" onclick={handleContentClick}>{@html paneHtml}</div>
       {:else}
         <!-- Keyed by chapter (or document), so a pending save can never land in another document. -->
@@ -236,10 +237,10 @@
       {#if loaded?.imageUrl}<img class="split-image" src={loaded.imageUrl} alt={file.title || file.fileName} />{/if}
       {#if loaded?.note}
         <p class="split-note">{loaded.note}</p>
-        <button class="split-open-button" type="button" onclick={() => openExternally(file)}>Open externally</button>
+        <button class="split-open-button" type="button" onclick={() => openExternally(file)}>{t("split.openExternally")}</button>
       {/if}
     {:else}
-      <p class="split-note">Pick a scene, wiki page or file above to read it next to your text.</p>
+      <p class="split-note">{t("split.empty")}</p>
     {/if}
   </div>
 </aside>

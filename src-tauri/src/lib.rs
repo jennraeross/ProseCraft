@@ -102,6 +102,89 @@ fn update_project_menu(
     Ok(())
 }
 
+#[cfg(desktop)]
+fn find_menu_item(menu: &Menu<tauri::Wry>, id: &str) -> Option<MenuItemKind<tauri::Wry>> {
+    if let Some(item) = menu.get(id) {
+        return Some(item);
+    }
+    if let Ok(items) = menu.items() {
+        for item in items {
+            if let MenuItemKind::Submenu(submenu) = item {
+                if let Some(found) = submenu.get(id) {
+                    return Some(found);
+                }
+                if let Ok(children) = submenu.items() {
+                    for child in children {
+                        if let MenuItemKind::Submenu(nested) = child
+                            && let Some(found) = nested.get(id)
+                        {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Update the native menu labels after an interface language change.
+#[tauri::command]
+fn set_menu_labels(
+    app: AppHandle,
+    labels: Vec<(String, String)>,
+    edit_labels: Vec<String>,
+) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        let menu = app
+            .menu()
+            .ok_or_else(|| "Application menu is unavailable".to_string())?;
+        for (id, text) in labels {
+            let Some(item) = find_menu_item(&menu, &id) else {
+                continue;
+            };
+            let result = match item {
+                MenuItemKind::MenuItem(item) => item.set_text(text),
+                MenuItemKind::Check(item) => item.set_text(text),
+                MenuItemKind::Icon(item) => item.set_text(text),
+                MenuItemKind::Predefined(item) => item.set_text(text),
+                MenuItemKind::Submenu(item) => item.set_text(text),
+            };
+            result.map_err(|error| error.to_string())?;
+        }
+
+        // Predefined items have generated ids, so update them in menu order and
+        // skip separators (which have no text).
+        if !edit_labels.is_empty()
+            && let Some(MenuItemKind::Submenu(edit_menu)) = menu.get("edit-menu")
+        {
+            let mut remaining = edit_labels.into_iter();
+            for item in edit_menu.items().unwrap_or_default() {
+                if let MenuItemKind::Predefined(predefined) = item {
+                    let current = predefined.text().unwrap_or_default();
+                    if current.trim().is_empty() {
+                        continue;
+                    }
+                    let Some(label) = remaining.next() else {
+                        break;
+                    };
+                    predefined
+                        .set_text(label)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, labels, edit_labels);
+        Ok(())
+    }
+}
+
 #[tauri::command]
 fn set_typewriter_menu_checked(app: AppHandle, checked: bool) -> Result<(), String> {
     #[cfg(desktop)]
@@ -1173,6 +1256,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             update_project_menu,
+            set_menu_labels,
             read_import_file,
             set_typewriter_menu_checked,
             set_fade_paragraphs_menu_checked,
