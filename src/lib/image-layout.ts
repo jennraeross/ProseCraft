@@ -4,7 +4,7 @@
  * `data-` attributes so they survive sanitizing; CSS in the editor and the
  * export style helper read the same vocabulary.
  */
-export type ImageLayoutSize = "small" | "medium" | "large" | "full" | "custom";
+export type ImageLayoutSize = "small" | "medium" | "large" | "full" | "original" | "custom";
 export type ImageLayoutAlign = "left" | "center" | "right";
 export type ImageLayoutWrap = "block" | "wrap-left" | "wrap-right";
 
@@ -25,7 +25,7 @@ export const MIN_IMAGE_WIDTH = 10;
 export const MAX_IMAGE_WIDTH = 100;
 
 /** Width in percent of the text column for the named sizes. */
-const SIZE_PERCENT: Record<Exclude<ImageLayoutSize, "custom">, number> = {
+const SIZE_PERCENT: Record<Exclude<ImageLayoutSize, "custom" | "original">, number> = {
   small: 25,
   medium: 50,
   large: 75,
@@ -42,6 +42,7 @@ function asSize(value: unknown): ImageLayoutSize | null {
     case "medium":
     case "large":
     case "full":
+    case "original":
     case "custom":
       return value;
     default:
@@ -136,28 +137,102 @@ export function applyImageLayout(image: HTMLImageElement | Element, layout: Imag
 }
 
 /**
+ * Width a layout asks for, as a percentage of the text column, or `null` when
+ * the picture keeps its own pixel size. A wrapped picture never takes more than
+ * half the column, so text has room beside it.
+ */
+export function imageWidthPercent(layout: ImageLayout): number | null {
+  const safe = normalizeImageLayout(layout);
+  if (safe.size === "original") return null;
+  const percent = safe.size === "custom" ? safe.width ?? MAX_IMAGE_WIDTH : SIZE_PERCENT[safe.size];
+  return safe.wrap === "block" ? percent : Math.min(percent, MAX_WRAP_PERCENT);
+}
+
+/**
  * CSS declarations for the same layout in exported documents. Sizes are
  * percentages of the text column; wrapped images float and keep a margin to
- * the text that flows around them.
+ * the text that flows around them. Pass `{ sizing: false }` to keep an image's
+ * own pixel size (a `width` attribute) and apply only its alignment and flow.
  */
-export function imageLayoutStyle(layout: ImageLayout): string {
+export function imageLayoutStyle(layout: ImageLayout, options: { sizing?: boolean } = {}): string {
   const safe = normalizeImageLayout(layout);
-  const percent = safe.size === "custom" ? safe.width ?? MAX_IMAGE_WIDTH : SIZE_PERCENT[safe.size];
+  const sizing = options.sizing !== false;
+  const percent = sizing ? imageWidthPercent(safe) : null;
   const declarations: string[] = [];
   if (safe.wrap === "block") {
-    declarations.push(`width: ${percent}%`, "max-width: 100%");
-    declarations.push("height: auto");
+    if (sizing) declarations.push(percent === null ? "width: auto" : `width: ${percent}%`);
+    // Also cap a picture that keeps its own pixel size, so it never runs past the column.
+    declarations.push("max-width: 100%", "height: auto");
     if (safe.align === "center") declarations.push("margin-left: auto", "margin-right: auto");
     else if (safe.align === "right") declarations.push("margin-left: auto", "margin-right: 0");
     else declarations.push("margin-left: 0", "margin-right: auto");
   } else {
-    const floated = Math.min(percent, MAX_WRAP_PERCENT);
-    declarations.push(`width: ${floated}%`, "max-width: 100%");
+    if (sizing) declarations.push(percent === null ? "width: auto" : `width: ${percent}%`);
+    declarations.push(!sizing || percent === null ? "max-width: 50%" : "max-width: 100%", "height: auto");
     declarations.push(
-      "height: auto",
       `float: ${safe.wrap === "wrap-left" ? "left" : "right"}`,
       safe.wrap === "wrap-left" ? "margin: 4px 18px 14px 0" : "margin: 4px 0 14px 18px"
     );
   }
   return `${declarations.join("; ")};`;
+}
+
+/**
+ * Applies the layout as inline CSS to every block image, matching what the
+ * editor draws. Exports render sanitized HTML without the editor stylesheet,
+ * so the validated layout has to travel with the image itself.
+ */
+export function applyImageLayoutStyles(html: string): string {
+  if (!html.includes("<img")) return html;
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  let changed = false;
+  for (const image of Array.from(parsed.body.querySelectorAll("img"))) {
+    if (image.getAttribute("data-inline") === "true") continue;
+    // A `width` attribute is an explicit pixel size; keep it and only carry
+    // the alignment and text flow, matching the editor's `img:not([width])`.
+    const sizing = !image.hasAttribute("width");
+    image.setAttribute("style", imageLayoutStyle(readImageLayout(image), { sizing }));
+    changed = true;
+  }
+  return changed ? parsed.body.innerHTML : html;
+}
+
+export type ImageBox = {
+  /** Rendered size, in points. */
+  width: number;
+  height: number;
+  /** Distance from the left edge of the column, in points. */
+  offset: number;
+};
+
+/**
+ * Places a block picture in a text column, for formats that draw pictures at
+ * absolute positions (the PDF). The width is the one the layout asks for,
+ * aligned inside the column, never wider than the column and shrunk to fit
+ * `maxHeight`. `pixelSize` keeps an explicit size (a `width` attribute) and
+ * applies only the alignment, as `applyImageLayoutStyles` does. A wrapped
+ * picture is still drawn whole: a printed page has no text flow to wrap around.
+ */
+export function imageLayoutBox(
+  layout: ImageLayout,
+  columnWidth: number,
+  pictureWidth: number,
+  pictureHeight: number,
+  options: { pixelSize?: boolean; maxHeight?: number } = {}
+): ImageBox {
+  const safe = normalizeImageLayout(layout);
+  const sourceWidth = Math.max(1, pictureWidth);
+  const sourceHeight = Math.max(1, pictureHeight);
+  const percent = options.pixelSize ? null : imageWidthPercent(safe);
+  const cap = safe.wrap === "block" ? columnWidth : (columnWidth * MAX_WRAP_PERCENT) / 100;
+  let width = Math.min(percent === null ? sourceWidth : (columnWidth * percent) / 100, cap);
+  let height = (sourceHeight / sourceWidth) * width;
+  const maxHeight = options.maxHeight ?? Infinity;
+  if (height > maxHeight) {
+    width *= maxHeight / height;
+    height = maxHeight;
+  }
+  const free = Math.max(0, columnWidth - width);
+  const offset = safe.align === "right" ? free : safe.align === "center" ? free / 2 : 0;
+  return { width, height, offset };
 }

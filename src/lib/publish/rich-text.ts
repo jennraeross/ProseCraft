@@ -1,3 +1,4 @@
+import { readImageLayout, type ImageLayout } from "../image-layout";
 import { FOOTNOTE_REF_CLASS, isValidFootnoteId } from "../sanitize";
 
 export type InlineStyle = {
@@ -19,14 +20,41 @@ export type InlineRun = InlineStyle & {
 
 export type BlockKind = "paragraph" | "heading" | "quote" | "list" | "image";
 
+export type BlockImage = {
+  src: string;
+  alt: string;
+  width?: number;
+  height?: number;
+  /** Stored layout of the picture, so a renderer can place it like the editor. */
+  layout: ImageLayout;
+  /** True when a `width` attribute names an explicit pixel size. */
+  pixelSized: boolean;
+};
+
 export type Block = {
   kind: BlockKind;
   runs: InlineRun[];
-  image?: { src: string; alt: string; width?: number; height?: number };
+  image?: BlockImage;
   level?: number;
   marker?: string;
   eyebrow?: boolean;
 };
+
+/** A block-level picture, with its stored layout and explicit size. */
+function blockImage(element: HTMLElement): BlockImage | null {
+  const src = element.getAttribute("src") ?? "";
+  if (!/^data:image\/(?:png|jpeg|webp);base64,/.test(src)) return null;
+  const width = Number(element.getAttribute("width") ?? element.getAttribute("data-display-width"));
+  const height = Number(element.getAttribute("height") ?? element.getAttribute("data-display-height"));
+  return {
+    src,
+    alt: element.getAttribute("alt") ?? "",
+    ...(Number.isFinite(width) && width > 0 ? { width } : {}),
+    ...(Number.isFinite(height) && height > 0 ? { height } : {}),
+    layout: readImageLayout(element),
+    pixelSized: element.hasAttribute("width")
+  };
+}
 
 function normalizeText(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ");
@@ -157,20 +185,8 @@ export function blocksFromHtml(html: string): Block[] {
       for (const part of splitAroundImages(node)) {
         if (part instanceof HTMLElement && part.tagName === "IMG"
           && part.getAttribute("data-inline") !== "true") {
-          const src = part.getAttribute("src") ?? "";
-          if (!/^data:image\/(?:png|jpeg|webp);base64,/.test(src)) continue;
-          const width = Number(part.getAttribute("width"));
-          const height = Number(part.getAttribute("height"));
-          blocks.push({
-            kind: "image",
-            runs: [],
-            image: {
-              src,
-              alt: part.getAttribute("alt") ?? "",
-              ...(Number.isFinite(width) && width > 0 ? { width } : {}),
-              ...(Number.isFinite(height) && height > 0 ? { height } : {})
-            }
-          });
+          const image = blockImage(part);
+          if (image) blocks.push({ kind: "image", runs: [], image });
         } else {
           addNode(part);
         }
@@ -178,10 +194,8 @@ export function blocksFromHtml(html: string): Block[] {
       return;
     }
     if (node.tagName === "IMG") {
-      const src = node.getAttribute("src") ?? "";
-      if (/^data:image\/(?:png|jpeg|webp);base64,/.test(src)) {
-        blocks.push({ kind: "image", runs: [], image: { src, alt: node.getAttribute("alt") ?? "" } });
-      }
+      const image = blockImage(node);
+      if (image) blocks.push({ kind: "image", runs: [], image });
       return;
     }
 

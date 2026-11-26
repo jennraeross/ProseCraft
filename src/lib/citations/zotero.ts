@@ -4,9 +4,24 @@ import { t } from "$lib/i18n/state.svelte";
 
 export const ZOTERO_PING_PATH = "/connector/ping";
 export const ZOTERO_BBT_CAYW_PATH = "/better-bibtex/cayw?format=json";
+/** Better BibTeX answers `ready` to this path without opening the picker. */
+export const ZOTERO_BBT_PROBE_PATH = "/better-bibtex/cayw?probe=1";
 export const ZOTERO_SEARCH_LIMIT = 25;
+/** CAYW stays open until the person has picked, so it needs minutes, not seconds. */
+export const ZOTERO_PICK_TIMEOUT_MS = 5 * 60 * 1000;
 
-export type ZoteroTransport = (path: string) => Promise<string>;
+export type ZoteroRequestOptions = {
+  timeoutMs?: number;
+  /** Names the request so `zotero_cancel` can stop it while it waits. */
+  requestId?: string;
+};
+
+export type ZoteroTransport = (path: string, options?: ZoteroRequestOptions) => Promise<string>;
+
+/** A fresh id per pick; only used to cancel that one request. */
+function createPickRequestId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `pick-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 export type ZoteroErrorCode =
   | "not-running"
@@ -166,6 +181,17 @@ export function classifyZoteroError(error: unknown): ZoteroErrorState {
   };
 }
 
+/**
+ * True only when Zotero itself answered that the requested endpoint does not
+ * exist, which is how a missing Better BibTeX shows up. Timeouts and other
+ * failures leave the endpoint unknown rather than silently absent.
+ */
+export function isZoteroEndpointMissing(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const trimmed = raw.trim();
+  return /^HTTP\s+404\b/i.test(trimmed) || /\bno endpoint found\b/i.test(trimmed);
+}
+
 /** Extracts the Zotero item key from a Zotero URI (`.../items/ABCD1234`) or raw id/key field. */
 export function extractZoteroKey(rawId: unknown, rawKey?: unknown): string | undefined {
   if (typeof rawKey === "string" && rawKey.trim()) {
@@ -277,7 +303,10 @@ export function mapZoteroCslJson(rawText: string): CslItem[] {
   return mapZoteroItems(parsed);
 }
 
-async function tauriZoteroTransport(path: string): Promise<string> {
+async function tauriZoteroTransport(
+  path: string,
+  options?: ZoteroRequestOptions
+): Promise<string> {
   const { invoke, isTauri } = await import("@tauri-apps/api/core");
   if (!isTauri()) {
     throw new ZoteroError(
@@ -285,7 +314,18 @@ async function tauriZoteroTransport(path: string): Promise<string> {
       t("module.zotero.desktopOnly")
     );
   }
-  return invoke<string>("zotero_request", { path });
+  return invoke<string>("zotero_request", {
+    path,
+    timeoutMs: options?.timeoutMs,
+    requestId: options?.requestId
+  });
+}
+
+/** Stops an in-flight `zotero_request` the dialog no longer wants. */
+async function tauriZoteroCancel(requestId: string): Promise<boolean> {
+  const { invoke, isTauri } = await import("@tauri-apps/api/core");
+  if (!isTauri()) return false;
+  return invoke<boolean>("zotero_cancel", { requestId });
 }
 
 /**
@@ -296,9 +336,13 @@ export class ZoteroLocal implements CitationProvider {
   readonly id = "zotero";
   readonly label = "Zotero";
   private readonly transport: ZoteroTransport;
+  private readonly cancelRequest: (requestId: string) => Promise<boolean>;
+  /** Id of the pick that is waiting right now, so the dialog can stop it. */
+  private pickRequestId: string | null = null;
 
-  constructor(transport: ZoteroTransport = tauriZoteroTransport) {
+  constructor(transport: ZoteroTransport = tauriZoteroTransport, cancelRequest = tauriZoteroCancel) {
     this.transport = transport;
+    this.cancelRequest = cancelRequest;
   }
 
   async checkStatus(): Promise<{ available: boolean; error?: ZoteroErrorState }> {
@@ -326,19 +370,61 @@ export class ZoteroLocal implements CitationProvider {
   }
 
   /**
+   * Reports whether Better BibTeX's Cite-As-You-Write picker is installed.
+   * Only a definitive "no such endpoint" answer from Zotero hides the picker;
+   * a timeout or other failure leaves it available so the person can retry.
+   */
+  async hasBetterBibtexPicker(): Promise<boolean> {
+    try {
+      await this.transport(ZOTERO_BBT_PROBE_PATH);
+      return true;
+    } catch (error) {
+      return !isZoteroEndpointMissing(error);
+    }
+  }
+
+  /**
    * Invokes Better BibTeX's Cite-As-You-Write picker when installed, falling
    * back silently (`supported: false`) when Better BibTeX is not present.
+   *
+   * The picker request stays open until the person has chosen, so it gets a
+   * minutes-long deadline instead of the 5 s used for the other endpoints.
+   * Failures other than a missing Better BibTeX are rethrown so the caller can
+   * show them instead of hiding the button.
    */
   async tryPick(): Promise<{ supported: boolean; items: CslItem[] }> {
+    const requestId = createPickRequestId();
+    this.pickRequestId = requestId;
     try {
-      const response = await this.transport(ZOTERO_BBT_CAYW_PATH);
+      const response = await this.transport(ZOTERO_BBT_CAYW_PATH, {
+        timeoutMs: ZOTERO_PICK_TIMEOUT_MS,
+        requestId
+      });
       if (!response.trim()) {
         return { supported: true, items: [] };
       }
       return { supported: true, items: mapZoteroCslJson(response) };
-    } catch {
-      return { supported: false, items: [] };
+    } catch (error) {
+      if (isZoteroEndpointMissing(error)) {
+        return { supported: false, items: [] };
+      }
+      if (error instanceof ZoteroError) throw error;
+      const state = classifyZoteroError(error);
+      throw new ZoteroError(state.code, state.message, state.detail);
+    } finally {
+      if (this.pickRequestId === requestId) this.pickRequestId = null;
     }
+  }
+
+  /**
+   * Stops the pick that is waiting, if any. The request ends with "cancelled"
+   * and the caller drops it; returns false when it had already finished.
+   */
+  async cancelPick(): Promise<boolean> {
+    const requestId = this.pickRequestId;
+    if (!requestId) return false;
+    this.pickRequestId = null;
+    return this.cancelRequest(requestId);
   }
 
   async pick(): Promise<CslItem[]> {

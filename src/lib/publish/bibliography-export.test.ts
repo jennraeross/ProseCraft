@@ -1,4 +1,4 @@
-import { strFromU8, unzlibSync, unzipSync } from "fflate";
+import { strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { citeMarkerHtml } from "../citations/cite-marker";
 import type { CslItem } from "../citations/csl";
@@ -10,6 +10,7 @@ import { exportEpub } from "./epub";
 import { exportHtml } from "./html";
 import { exportMarkdown } from "./markdown";
 import { exportPdf } from "./pdf";
+import { extractPdfText } from "./pdf-text";
 import { exportText } from "./text";
 import { defaultPublishOptions, type CompiledBook, type PublishOptions } from "./types";
 
@@ -102,33 +103,6 @@ const EXPECTED_IEEE_CITE_1 = formatCitation("ieee", [{ item: SHANNON, locator: "
 const EXPECTED_IEEE_CITE_2 = formatCitation("ieee", [{ item: KAHNEMAN }], { locale: "en", index: 2 }).text;
 const EXPECTED_IEEE_CITE_FN = formatCitation("ieee", [{ item: POPPER, locator: "42", label: "page" }], { locale: "en", index: 3 }).text;
 const EXPECTED_IEEE_BIB = formatBibliography("ieee", [SHANNON, KAHNEMAN, POPPER], "en").map((entry) => entry.text);
-
-function extractPdfText(bytes: Uint8Array): string {
-  const raw = strFromU8(bytes, true);
-  const parts: string[] = [];
-  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-  let match: RegExpExecArray | null;
-  while ((match = streamRe.exec(raw)) !== null) {
-    const start = match.index + match[0].indexOf("\n") + 1;
-    const end = match.index + match[0].lastIndexOf("endstream");
-    let slice = bytes.subarray(start, end);
-    while (slice.length > 0 && (slice[slice.length - 1] === 10 || slice[slice.length - 1] === 13)) {
-      slice = slice.subarray(0, slice.length - 1);
-    }
-    try {
-      parts.push(strFromU8(unzlibSync(slice)));
-    } catch {
-      parts.push(strFromU8(slice));
-    }
-  }
-  const combined = parts.join("\n");
-  const literals: string[] = [];
-  const literalRe = /\(([^)\\]*(?:\\.[^)\\]*)*)\)/g;
-  while ((match = literalRe.exec(combined)) !== null) {
-    literals.push(match[1].replace(/\\([()\\])/g, "$1"));
-  }
-  return literals.join("");
-}
 
 function xmlTextContent(xml: string): string {
   return xml
@@ -231,11 +205,11 @@ describe("citations and bibliography in all exporters", () => {
     expect(ieeeBibEntries).toEqual(EXPECTED_IEEE_BIB);
   });
 
-  it("exports APA 7 and IEEE in-text citations and hanging-indent bibliography in PDF", async () => {
+  it("exports APA 7 and IEEE in-text citations and hanging-indent bibliography in PDF", { timeout: 30_000 }, async () => {
     const book = citationFixtureBook();
 
-    const apaPdfBytes = new Uint8Array(await exportPdf(book, apaOptions()).blob.arrayBuffer());
-    const apaPdfText = extractPdfText(apaPdfBytes);
+    const apaPdfBytes = new Uint8Array(await (await exportPdf(book, apaOptions())).blob.arrayBuffer());
+    const apaPdfText = await extractPdfText(apaPdfBytes);
     expect(apaPdfText).toContain(EXPECTED_APA_CITE_1);
     expect(apaPdfText).toContain(EXPECTED_APA_CITE_2);
     expect(apaPdfText).toContain(EXPECTED_APA_CITE_FN);
@@ -244,8 +218,8 @@ describe("citations and bibliography in all exporters", () => {
     expect(apaPdfText).toContain("The Logic of Scientific Discovery");
     expect(apaPdfText).toContain("A Mathematical Theory of Communication");
 
-    const ieeePdfBytes = new Uint8Array(await exportPdf(book, ieeeOptions()).blob.arrayBuffer());
-    const ieeePdfText = extractPdfText(ieeePdfBytes);
+    const ieeePdfBytes = new Uint8Array(await (await exportPdf(book, ieeeOptions())).blob.arrayBuffer());
+    const ieeePdfText = await extractPdfText(ieeePdfBytes);
     expect(ieeePdfText).toContain(EXPECTED_IEEE_CITE_1);
     expect(ieeePdfText).toContain(EXPECTED_IEEE_CITE_2);
     expect(ieeePdfText).toContain(EXPECTED_IEEE_CITE_FN);

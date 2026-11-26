@@ -53,6 +53,9 @@
   let zoteroError = $state<ZoteroErrorState | null>(null);
   let zoteroNotice = $state<string | null>(null);
   let zoteroBbtSupported = $state(true);
+  let zoteroPicking = $state(false);
+  /** Counts picks, so a stopped one cannot write its result or error later. */
+  let pickAttempt = 0;
 
   function emptyDraft(kind: ManualSourceKind = "book"): ManualSourceDraft {
     return {
@@ -111,15 +114,16 @@
   async function checkZoteroConnection() {
     zoteroChecking = true;
     const status = await zotero.checkStatus();
-    zoteroChecking = false;
     zoteroAvailable = status.available;
     if (status.available) {
       if (zoteroError?.code === "not-running") {
         zoteroError = null;
       }
+      zoteroBbtSupported = await zotero.hasBetterBibtexPicker();
     } else if (status.error) {
       zoteroError = status.error;
     }
+    zoteroChecking = false;
   }
 
   async function searchZotero(event: SubmitEvent) {
@@ -145,23 +149,45 @@
   }
 
   async function pickFromZotero() {
-    zoteroSearching = true;
+    const attempt = ++pickAttempt;
+    zoteroPicking = true;
     zoteroError = null;
     zoteroNotice = null;
     try {
       const picked = await zotero.tryPick();
+      if (attempt !== pickAttempt) return;
       if (!picked.supported) {
         zoteroBbtSupported = false;
         return;
       }
       zoteroAvailable = true;
+      zoteroBbtSupported = true;
       if (picked.items.length > 0) {
         zoteroResults = picked.items;
         zoteroHasSearched = true;
+      } else {
+        zoteroNotice = "No Zotero items were picked.";
+      }
+    } catch (error) {
+      // A stopped pick ends with an error of its own; the notice already said so.
+      if (attempt !== pickAttempt) return;
+      const state = classifyZoteroError(error);
+      zoteroError = state;
+      if (state.code === "not-running") {
+        zoteroAvailable = false;
       }
     } finally {
-      zoteroSearching = false;
+      if (attempt === pickAttempt) zoteroPicking = false;
     }
+  }
+
+  /** Stops waiting for the picker in Zotero, which may be left open there. */
+  async function cancelPickFromZotero() {
+    pickAttempt += 1;
+    zoteroPicking = false;
+    zoteroError = null;
+    zoteroNotice = "Stopped waiting for Zotero.";
+    await zotero.cancelPick();
   }
 
   function addZoteroItem(item: CslItem) {
@@ -650,17 +676,30 @@
           <button
             type="submit"
             class="data-button"
-            disabled={zoteroSearching}
+            disabled={zoteroSearching || zoteroPicking}
           >{zoteroSearching ? t("citation.zotero.searching") : t("citation.zotero.search")}</button>
           {#if zoteroBbtSupported}
             <button
               type="button"
               class="data-button"
-              disabled={zoteroSearching}
+              disabled={zoteroSearching || zoteroPicking}
               onclick={() => void pickFromZotero()}
-            >{t("citation.zotero.pick")}</button>
+            >{zoteroPicking ? t("citation.zotero.waiting") : t("citation.zotero.pick")}</button>
+          {/if}
+          {#if zoteroPicking}
+            <button
+              type="button"
+              class="data-button"
+              onclick={() => void cancelPickFromZotero()}
+            >{t("citation.zotero.stopWaiting")}</button>
           {/if}
         </form>
+
+        {#if !zoteroBbtSupported}
+          <p class="zotero-hint">
+            {t("citation.zotero.bbtRequired")}
+          </p>
+        {/if}
 
         {#if zoteroError && (zoteroAvailable !== false || zoteroError.code === "forbidden" || zoteroError.code === "timeout")}
           <p class="form-error" role="alert">{zoteroError.message}</p>

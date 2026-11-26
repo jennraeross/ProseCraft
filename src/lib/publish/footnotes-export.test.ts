@@ -1,4 +1,4 @@
-import { strFromU8, unzlibSync, unzipSync } from "fflate";
+import { strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { footnoteMarkerHtml } from "../footnotes";
 import { compileBook } from "./compile";
@@ -7,6 +7,7 @@ import { exportEpub } from "./epub";
 import { exportHtml } from "./html";
 import { exportMarkdown } from "./markdown";
 import { exportPdf } from "./pdf";
+import { extractPdfText } from "./pdf-text";
 import { exportText } from "./text";
 import { defaultPublishOptions, normalizePublishOptions } from "./types";
 import { htmlToXhtml } from "./xhtml";
@@ -69,33 +70,6 @@ function twoChapterBook() {
       }
     ]
   });
-}
-
-function extractPdfText(bytes: Uint8Array): string {
-  const raw = strFromU8(bytes, true);
-  const parts: string[] = [];
-  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-  let match: RegExpExecArray | null;
-  while ((match = streamRe.exec(raw)) !== null) {
-    const start = match.index + match[0].indexOf("\n") + 1;
-    const end = match.index + match[0].lastIndexOf("endstream");
-    let slice = bytes.subarray(start, end);
-    while (slice.length > 0 && (slice[slice.length - 1] === 10 || slice[slice.length - 1] === 13)) {
-      slice = slice.subarray(0, slice.length - 1);
-    }
-    try {
-      parts.push(strFromU8(unzlibSync(slice)));
-    } catch {
-      parts.push(strFromU8(slice));
-    }
-  }
-  const combined = parts.join("\n");
-  const literals: string[] = [];
-  const literalRe = /\(([^)\\]*(?:\\.[^)\\]*)*)\)/g;
-  while ((match = literalRe.exec(combined)) !== null) {
-    literals.push(match[1].replace(/\\([()\\])/g, "$1"));
-  }
-  return literals.join("");
 }
 
 describe("footnotes in exports", () => {
@@ -233,20 +207,20 @@ describe("footnotes in exports", () => {
     expect(restarted).toContain("NOTES\n[1] Chapter two note.");
   });
 
-  it("exports chapter endnotes in PDF", async () => {
-    const payload = exportPdf(twoFootnoteBook(), defaultPublishOptions());
+  it("exports chapter endnotes in PDF", { timeout: 30_000 }, async () => {
+    const payload = await exportPdf(twoFootnoteBook(), defaultPublishOptions());
     const bytes = new Uint8Array(await payload.blob.arrayBuffer());
-    const text = extractPdfText(bytes);
+    const text = await extractPdfText(bytes);
 
     expect(text).toContain("Notes");
     expect(text).toContain("1. First italic note here.");
     expect(text).toContain("2. Second emphasized detail.");
 
-    const restarted = exportPdf(twoChapterBook(), {
+    const restarted = await exportPdf(twoChapterBook(), {
       ...defaultPublishOptions(),
       footnotesRestartPerChapter: true
     });
-    const restartedText = extractPdfText(new Uint8Array(await restarted.blob.arrayBuffer()));
+    const restartedText = await extractPdfText(new Uint8Array(await restarted.blob.arrayBuffer()));
     expect(restartedText).toContain("1. Chapter one first.");
     expect(restartedText).toContain("1. Chapter two note.");
   });

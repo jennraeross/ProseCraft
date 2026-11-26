@@ -2,6 +2,7 @@ import { buildBookBibliography } from "../citations/bibliography";
 import type { CslItem } from "../citations/csl";
 import type { CitationLocale, CitationStyleId } from "../citations/styles";
 import { normalizeFootnotes, numberedFootnotes } from "../footnotes";
+import { applyImageLayoutStyles } from "../image-layout";
 import { sanitizeHtml } from "../sanitize";
 import { hasRichPlaceholders } from "../rich/model";
 import { chapterLabel } from "./chapters";
@@ -59,7 +60,7 @@ export function compileBook(input: CompileInput): CompiledBook {
     const scenes: CompiledScene[] = [];
     for (const document of input.documents) {
       if (document.space || document.chapterId !== chapter.id || document.trashed) continue;
-      const html = sanitizeHtml(document.content ?? "");
+      const html = applyImageLayoutStyles(sanitizeHtml(document.content ?? ""));
       const rawText = htmlToPlainText(html);
       const richContent = hasRichPlaceholders(html);
       if (!hasVisibleText(rawText) && !richContent

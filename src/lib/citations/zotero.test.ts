@@ -6,10 +6,13 @@ import {
   classifyZoteroError,
   classifyZoteroHttpError,
   extractZoteroKey,
+  isZoteroEndpointMissing,
   mapZoteroCslJson,
   ZoteroError,
   ZoteroLocal,
   ZOTERO_BBT_CAYW_PATH,
+  ZOTERO_BBT_PROBE_PATH,
+  ZOTERO_PICK_TIMEOUT_MS,
   ZOTERO_PING_PATH
 } from "./zotero";
 
@@ -212,8 +215,9 @@ describe("ZoteroLocal provider", () => {
   });
 
   it("uses Better BibTeX CAYW picker when present and falls back silently when absent", async () => {
-    const bbtTransport = vi.fn(async (path: string) => {
+    const bbtTransport = vi.fn(async (path: string, options?: { timeoutMs?: number }) => {
       expect(path).toBe(ZOTERO_BBT_CAYW_PATH);
+      expect(options?.timeoutMs).toBe(ZOTERO_PICK_TIMEOUT_MS);
       return ZOTERO_BBT_CAYW_FIXTURE;
     });
     const bbtZotero = new ZoteroLocal(bbtTransport);
@@ -232,5 +236,89 @@ describe("ZoteroLocal provider", () => {
     });
     await expect(noBbtZotero.tryPick()).resolves.toEqual({ supported: false, items: [] });
     await expect(noBbtZotero.pick()).resolves.toEqual([]);
+  });
+
+  it("gives the picker minutes to answer and surfaces slow-pick errors", async () => {
+    expect(ZOTERO_PICK_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
+
+    const slowTransport = vi.fn(
+      async (path: string, options?: { timeoutMs?: number }) => {
+        if (path !== ZOTERO_BBT_CAYW_PATH || options?.timeoutMs !== ZOTERO_PICK_TIMEOUT_MS) {
+          throw new Error("unexpected request");
+        }
+        // A person taking longer than the 5 s used for other endpoints.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return ZOTERO_BBT_CAYW_FIXTURE;
+      }
+    );
+
+    const picked = await new ZoteroLocal(slowTransport).tryPick();
+    expect(picked.supported).toBe(true);
+    expect(picked.items).toHaveLength(1);
+
+    const timedOut = new ZoteroLocal(async () => {
+      throw new Error("Zotero request timed out after 5 minutes.");
+    });
+    await expect(timedOut.tryPick()).rejects.toMatchObject({
+      name: "ZoteroError",
+      code: "timeout"
+    });
+  });
+
+  it("probes Better BibTeX and only reports it missing on a 404", async () => {
+    const present = new ZoteroLocal(async (path: string) => {
+      expect(path).toBe(ZOTERO_BBT_PROBE_PATH);
+      return "ready";
+    });
+    await expect(present.hasBetterBibtexPicker()).resolves.toBe(true);
+
+    const missing = new ZoteroLocal(async () => {
+      throw new Error("HTTP 404: No endpoint found");
+    });
+    await expect(missing.hasBetterBibtexPicker()).resolves.toBe(false);
+    expect(isZoteroEndpointMissing("HTTP 404: No endpoint found")).toBe(true);
+
+    // Unknown outcomes keep the picker available so a slow Zotero is retryable.
+    const unreachable = new ZoteroLocal(async () => {
+      throw new Error("Zotero request timed out after 5s.");
+    });
+    await expect(unreachable.hasBetterBibtexPicker()).resolves.toBe(true);
+    expect(isZoteroEndpointMissing("Zotero request timed out after 5s.")).toBe(false);
+  });
+
+  it("cancels the pick by the id it sent, and only that one", async () => {
+    const cancelled: string[] = [];
+    let requestId: string | undefined;
+    let answer!: (value: string) => void;
+    const picker = new ZoteroLocal(
+      async (_path: string, options?: { requestId?: string }) => {
+        requestId = options?.requestId;
+        return await new Promise<string>((resolve) => {
+          answer = resolve;
+        });
+      },
+      async (id: string) => {
+        cancelled.push(id);
+        return true;
+      }
+    );
+
+    const picking = picker.tryPick();
+    while (!requestId) await Promise.resolve();
+    expect(requestId).toBeTruthy();
+
+    await expect(picker.cancelPick()).resolves.toBe(true);
+    expect(cancelled).toEqual([requestId]);
+    // A stopped pick is not in flight any more.
+    await expect(picker.cancelPick()).resolves.toBe(false);
+    expect(cancelled).toHaveLength(1);
+
+    answer("");
+    await expect(picking).resolves.toEqual({ supported: true, items: [] });
+  });
+
+  it("has nothing to cancel when no pick is waiting", async () => {
+    const picker = new ZoteroLocal(async () => "[]", async () => true);
+    await expect(picker.cancelPick()).resolves.toBe(false);
   });
 });
