@@ -1157,6 +1157,7 @@
   "snapshots.notePlaceholder": "Optionaler Hinweis",
   "snapshots.noteAria": "Snapshot-Hinweis",
   "snapshots.take": "Snapshot erstellen",
+  "snapshots.beforeRestore": "{date} (vor einer Wiederherstellung)",
   "snapshots.earlier": "Frühere Versionen",
   "snapshots.restoreHint": "Beim Wiederherstellen wird zuerst der aktuelle Text gespeichert, sodass du zurückkannst.",
   "snapshots.emptyPanel": "Noch keine Snapshots. Speichere oben einen, um diesen Moment festzuhalten.",
@@ -1381,6 +1382,10 @@
   "rich.savedSource": "Als bearbeitbare Quelle gespeichert.",
   "rich.remove": "Entfernen",
   "rich.cancel": "Abbrechen",
+  "rich.sourceRequiredDiagram": "Füge zuerst eine Mermaid-Definition hinzu.",
+  "rich.sourceRequiredCalc": "Füge zuerst eine Berechnung hinzu.",
+  "rich.sourceRequiredLatex": "Füge zuerst etwas LaTeX hinzu.",
+  "rich.sourceLimit": "Die Quelle darf höchstens {limit, number} Zeichen lang sein.",
 
   "editor.markdownSource": "Markdown-Quelltext",
   "editor.documentText": "Dokumenttext",

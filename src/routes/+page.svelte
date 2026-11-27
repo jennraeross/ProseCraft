@@ -4769,16 +4769,16 @@
     const source = richSource.trim();
     if (!source) {
       richDialogError = richDialogKind === "diagram"
-        ? "Add a Mermaid definition first."
+        ? t("rich.sourceRequiredDiagram")
         : richDialogKind === "calc"
-          ? "Add a calculation first."
-          : "Add some LaTeX first.";
+          ? t("rich.sourceRequiredCalc")
+          : t("rich.sourceRequiredLatex");
       return;
     }
     const kind = richKindForDialog(richDialogKind, richDisplay);
     const sourceLimit = richSourceLimit(kind);
     if (source.length > sourceLimit) {
-      richDialogError = `Keep the source to ${sourceLimit.toLocaleString()} characters or fewer.`;
+      richDialogError = t("rich.sourceLimit", { limit: sourceLimit });
       return;
     }
     richDialogError = "";
@@ -6080,8 +6080,10 @@
   }
 
   function snapshotLabel(snapshot: DocumentSnapshot): string {
-    const when = new Date(snapshot.createdAt).toLocaleString();
-    return snapshot.reason === "before-restore" ? `${when} (before a restore)` : when;
+    const when = new Date(snapshot.createdAt).toLocaleString(localeState.locale);
+    return snapshot.reason === "before-restore"
+      ? t("snapshots.beforeRestore", { date: when })
+      : when;
   }
 
   function chapterMarkdownSource(): string {
@@ -11308,7 +11310,7 @@
               <div class="comment-preview-entry">
                 <div class="comment-preview-meta">
                   <strong>{comment.author}</strong>
-                  <span>{new Date(comment.createdAt).toLocaleDateString()}</span>
+                  <span>{new Date(comment.createdAt).toLocaleDateString(localeState.locale)}</span>
                 </div>
                 <p>{comment.body}</p>
                 <div class="comment-preview-actions">

@@ -1157,6 +1157,7 @@
   "snapshots.notePlaceholder": "Optional note",
   "snapshots.noteAria": "Snapshot note",
   "snapshots.take": "Take snapshot",
+  "snapshots.beforeRestore": "{date} (before a restore)",
   "snapshots.earlier": "Earlier versions",
   "snapshots.restoreHint": "Restoring first saves the current text, so you can go back.",
   "snapshots.emptyPanel": "No snapshots yet. Save one above to freeze this moment.",
@@ -1381,6 +1382,10 @@
   "rich.savedSource": "Saved as editable source.",
   "rich.remove": "Remove",
   "rich.cancel": "Cancel",
+  "rich.sourceRequiredDiagram": "Add a Mermaid definition first.",
+  "rich.sourceRequiredCalc": "Add a calculation first.",
+  "rich.sourceRequiredLatex": "Add some LaTeX first.",
+  "rich.sourceLimit": "Keep the source to {limit, number} characters or fewer.",
 
   "editor.markdownSource": "Markdown source",
   "editor.documentText": "Document text",

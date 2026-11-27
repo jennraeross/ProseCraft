@@ -61,7 +61,8 @@
     type SceneSeparator
   } from "./publish/types";
   import type { MessageKey } from "$lib/i18n/catalog";
-  import { t } from "$lib/i18n/state.svelte";
+  import { formatNumber } from "$lib/i18n/format";
+  import { localeState, t } from "$lib/i18n/state.svelte";
 
   type Props = {
     chapters: ChapterData[];
@@ -658,7 +659,7 @@
       <div class="publish-summary" aria-label={t("publish.summaryAria")}>
         <div><strong>{compiled.chapters.length}</strong><span>{t("publish.chapters")}</span></div>
         <div><strong>{compiled.scenes}</strong><span>{t("publish.scenes")}</span></div>
-        <div><strong>{compiled.words.toLocaleString()}</strong><span>{t("publish.words")}</span></div>
+        <div><strong>{formatNumber(compiled.words, localeState.locale)}</strong><span>{t("publish.words")}</span></div>
         <div><strong>{pageEstimate === null ? "—" : pageEstimate}</strong><span>{pageEstimate === null ? t("publish.reflowable") : t("publish.pages")}</span></div>
       </div>
 
