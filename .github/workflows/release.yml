@@ -125,32 +125,7 @@ jobs:
         with:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: ProseCraft ${{ env.RELEASE_TAG }}
-          releaseBody: |
-            ## What's New
-
-            - Edit whole chapters as one document with scene dividers
-            - Sidebar actions move into right-click menus; scenes drag to reorder
-            - Chapters auto-collapse, remember their last scene, and open on click
-            - Wiki tree drag-and-drop reorder with a decluttered sidebar
-            - Full-window storyboard with floating controls
-            - Timeline view behind an opt-in toggle
-            - Right sidebar tabs: Progress, Comments and Snapshots
-            - Split view auto-hides the sidebars
-            - Colour labels for scenes and chapters with filtering (#22)
-            - Project starters with genre presets and world-building modules (#23)
-            - Project-wide search with find and replace (#24)
-            - Keyboard shortcut sheet (#25)
-            - Fluid tiling split view with editable side tiles (#26)
-            - Settings dialog categories (#27)
-            - Focus mode and native file drops (#21)
-            - About dialog with a diagnostics report (#20)
-            - MathCAD-style calculation worksheets (#18)
-            - Mermaid syntax errors no longer leak graphics (#17)
-
-            ## Contributors
-
-            - [@studiosusmed](https://github.com/studiosusmed) - PRs #20, #21, #22, #23, #24, #25, #26 and #27
-            - [@Sycration](https://github.com/Sycration) - PRs #17 and #18
+          generateReleaseNotes: true
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -166,7 +141,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)"
+          set -euo pipefail
+
+          # The "get release by tag" endpoint only returns published releases,
+          # so a draft release always looks like a 404 there. List releases
+          # instead; the list includes drafts for tokens with write access.
+          release_id=""
+          for attempt in 1 2 3 4 5; do
+            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq "[.[] | select(.tag_name == \"$RELEASE_TAG\")][0].id // empty")"
+            if [ -n "$release_id" ]; then
+              break
+            fi
+            echo "Release $RELEASE_TAG is not visible yet (attempt $attempt/5); retrying in 10s..."
+            sleep 10
+          done
+
+          if [ -z "$release_id" ]; then
+            echo "::error::No release found for $RELEASE_TAG"
+            exit 1
+          fi
+
           gh api --method PATCH \
             "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             -F draft=false \
